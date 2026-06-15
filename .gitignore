@@ -1,5 +1,6 @@
 work_material1/00_raw_client_materials/
 work_material1/05_final_deliverables/agent_workflow/
+.env
 
 **/__pycache__/
 *.pyc

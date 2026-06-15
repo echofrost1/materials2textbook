@@ -27,6 +27,23 @@ python scripts/run_agent_workflow.py
 python scripts/run_agent_workflow.py --approved-only
 ```
 
+使用 OpenAI-compatible 的 `ecnu-plus` 生成教材正文：
+
+```powershell
+copy .env.example .env
+# 编辑 .env，填入 ECNU_PLUS_API_KEY / ECNU_PLUS_BASE_URL / ECNU_PLUS_MODEL
+python scripts/run_agent_workflow.py --use-llm
+```
+
+也可以直接传入：
+
+```powershell
+python scripts/run_agent_workflow.py --use-llm `
+  --llm-base-url "https://your-openai-compatible-endpoint/v1" `
+  --llm-api-key "your_api_key" `
+  --llm-model "ecnu-plus"
+```
+
 运行测试：
 
 ```powershell
@@ -96,10 +113,10 @@ materials2textbook/
 - 生成结构化审核报告和人工可读 Markdown 审核报告。
 - 支持草稿模式使用 `Pending_Manual_Timecode` 片段。
 - 支持 `--approved-only` 正式模式。
+- 预留 OpenAI-compatible LLM 接口，可接入 `ecnu-plus` 生成教材正文。
 
 ## 后续方向
 
-- 接入 OpenAI-compatible 的 `ecnu-plus` 模型接口。
 - 用 LLM 增强标题润色、ASR 纠错、教材正文改写和审核修订。
 - 接入 PDF、PPT、Markdown 等非视频资料片段。
 - 将 prompt、provider 和模型配置独立成稳定模块。

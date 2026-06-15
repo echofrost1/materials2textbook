@@ -2,13 +2,25 @@ from __future__ import annotations
 
 from textwrap import shorten
 
+from materials2textbook.llm.provider import LLMProvider
+from materials2textbook.prompts.textbook_writer import build_textbook_writer_messages
 from materials2textbook.schemas import ChapterPlan, EvidenceChunk
 
 
 class TextbookWriterAgent:
     """Draft a Markdown textbook from chapter plans and evidence chunks."""
 
+    def __init__(self, llm_provider: LLMProvider | None = None, use_llm: bool = False) -> None:
+        self.llm_provider = llm_provider
+        self.use_llm = use_llm
+
     def run(self, plans: list[ChapterPlan], chunks: list[EvidenceChunk], title: str) -> str:
+        if self.use_llm:
+            if self.llm_provider is None:
+                raise RuntimeError("TextbookWriterAgent was asked to use LLM, but no provider was configured.")
+            messages = build_textbook_writer_messages(plans, chunks, title)
+            return self.llm_provider.generate(messages).rstrip() + "\n"
+
         chunk_map = {chunk.chunk_id: chunk for chunk in chunks}
         lines = [
             f"# {title}",

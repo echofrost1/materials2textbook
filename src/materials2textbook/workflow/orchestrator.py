@@ -10,6 +10,7 @@ from materials2textbook.agents.revision import RevisionAgent
 from materials2textbook.agents.textbook_writer import TextbookWriterAgent
 from materials2textbook.exporters.docx import markdown_to_docx
 from materials2textbook.io_utils import read_jsonl, write_json, write_jsonl, write_text
+from materials2textbook.llm.provider import LLMProvider
 from materials2textbook.schemas import WorkflowOutputs
 from materials2textbook.workflow.config import WorkflowConfig
 from materials2textbook.workflow.reporting import build_workflow_summary, render_review_markdown
@@ -18,11 +19,11 @@ from materials2textbook.workflow.reporting import build_workflow_summary, render
 class TextbookWorkflow:
     """Run the first multi-agent orchestration loop over processed material segments."""
 
-    def __init__(self) -> None:
+    def __init__(self, llm_provider: LLMProvider | None = None, use_llm: bool = False) -> None:
         self.resource_analyst = ResourceAnalystAgent()
         self.outline_planner = OutlinePlannerAgent()
         self.organizer = KnowledgeOrganizerAgent()
-        self.writer = TextbookWriterAgent()
+        self.writer = TextbookWriterAgent(llm_provider=llm_provider, use_llm=use_llm)
         self.evidence_reviewer = EvidenceReviewerAgent()
         self.pedagogy_reviewer = PedagogyReviewerAgent()
         self.review_composer = ReviewComposer()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -13,9 +14,25 @@ if str(SRC) not in sys.path:
 
 from materials2textbook.workflow.orchestrator import TextbookWorkflow
 from materials2textbook.workflow.config import WorkflowConfig
+from materials2textbook.llm.provider import OpenAICompatibleConfig, OpenAICompatibleProvider
+
+
+def load_dotenv(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
 
 
 def main() -> None:
+    load_dotenv(ROOT / ".env")
+
     parser = argparse.ArgumentParser(description="Run the MVP multi-agent textbook workflow.")
     parser.add_argument(
         "--segments",
@@ -47,9 +64,29 @@ def main() -> None:
         default=None,
         help="Limit evidence shown for each knowledge point in the chapter plan.",
     )
+    parser.add_argument("--use-llm", action="store_true", help="Use an OpenAI-compatible LLM for textbook writing.")
+    parser.add_argument("--llm-base-url", default=None, help="OpenAI-compatible base URL, e.g. https://.../v1")
+    parser.add_argument("--llm-api-key", default=None, help="API key. Prefer ECNU_PLUS_API_KEY in environment.")
+    parser.add_argument("--llm-model", default=None, help="Model name. Defaults to ECNU_PLUS_MODEL or ecnu-plus.")
     args = parser.parse_args()
 
-    workflow = TextbookWorkflow()
+    llm_provider = None
+    if args.use_llm:
+        llm_config = OpenAICompatibleConfig.from_env()
+        if args.llm_base_url:
+            llm_config.base_url = args.llm_base_url
+        if args.llm_api_key:
+            llm_config.api_key = args.llm_api_key
+        if args.llm_model:
+            llm_config.model = args.llm_model
+        if not llm_config.is_configured:
+            raise SystemExit(
+                "LLM is enabled but not configured. Set ECNU_PLUS_API_KEY, "
+                "ECNU_PLUS_BASE_URL, ECNU_PLUS_MODEL or pass --llm-* options."
+            )
+        llm_provider = OpenAICompatibleProvider(llm_config)
+
+    workflow = TextbookWorkflow(llm_provider=llm_provider, use_llm=args.use_llm)
     config = WorkflowConfig(
         include_pending=not args.approved_only,
         min_teaching_value=args.min_teaching_value,

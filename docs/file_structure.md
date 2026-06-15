@@ -57,6 +57,8 @@ src/materials2textbook/
 ├── adapters/      适配上游数据，如 video_segments.jsonl
 ├── agents/        Agent 角色，如目录规划、教材写作、审核
 ├── exporters/     导出器，如 Markdown 到 Word
+├── llm/           OpenAI-compatible LLM Provider
+├── prompts/       LLM Prompt 构造器
 ├── workflow/      编排、配置、统计和报告
 ├── schemas.py     核心数据结构
 └── io_utils.py    文件读写工具
@@ -168,15 +170,16 @@ textbook_final.md/docx
 - 接入 `ecnu-plus` 后，Provider、Prompt 和 LLM Agent 才会成为新的稳定边界。
 - 过早拆太细会增加改动成本。
 
-下一次值得做的重构是：
+当前已经预留：
 
 ```text
 src/materials2textbook/
 ├── llm/
-│   ├── provider.py
-│   └── prompts/
+│   └── provider.py
+├── prompts/
+│   └── textbook_writer.py
 └── agents/
-    └── llm_textbook_writer.py
+    └── textbook_writer.py
 ```
 
-也就是等模型接入时，再把 LLM Provider 和 Prompt 模板独立出来。
+`textbook_writer.py` 默认使用规则版写作；启用 `--use-llm` 后，会调用 OpenAI-compatible Provider。
