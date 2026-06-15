@@ -1,0 +1,14 @@
+# Core data-processing dependencies
+pandas>=2.2
+openpyxl>=3.1
+
+# Test dependencies
+pytest>=8.0
+
+# Optional local ASR backends for scripts/run_first_round_tig.py:
+# Install one of these only if local transcription is needed.
+# faster-whisper>=1.0
+# openai-whisper>=20240930
+#
+# System dependency:
+# - ffmpeg and ffprobe must be available on PATH for video/audio processing.
