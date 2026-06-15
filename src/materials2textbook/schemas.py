@@ -59,6 +59,28 @@ class ChapterPlan:
 
 
 @dataclass
+class OutlineTopic:
+    topic_id: str
+    title: str
+    chunk_ids: list[str]
+    summary: str = ""
+
+
+@dataclass
+class OutlineSection:
+    section_id: str
+    title: str
+    topics: list[OutlineTopic]
+
+
+@dataclass
+class TextbookOutline:
+    chapter_id: str
+    title: str
+    sections: list[OutlineSection]
+
+
+@dataclass
 class ReviewIssue:
     severity: str
     location: str
@@ -78,13 +100,17 @@ class ReviewReport:
 
 @dataclass
 class WorkflowOutputs:
+    outline_path: str
+    outline_markdown_path: str
     evidence_chunks_path: str
     chapter_plan_path: str
     draft_path: str
+    draft_docx_path: str
     review_report_path: str
     review_markdown_path: str
     summary_path: str
     final_path: str
+    final_docx_path: str
 
 
 @dataclass

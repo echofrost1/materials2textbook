@@ -57,13 +57,17 @@ def main() -> None:
     )
     outputs = workflow.run(args.segments.resolve(), args.output_dir.resolve(), args.title, config)
     print("Workflow outputs:")
+    print(f"- outline: {outputs.outline_path}")
+    print(f"- outline_markdown: {outputs.outline_markdown_path}")
     print(f"- evidence_chunks: {outputs.evidence_chunks_path}")
     print(f"- chapter_plan: {outputs.chapter_plan_path}")
     print(f"- draft: {outputs.draft_path}")
+    print(f"- draft_docx: {outputs.draft_docx_path}")
     print(f"- review_report: {outputs.review_report_path}")
     print(f"- review_markdown: {outputs.review_markdown_path}")
     print(f"- summary: {outputs.summary_path}")
     print(f"- final: {outputs.final_path}")
+    print(f"- final_docx: {outputs.final_docx_path}")
 
 
 if __name__ == "__main__":

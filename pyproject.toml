@@ -6,6 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
     "pandas>=2.2",
     "openpyxl>=3.1",
+    "python-docx>=1.1",
 ]
 
 [project.optional-dependencies]

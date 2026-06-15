@@ -30,3 +30,13 @@ python scripts/run_agent_workflow.py --approved-only
 ```text
 work_material1/05_final_deliverables/agent_workflow/
 ```
+
+主要产物：
+
+```text
+textbook_outline.md/json   三级教材目录
+textbook_draft.md/docx     教材草稿
+textbook_final.md/docx     带审核修订提示的教材
+review_report.md/json      审核报告
+workflow_summary.json      工作流统计
+```
