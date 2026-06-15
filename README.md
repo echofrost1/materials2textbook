@@ -5,7 +5,22 @@
 ## 文档
 
 - [项目架构安排](./docs/项目架构安排.md)
+- [多智能体编排开发计划](./docs/多智能体编排开发计划.md)
 - [切片工具说明](./docs/切片工具说明.md)
 - [多智能体编排生成论文精读](./docs/多智能体编排生成论文精读.md)
 - [教材素材处理精简前瞻版](./docs/material_pipeline_forward_plan.md)
 - [数据组织可行性复核](./docs/data_organization_feasibility_review.md)
+
+## 多智能体编排 MVP
+
+使用当前 TIG 样例片段运行：
+
+```powershell
+python scripts/run_agent_workflow.py
+```
+
+默认输出到：
+
+```text
+work_material1/05_final_deliverables/agent_workflow/
+```

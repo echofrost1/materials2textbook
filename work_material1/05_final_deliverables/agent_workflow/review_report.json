@@ -1,0 +1,110 @@
+[
+  {
+    "chapter_id": "chapter_01",
+    "chapter_title": "钨极氩弧焊基本操作",
+    "fact_issues": [
+      {
+        "severity": "medium",
+        "location": "C000001",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000002",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000003",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000004",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000005",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000006",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000007",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000008",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000009",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000010",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000011",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000012",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000013",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      },
+      {
+        "severity": "medium",
+        "location": "C000014",
+        "message": "证据片段仍处于待人工复核状态。",
+        "suggestion": "人工确认时间码和片段边界。"
+      }
+    ],
+    "pedagogy_issues": [],
+    "missing_content": [],
+    "revision_suggestions": [
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。",
+      "人工确认时间码和片段边界。"
+    ]
+  }
+]
