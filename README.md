@@ -18,7 +18,7 @@ pip install -r requirements.txt
 运行当前 TIG 样例的多智能体编排：
 
 ```powershell
-python scripts/run_agent_workflow.py
+python scripts/run_pipeline.py
 ```
 
 先校验同伴产出的 `video_segments.jsonl`：

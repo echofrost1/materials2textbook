@@ -45,6 +45,7 @@ examples/outputs/agent_workflow/
 
 ```text
 scripts/run_first_round_tig.py     数据处理线样例脚本
+scripts/run_pipeline.py            校验 + 编排一键入口
 scripts/run_agent_workflow.py      多智能体编排线入口
 scripts/validate_video_segments.py 上游片段 JSONL 校验脚本
 ```
