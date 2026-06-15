@@ -46,6 +46,7 @@ examples/outputs/agent_workflow/
 ```text
 scripts/run_first_round_tig.py     数据处理线样例脚本
 scripts/run_agent_workflow.py      多智能体编排线入口
+scripts/validate_video_segments.py 上游片段 JSONL 校验脚本
 ```
 
 ### `src/materials2textbook/`
@@ -59,6 +60,7 @@ src/materials2textbook/
 ├── exporters/     导出器，如 Markdown 到 Word
 ├── llm/           OpenAI-compatible LLM Provider
 ├── prompts/       LLM Prompt 构造器
+├── validators/    上游产物校验器
 ├── workflow/      编排、配置、统计和报告
 ├── schemas.py     核心数据结构
 └── io_utils.py    文件读写工具
@@ -133,6 +135,14 @@ work_material1/05_final_deliverables/agent_workflow/
 ```
 
 输出目录默认不提交到 Git；如需保存一份示例，应复制或移动到 `examples/outputs/`。
+
+上游片段校验默认输出：
+
+```text
+work_material1/05_final_deliverables/validation/
+```
+
+该目录也不提交到 Git，校验报告用于你和同伴对齐字段质量、时间码质量和人工复核状态。
 
 ---
 

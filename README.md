@@ -21,6 +21,12 @@ pip install -r requirements.txt
 python scripts/run_agent_workflow.py
 ```
 
+先校验同伴产出的 `video_segments.jsonl`：
+
+```powershell
+python scripts/validate_video_segments.py
+```
+
 只使用人工审核通过的片段生成正式版草稿：
 
 ```powershell
@@ -74,6 +80,12 @@ review_report.md/json      审核报告
 workflow_summary.json      工作流统计
 ```
 
+校验脚本默认输出到：
+
+```text
+work_material1/05_final_deliverables/validation/
+```
+
 仓库中保留了一份已生成的样例输出：
 
 [examples/outputs/agent_workflow](./examples/outputs/agent_workflow)
@@ -107,6 +119,7 @@ materials2textbook/
 ## 当前能力
 
 - 从上游 `video_segments.jsonl` 读取课程视频片段。
+- 校验上游 `video_segments.jsonl` 的字段、时间码、状态、重复 ID 和证据完整性。
 - 转换为统一 `EvidenceChunk`。
 - 严格基于素材片段生成三级教材目录。
 - 生成 Markdown 教材草稿和 Word 文档。
