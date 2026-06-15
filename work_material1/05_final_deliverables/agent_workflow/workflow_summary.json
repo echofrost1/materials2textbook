@@ -1,0 +1,19 @@
+{
+  "title": "钨极氩弧焊数字教材样章",
+  "source_records": 14,
+  "evidence_chunks": 14,
+  "skipped_chunks": 0,
+  "chapters": 1,
+  "knowledge_points": 5,
+  "fact_issue_count": 14,
+  "pedagogy_issue_count": 0,
+  "high_issue_count": 0,
+  "medium_issue_count": 14,
+  "low_issue_count": 0,
+  "review_status_counts": {
+    "Pending_Manual_Timecode": 14
+  },
+  "material_block_counts": {
+    "钨极氩弧焊": 14
+  }
+}

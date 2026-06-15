@@ -19,6 +19,12 @@
 python scripts/run_agent_workflow.py
 ```
 
+只使用人工审核通过的片段生成正式版草稿：
+
+```powershell
+python scripts/run_agent_workflow.py --approved-only
+```
+
 默认输出到：
 
 ```text

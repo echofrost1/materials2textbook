@@ -82,4 +82,23 @@ class WorkflowOutputs:
     chapter_plan_path: str
     draft_path: str
     review_report_path: str
+    review_markdown_path: str
+    summary_path: str
     final_path: str
+
+
+@dataclass
+class WorkflowSummary:
+    title: str
+    source_records: int
+    evidence_chunks: int
+    skipped_chunks: int
+    chapters: int
+    knowledge_points: int
+    fact_issue_count: int
+    pedagogy_issue_count: int
+    high_issue_count: int
+    medium_issue_count: int
+    low_issue_count: int
+    review_status_counts: dict[str, int] = field(default_factory=dict)
+    material_block_counts: dict[str, int] = field(default_factory=dict)

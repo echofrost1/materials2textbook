@@ -8,7 +8,7 @@ from materials2textbook.schemas import ChapterPlan, EvidenceChunk, KnowledgePoin
 class KnowledgeOrganizerAgent:
     """Group evidence chunks into a simple chapter plan."""
 
-    def run(self, chunks: list[EvidenceChunk]) -> list[ChapterPlan]:
+    def run(self, chunks: list[EvidenceChunk], max_chunks_per_knowledge_point: int | None = None) -> list[ChapterPlan]:
         by_chapter: dict[str, list[EvidenceChunk]] = defaultdict(list)
         for chunk in chunks:
             by_chapter[chunk.recommended_chapter or "待规划章节"].append(chunk)
@@ -23,7 +23,14 @@ class KnowledgeOrganizerAgent:
                 KnowledgePoint(
                     knowledge_point_id=f"kp_{index:02d}_{point_index:02d}",
                     title=point_title,
-                    chunk_ids=[chunk.chunk_id for chunk in point_chunks],
+                    chunk_ids=[
+                        chunk.chunk_id
+                        for chunk in (
+                            point_chunks[:max_chunks_per_knowledge_point]
+                            if max_chunks_per_knowledge_point
+                            else point_chunks
+                        )
+                    ],
                     summary=point_chunks[0].summary,
                 )
                 for point_index, (point_title, point_chunks) in enumerate(by_point.items(), start=1)
