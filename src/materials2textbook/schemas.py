@@ -103,6 +103,7 @@ class WorkflowOutputs:
     outline_path: str
     outline_markdown_path: str
     evidence_chunks_path: str
+    evidence_markdown_path: str
     chapter_plan_path: str
     draft_path: str
     draft_docx_path: str

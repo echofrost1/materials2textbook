@@ -8,6 +8,7 @@ class WorkflowConfig:
     """Runtime controls for the orchestration MVP."""
 
     include_pending: bool = True
+    include_rejected: bool = False
     allowed_review_statuses: set[str] = field(default_factory=set)
     min_teaching_value: float = 0.0
     max_chunks_per_knowledge_point: int | None = None
@@ -16,6 +17,8 @@ class WorkflowConfig:
         normalized = status.strip().lower()
         if self.allowed_review_statuses:
             return normalized in {item.lower() for item in self.allowed_review_statuses}
+        if "rejected" in normalized and not self.include_rejected:
+            return False
         if self.include_pending:
             return True
         return "approved" in normalized

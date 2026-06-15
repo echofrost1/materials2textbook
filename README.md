@@ -74,6 +74,7 @@ work_material1/05_final_deliverables/agent_workflow/
 
 ```text
 textbook_outline.md/json   三级教材目录
+evidence_index.md          人工可读证据索引
 textbook_draft.md/docx     教材草稿
 textbook_final.md/docx     带审核修订提示的教材
 review_report.md/json      审核报告
@@ -124,7 +125,9 @@ materials2textbook/
 - 严格基于素材片段生成三级教材目录。
 - 生成 Markdown 教材草稿和 Word 文档。
 - 生成结构化审核报告和人工可读 Markdown 审核报告。
+- 生成按章节/知识点组织的人工可读证据索引。
 - 支持草稿模式使用 `Pending_Manual_Timecode` 片段。
+- 默认排除 `rejected` 片段，可用 `--include-rejected` 临时调试。
 - 支持 `--approved-only` 正式模式。
 - 预留 OpenAI-compatible LLM 接口，可接入 `ecnu-plus` 生成教材正文并执行审核后修订。
 

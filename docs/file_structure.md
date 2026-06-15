@@ -151,6 +151,7 @@ work_material1/05_final_deliverables/validation/
 ```text
 textbook_outline.md/json
 evidence_chunks.jsonl
+evidence_index.md
 chapter_plan.json
 textbook_draft.md/docx
 review_report.md/json
@@ -162,6 +163,7 @@ textbook_final.md/docx
 
 - `textbook_outline.md/json`：三级教材目录，严格来自上游素材片段。
 - `evidence_chunks.jsonl`：统一证据片段。
+- `evidence_index.md`：人工可读证据索引，按章节和知识点列出来源、时间码、状态、关键帧和摘要。
 - `chapter_plan.json`：面向写作 Agent 的章节计划。
 - `textbook_draft.md/docx`：教材草稿。
 - `review_report.md/json`：审核报告。

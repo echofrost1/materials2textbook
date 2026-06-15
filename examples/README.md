@@ -13,6 +13,7 @@ examples/outputs/agent_workflow/
 ```text
 textbook_outline.md/json
 evidence_chunks.jsonl
+evidence_index.md
 chapter_plan.json
 textbook_draft.md/docx
 review_report.md/json

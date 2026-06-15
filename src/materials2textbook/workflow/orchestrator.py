@@ -13,7 +13,7 @@ from materials2textbook.io_utils import read_jsonl, write_json, write_jsonl, wri
 from materials2textbook.llm.provider import LLMProvider
 from materials2textbook.schemas import WorkflowOutputs
 from materials2textbook.workflow.config import WorkflowConfig
-from materials2textbook.workflow.reporting import build_workflow_summary, render_review_markdown
+from materials2textbook.workflow.reporting import build_workflow_summary, render_evidence_markdown, render_review_markdown
 
 
 class TextbookWorkflow:
@@ -66,11 +66,13 @@ class TextbookWorkflow:
             reports=reports,
         )
         review_markdown = render_review_markdown(reports, summary)
+        evidence_markdown = render_evidence_markdown(chunks, title)
         final = self.revision.run(draft, reports)
 
         outline_path = output_dir / "textbook_outline.json"
         outline_markdown_path = output_dir / "textbook_outline.md"
         evidence_chunks_path = output_dir / "evidence_chunks.jsonl"
+        evidence_markdown_path = output_dir / "evidence_index.md"
         chapter_plan_path = output_dir / "chapter_plan.json"
         draft_path = output_dir / "textbook_draft.md"
         draft_docx_path = output_dir / "textbook_draft.docx"
@@ -83,6 +85,7 @@ class TextbookWorkflow:
         write_json(outline_path, outlines)
         write_text(outline_markdown_path, outline_markdown)
         write_jsonl(evidence_chunks_path, chunks)
+        write_text(evidence_markdown_path, evidence_markdown)
         write_json(chapter_plan_path, plans)
         write_text(draft_path, draft)
         write_json(review_report_path, reports)
@@ -96,6 +99,7 @@ class TextbookWorkflow:
             outline_path=str(outline_path),
             outline_markdown_path=str(outline_markdown_path),
             evidence_chunks_path=str(evidence_chunks_path),
+            evidence_markdown_path=str(evidence_markdown_path),
             chapter_plan_path=str(chapter_plan_path),
             draft_path=str(draft_path),
             draft_docx_path=str(draft_docx_path),

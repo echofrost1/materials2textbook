@@ -53,6 +53,11 @@ def main() -> None:
         help="Only include segments whose review_status contains approved.",
     )
     parser.add_argument(
+        "--include-rejected",
+        action="store_true",
+        help="Include rejected segments. Default excludes rejected segments even in draft mode.",
+    )
+    parser.add_argument(
         "--min-teaching-value",
         type=float,
         default=0.0,
@@ -89,6 +94,7 @@ def main() -> None:
     workflow = TextbookWorkflow(llm_provider=llm_provider, use_llm=args.use_llm)
     config = WorkflowConfig(
         include_pending=not args.approved_only,
+        include_rejected=args.include_rejected,
         min_teaching_value=args.min_teaching_value,
         max_chunks_per_knowledge_point=args.max_chunks_per_knowledge_point,
     )
@@ -97,6 +103,7 @@ def main() -> None:
     print(f"- outline: {outputs.outline_path}")
     print(f"- outline_markdown: {outputs.outline_markdown_path}")
     print(f"- evidence_chunks: {outputs.evidence_chunks_path}")
+    print(f"- evidence_index: {outputs.evidence_markdown_path}")
     print(f"- chapter_plan: {outputs.chapter_plan_path}")
     print(f"- draft: {outputs.draft_path}")
     print(f"- draft_docx: {outputs.draft_docx_path}")

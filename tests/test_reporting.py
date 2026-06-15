@@ -1,5 +1,5 @@
-from materials2textbook.schemas import ReviewIssue, ReviewReport, WorkflowSummary
-from materials2textbook.workflow.reporting import render_review_markdown
+from materials2textbook.schemas import EvidenceChunk, EvidenceLocator, EvidenceScore, ReviewIssue, ReviewReport, WorkflowSummary
+from materials2textbook.workflow.reporting import render_evidence_markdown, render_review_markdown
 
 
 def test_render_review_markdown_contains_summary_and_issues() -> None:
@@ -32,3 +32,30 @@ def test_render_review_markdown_contains_summary_and_issues() -> None:
     )
     assert "# 样章 审核报告" in markdown
     assert "证据片段待复核" in markdown
+
+
+def test_render_evidence_markdown_contains_traceability() -> None:
+    markdown = render_evidence_markdown(
+        [
+            EvidenceChunk(
+                chunk_id="C1",
+                asset_id="A1",
+                title="送丝",
+                content="证据",
+                summary="送丝摘要",
+                keywords=["送丝"],
+                subject="焊接技术",
+                material_block="钨极氩弧焊",
+                material_block_code="tig_welding",
+                recommended_chapter="基本操作",
+                locator=EvidenceLocator(original_path="raw/demo.mp4", keyframe_paths=["frame.jpg"]),
+                score=EvidenceScore(teaching_value=0.8),
+                review_status="approved",
+                metadata={"source_video": "demo.mp4", "start_time": "00:00:01", "end_time": "00:00:03"},
+            )
+        ],
+        "样章",
+    )
+    assert "# 样章 证据索引" in markdown
+    assert "C1" in markdown
+    assert "raw/demo.mp4" in markdown

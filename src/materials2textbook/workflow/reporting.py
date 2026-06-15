@@ -80,3 +80,42 @@ def render_review_markdown(reports: list[ReviewReport], summary: WorkflowSummary
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def render_evidence_markdown(chunks: list[EvidenceChunk], title: str) -> str:
+    lines = [f"# {title} 证据索引", ""]
+    if not chunks:
+        lines.append("> 当前没有进入编排的证据片段。")
+        return "\n".join(lines).rstrip() + "\n"
+
+    grouped: dict[str, dict[str, list[EvidenceChunk]]] = {}
+    for chunk in chunks:
+        chapter = chunk.recommended_chapter or "待规划章节"
+        point = chunk.title or "未命名知识点"
+        grouped.setdefault(chapter, {}).setdefault(point, []).append(chunk)
+
+    for chapter_title, points in grouped.items():
+        lines.extend([f"## {chapter_title}", ""])
+        for point_title, point_chunks in points.items():
+            lines.extend([f"### {point_title}", ""])
+            for chunk in point_chunks:
+                source = chunk.metadata.get("source_video", "") or chunk.locator.original_path or chunk.locator.path
+                start = chunk.metadata.get("start_time", "")
+                end = chunk.metadata.get("end_time", "")
+                keyframes = ", ".join(chunk.locator.keyframe_paths) if chunk.locator.keyframe_paths else "无"
+                lines.extend(
+                    [
+                        f"#### {chunk.chunk_id}",
+                        "",
+                        f"- 素材：{source}",
+                        f"- 时间码：{start} - {end}",
+                        f"- 原始路径：{chunk.locator.original_path or '无'}",
+                        f"- 片段状态：{chunk.review_status or 'unknown'}",
+                        f"- 教学价值评分：{chunk.score.teaching_value}",
+                        f"- 关键帧：{keyframes}",
+                        f"- 摘要：{chunk.summary or '无'}",
+                        "",
+                    ]
+                )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
