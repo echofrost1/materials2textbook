@@ -79,6 +79,7 @@ textbook_draft.md/docx     教材草稿
 textbook_final.md/docx     带审核修订提示的教材
 review_report.md/json      审核报告
 workflow_summary.json      工作流统计
+artifact_manifest.json     本次运行的输入、输出和摘要
 ```
 
 校验脚本默认输出到：

@@ -157,6 +157,7 @@ chapter_plan.json
 textbook_draft.md/docx
 review_report.md/json
 workflow_summary.json
+artifact_manifest.json
 textbook_final.md/docx
 ```
 
@@ -169,6 +170,7 @@ textbook_final.md/docx
 - `textbook_draft.md/docx`：教材草稿。
 - `review_report.md/json`：审核报告。
 - `workflow_summary.json`：工作流统计。
+- `artifact_manifest.json`：记录本次运行的输入、输出路径和摘要指标，便于交付追溯。
 - `textbook_final.md/docx`：带审核修订提示的最终草稿。
 
 ---

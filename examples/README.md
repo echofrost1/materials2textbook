@@ -18,6 +18,7 @@ chapter_plan.json
 textbook_draft.md/docx
 review_report.md/json
 workflow_summary.json
+artifact_manifest.json
 textbook_final.md/docx
 ```
 

@@ -112,6 +112,7 @@ class WorkflowOutputs:
     summary_path: str
     final_path: str
     final_docx_path: str
+    manifest_path: str
 
 
 @dataclass

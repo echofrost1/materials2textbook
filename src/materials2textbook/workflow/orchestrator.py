@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from materials2textbook.agents.knowledge_organizer import KnowledgeOrganizerAgent
@@ -81,6 +82,7 @@ class TextbookWorkflow:
         summary_path = output_dir / "workflow_summary.json"
         final_path = output_dir / "textbook_final.md"
         final_docx_path = output_dir / "textbook_final.docx"
+        manifest_path = output_dir / "artifact_manifest.json"
 
         write_json(outline_path, outlines)
         write_text(outline_markdown_path, outline_markdown)
@@ -95,6 +97,40 @@ class TextbookWorkflow:
         markdown_to_docx(draft, draft_docx_path)
         markdown_to_docx(final, final_docx_path)
 
+        manifest = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "title": title,
+            "input": {
+                "video_segments_path": _portable_path(video_segments_path),
+                "source_records": len(records),
+            },
+            "summary": {
+                "evidence_chunks": summary.evidence_chunks,
+                "skipped_chunks": summary.skipped_chunks,
+                "chapters": summary.chapters,
+                "knowledge_points": summary.knowledge_points,
+                "fact_issue_count": summary.fact_issue_count,
+                "pedagogy_issue_count": summary.pedagogy_issue_count,
+                "review_status_counts": summary.review_status_counts,
+                "material_block_counts": summary.material_block_counts,
+            },
+            "outputs": {
+                "outline_json": _portable_path(outline_path),
+                "outline_markdown": _portable_path(outline_markdown_path),
+                "evidence_chunks": _portable_path(evidence_chunks_path),
+                "evidence_index": _portable_path(evidence_markdown_path),
+                "chapter_plan": _portable_path(chapter_plan_path),
+                "draft_markdown": _portable_path(draft_path),
+                "draft_docx": _portable_path(draft_docx_path),
+                "review_report_json": _portable_path(review_report_path),
+                "review_report_markdown": _portable_path(review_markdown_path),
+                "workflow_summary": _portable_path(summary_path),
+                "final_markdown": _portable_path(final_path),
+                "final_docx": _portable_path(final_docx_path),
+            },
+        }
+        write_json(manifest_path, manifest)
+
         return WorkflowOutputs(
             outline_path=str(outline_path),
             outline_markdown_path=str(outline_markdown_path),
@@ -108,4 +144,13 @@ class TextbookWorkflow:
             summary_path=str(summary_path),
             final_path=str(final_path),
             final_docx_path=str(final_docx_path),
+            manifest_path=str(manifest_path),
         )
+
+
+def _portable_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return str(resolved)

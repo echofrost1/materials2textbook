@@ -112,6 +112,7 @@ def main() -> None:
     print(f"- summary: {outputs.summary_path}")
     print(f"- final: {outputs.final_path}")
     print(f"- final_docx: {outputs.final_docx_path}")
+    print(f"- manifest: {outputs.manifest_path}")
 
 
 if __name__ == "__main__":
