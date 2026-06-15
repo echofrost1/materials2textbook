@@ -1,0 +1,13 @@
+work_material1/00_raw_client_materials/
+
+**/__pycache__/
+*.pyc
+
+.extensions.txt
+.git_compare.txt
+.git_log.txt
+.git_log_after.txt
+.git_status.txt
+.remote_commit.txt
+.new_branch_status.txt
+.new_branch_status2.txt
