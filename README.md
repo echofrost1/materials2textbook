@@ -33,7 +33,7 @@ python scripts/validate_video_segments.py
 python scripts/run_agent_workflow.py --approved-only
 ```
 
-使用 OpenAI-compatible 的 `ecnu-plus` 生成教材正文：
+使用 OpenAI-compatible 的 `ecnu-plus` 生成教材正文并执行审核后修订：
 
 ```powershell
 copy .env.example .env
@@ -126,7 +126,7 @@ materials2textbook/
 - 生成结构化审核报告和人工可读 Markdown 审核报告。
 - 支持草稿模式使用 `Pending_Manual_Timecode` 片段。
 - 支持 `--approved-only` 正式模式。
-- 预留 OpenAI-compatible LLM 接口，可接入 `ecnu-plus` 生成教材正文。
+- 预留 OpenAI-compatible LLM 接口，可接入 `ecnu-plus` 生成教材正文并执行审核后修订。
 
 ## 后续方向
 

@@ -27,7 +27,7 @@ class TextbookWorkflow:
         self.evidence_reviewer = EvidenceReviewerAgent()
         self.pedagogy_reviewer = PedagogyReviewerAgent()
         self.review_composer = ReviewComposer()
-        self.revision = RevisionAgent()
+        self.revision = RevisionAgent(llm_provider=llm_provider, use_llm=use_llm)
 
     def run(
         self,
