@@ -1,0 +1,13 @@
+{
+  "batch_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\shielded_metal_arc_welding_video_segments_20260616_175526.jsonl",
+  "batch_type": "video",
+  "input_rows": 12,
+  "reviewed_rows_written": 12,
+  "keep_only": true,
+  "decision_counts": {
+    "keep": 12
+  },
+  "reviewed_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\shielded_metal_arc_welding_video_segments_20260616_175526_keep_reviewed.jsonl",
+  "reviewed_xlsx": "work_materials\\work_material1\\01_manifest_inventory\\batches\\shielded_metal_arc_welding_video_segments_20260616_175526_keep_reviewed.xlsx",
+  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\shielded_metal_arc_welding_video_segments_20260616_175526_keep_review.xlsx"
+}
