@@ -212,6 +212,8 @@ shielded_metal_arc_welding_video_segments_20260616_201511_keep_reviewed.jsonl
 shielded_metal_arc_welding_ppt_assets_20260616_201511_keep_reviewed.jsonl
 welding_equipment_safety_video_segments_20260616_203638_keep_reviewed.jsonl
 welding_equipment_safety_ppt_assets_20260616_203638_keep_reviewed.jsonl
+welding_basic_operation_video_segments_20260616_205015_keep_reviewed.jsonl
+welding_basic_operation_ppt_assets_20260616_205015_keep_reviewed.jsonl
 ```
 
 结果：
@@ -234,18 +236,27 @@ batch 20260616_203638:
   PPT keep: 31 / 106
   PPT needs_review: 71
   PPT reject: 4
+
+batch 20260616_205015:
+  target block: welding_basic_operation
+  video keep: 14 / 14
+  PPT keep: 2 / 17
+  PPT needs_review: 11
+  PPT reject: 4
 ```
 
 当前主结果：
 
 ```text
-video_segments.jsonl: 80 rows
+video_segments.jsonl: 94 rows
   tig_welding: 40
   shielded_metal_arc_welding: 30
   welding_equipment_safety: 10
+  welding_basic_operation: 14
 
-ppt_assets.jsonl: 807 rows
+ppt_assets.jsonl: 809 rows
   tig_welding: 415
   shielded_metal_arc_welding: 361
   welding_equipment_safety: 31
+  welding_basic_operation: 2
 ```

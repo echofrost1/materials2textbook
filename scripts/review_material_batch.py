@@ -352,12 +352,14 @@ def review_ppt(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     return reviewed, report
 
 
-def output_paths(batch_path: Path, output_prefix: str) -> tuple[Path, Path, Path, Path]:
+def output_paths(batch_path: Path, output_prefix: str, keep_only: bool) -> tuple[Path, Path, Path, Path]:
     prefix = output_prefix or batch_path.stem
-    reviewed_jsonl = batch_path.with_name(f"{prefix}_reviewed.jsonl")
-    reviewed_xlsx = BATCH_XLSX_DIR / f"{prefix}_reviewed.xlsx"
-    report_xlsx = REVIEW_DIR / f"{prefix}_review.xlsx"
-    summary_json = REVIEW_DIR / f"{prefix}_review_summary.json"
+    suffix = "keep_reviewed" if keep_only else "reviewed"
+    report_suffix = "keep_review" if keep_only else "review"
+    reviewed_jsonl = batch_path.with_name(f"{prefix}_{suffix}.jsonl")
+    reviewed_xlsx = BATCH_XLSX_DIR / f"{prefix}_{suffix}.xlsx"
+    report_xlsx = REVIEW_DIR / f"{prefix}_{report_suffix}.xlsx"
+    summary_json = REVIEW_DIR / f"{prefix}_{report_suffix}_summary.json"
     return reviewed_jsonl, reviewed_xlsx, report_xlsx, summary_json
 
 
@@ -383,7 +385,7 @@ def main() -> int:
         report_rows.append(report)
 
     output_rows = [row for row in reviewed_rows if row.get("auto_review_decision") == "keep"] if args.keep_only else reviewed_rows
-    reviewed_jsonl, reviewed_xlsx, report_xlsx, summary_json = output_paths(batch_path, args.output_prefix)
+    reviewed_jsonl, reviewed_xlsx, report_xlsx, summary_json = output_paths(batch_path, args.output_prefix, args.keep_only)
     write_jsonl(reviewed_jsonl, output_rows)
     reviewed_xlsx_path = write_excel_with_fallback(pd.DataFrame(output_rows), reviewed_xlsx)
     report_xlsx_path = write_excel_with_fallback(pd.DataFrame(report_rows), report_xlsx)
