@@ -1,11 +1,15 @@
+# Raw client materials and generated deliverables
 work_material1/00_raw_client_materials/
 work_material1/05_final_deliverables/agent_workflow/
 work_material1/05_final_deliverables/validation/
 .env
+work_materials/work_material1/00_raw_client_materials/
 
+# Python cache
 **/__pycache__/
 *.pyc
 
+# Temporary generated files (kept outside src/)
 .extensions.txt
 .git_compare.txt
 .git_log.txt
