@@ -25,9 +25,15 @@ class TitlePolisherAgent:
     def _polish_plan(self, plan: ChapterPlan, chunk_map: dict[str, EvidenceChunk]) -> ChapterPlan:
         plan_chunks = [chunk_map[chunk_id] for chunk_id in plan.evidence_chunk_ids if chunk_id in chunk_map]
         chapter_title = _polish_chapter_title(plan.title, plan_chunks, self.GENERIC_CHAPTER_TITLES)
-        points = [self._polish_point(point) for point in plan.knowledge_points]
+        points = _merge_duplicate_points([self._polish_point(point) for point in plan.knowledge_points], chapter_title)
         learning_goals = [_rewrite_goal_title(goal, plan.title, chapter_title) for goal in plan.learning_goals]
-        return replace(plan, title=chapter_title, learning_goals=learning_goals, knowledge_points=points)
+        return replace(
+            plan,
+            title=chapter_title,
+            learning_goals=learning_goals,
+            knowledge_points=points,
+            learning_path=[point.knowledge_point_id for point in points],
+        )
 
     def _polish_point(self, point: KnowledgePoint) -> KnowledgePoint:
         title = _normalize_title(point.title)
@@ -115,3 +121,81 @@ def _infer_topic_difficulty(title: str, chunks: list[EvidenceChunk]) -> str:
     if any(term in text for term in ("操作", "引弧", "送丝", "收弧", "焊接", "检查")):
         return "practice"
     return "basic"
+
+
+def _merge_duplicate_points(points: list[KnowledgePoint], chapter_title: str) -> list[KnowledgePoint]:
+    merged: list[KnowledgePoint] = []
+    index_by_key: dict[str, int] = {}
+    for point in points:
+        key = _dedupe_key(point.title, chapter_title)
+        if key not in index_by_key:
+            index_by_key[key] = len(merged)
+            merged.append(point)
+            continue
+
+        existing = merged[index_by_key[key]]
+        title = _prefer_specific_title(existing.title, point.title, chapter_title)
+        chunk_ids = _dedupe_list(existing.chunk_ids + point.chunk_ids)
+        summary = existing.summary or point.summary
+        difficulty = _higher_difficulty(existing.difficulty_level, point.difficulty_level)
+        prerequisites = _dedupe_list(existing.prerequisite_ids + point.prerequisite_ids)
+        cluster_id = existing.cluster_id or point.cluster_id
+        merged[index_by_key[key]] = replace(
+            existing,
+            title=title,
+            chunk_ids=chunk_ids,
+            summary=summary,
+            difficulty_level=difficulty,
+            prerequisite_ids=prerequisites,
+            cluster_id=cluster_id,
+        )
+
+    remapped = []
+    valid_ids = {point.knowledge_point_id for point in merged}
+    for order, point in enumerate(merged, start=1):
+        prerequisites = [point_id for point_id in point.prerequisite_ids if point_id in valid_ids and point_id != point.knowledge_point_id]
+        remapped.append(replace(point, order_index=order, prerequisite_ids=prerequisites))
+    return remapped
+
+
+def _dedupe_key(title: str, chapter_title: str) -> str:
+    key = _normalize_title(title)
+    prefixes = [
+        chapter_title,
+        chapter_title.replace("基本操作", ""),
+        "钨极氩弧焊",
+        "手工钨极氩弧焊",
+    ]
+    for prefix in sorted({item for item in prefixes if item}, key=len, reverse=True):
+        if key.startswith(prefix) and len(key) > len(prefix) + 1:
+            key = key[len(prefix):]
+    for suffix in ("操作要点", "应用分析", "认知"):
+        if key.endswith(suffix) and len(key) > len(suffix):
+            key = key[: -len(suffix)]
+    return key.strip() or _normalize_title(title)
+
+
+def _prefer_specific_title(left: str, right: str, chapter_title: str) -> str:
+    left_score = _specificity_score(left, chapter_title)
+    right_score = _specificity_score(right, chapter_title)
+    return right if right_score > left_score else left
+
+
+def _specificity_score(title: str, chapter_title: str) -> tuple[int, int]:
+    return (1 if "钨极氩弧焊" in title or chapter_title in title else 0, len(title))
+
+
+def _higher_difficulty(left: str, right: str) -> str:
+    rank = {"basic": 0, "practice": 1, "advanced": 2}
+    return right if rank.get(right, 0) > rank.get(left, 0) else left
+
+
+def _dedupe_list(values: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result

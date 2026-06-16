@@ -39,7 +39,11 @@ def test_activity_designer_generates_tiered_traceable_activities() -> None:
     assert all(activity.evidence_chunk_ids for activity in plan.activity_items)
     assert all(activity.rubric for activity in plan.activity_items)
     assert len(plan.activities) == 3
-    assert "证据：C1" in plan.activities[0]
+    assert "观看示范视频" in plan.activities[0]
+    assert "[基础·观察任务]" in plan.activities[0]
+    assert "basic/observation" not in " ".join(plan.activities)
+    assert "chunk_id" not in " ".join(plan.activities)
+    assert "证据：C1" not in " ".join(plan.activities)
 
 
 def test_activity_designer_keeps_existing_structured_activities() -> None:

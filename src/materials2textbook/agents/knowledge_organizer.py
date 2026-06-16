@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import re
 from statistics import mean
 
 from materials2textbook.schemas import ChapterPlan, EvidenceChunk, KnowledgePoint
@@ -28,8 +29,13 @@ class KnowledgeOrganizerAgent:
             for chunk in chapter_chunks:
                 by_point[chunk.title].append(chunk)
 
+            dominant_block = _dominant_material_block(chapter_chunks)
             point_groups = sorted(
-                by_point.items(),
+                [
+                    (point_title, point_chunks)
+                    for point_title, point_chunks in by_point.items()
+                    if _is_on_topic_point(point_title, point_chunks, chapter_title, dominant_block)
+                ],
                 key=lambda item: (_point_sort_key(item[0], item[1]), item[0]),
             )
             points = [
@@ -60,14 +66,14 @@ class KnowledgeOrganizerAgent:
                     title=chapter_title,
                     learning_goals=[
                         f"理解{chapter_title}的核心概念和适用场景",
-                        f"能够根据素材证据复述{chapter_title}的关键操作或原理",
-                        "能够识别需要人工复核的资料片段",
+                        f"能够复述{chapter_title}的关键操作或原理",
+                        "能够结合示范视频说明操作注意事项和质量要求",
                     ],
                     knowledge_points=points,
                     evidence_chunk_ids=[chunk.chunk_id for chunk in chapter_chunks],
                     activities=[
                         "结合视频片段观察关键动作或现象。",
-                        "根据证据片段回答思考题。",
+                        "根据学习要点回答思考题。",
                     ],
                     learning_path=[point.knowledge_point_id for point in points],
                 )
@@ -163,3 +169,73 @@ def _combined_text(title: str, chunks: list[EvidenceChunk]) -> str:
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term.lower() in text for term in terms)
+
+
+def _dominant_material_block(chunks: list[EvidenceChunk]) -> str:
+    values = [chunk.material_block.strip() for chunk in chunks if chunk.material_block and chunk.material_block.strip()]
+    if not values:
+        return ""
+    return Counter(values).most_common(1)[0][0]
+
+
+def _is_on_topic_point(
+    title: str,
+    chunks: list[EvidenceChunk],
+    chapter_title: str,
+    dominant_material_block: str,
+) -> bool:
+    text = _combined_text(title, chunks)
+    scope_text = f"{chapter_title} {dominant_material_block}"
+    if "钨极氩弧焊" in scope_text and "焊条电弧焊" in text:
+        return False
+    if "氩弧焊" in scope_text and "焊条电弧焊" in text:
+        return False
+    if _looks_like_catalog_point(title, chunks):
+        return False
+    if not _has_teachable_content(title, chunks):
+        return False
+    return True
+
+
+def _looks_like_catalog_point(title: str, chunks: list[EvidenceChunk]) -> bool:
+    text = " ".join([title, *(chunk.content[:120] for chunk in chunks[:2])]).lower()
+    return "contents" in text or "目录" in text
+
+
+def _has_teachable_content(title: str, chunks: list[EvidenceChunk]) -> bool:
+    if any(chunk.source_type in {"video_segment", "video", "audio_segment"} for chunk in chunks):
+        return True
+    for chunk in chunks:
+        if _looks_like_media_placeholder_chunk(chunk):
+            continue
+        text = _clean_teachable_text(" ".join([chunk.summary, chunk.content]))
+        if len(text) >= 32:
+            return True
+        title_terms = _clean_teachable_text(title)
+        if len(text) >= 16 and title_terms and title_terms not in text:
+            return True
+    return False
+
+
+def _looks_like_media_placeholder_chunk(chunk: EvidenceChunk) -> bool:
+    raw = " ".join(str(part or "") for part in (chunk.summary, chunk.content))
+    has_media_name = bool(re.search(r"\.(?:mp4|flv|mp3|wav)\b", raw, flags=re.IGNORECASE))
+    has_course_shell = any(term in raw for term in ("学习单元", "课程", "焊接基础知识", "焊接方法的分类"))
+    return has_media_name and has_course_shell
+
+
+def _clean_teachable_text(text: str) -> str:
+    normalized = " ".join(str(text or "").split())
+    normalized = re.sub(r"[\w\u4e00-\u9fff（）()、.-]+\s*\.\s*(?:mp4|flv|mp3|wav|pptx|ppt|jsonl|docx?)", "", normalized, flags=re.IGNORECASE)
+    noise_terms = (
+        "学习单元",
+        "课程",
+        "焊接方法的分类及常用的焊接方法",
+        "焊接基础知识",
+        "contents",
+        "目录",
+    )
+    for term in noise_terms:
+        normalized = normalized.replace(term, "")
+    normalized = re.sub(r"[\s\d.、:：一二三四五六七八九十-]+", "", normalized)
+    return normalized

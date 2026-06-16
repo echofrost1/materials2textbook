@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from materials2textbook.schemas import DigitalBook, DigitalBookBlock, ReviewIssue
 
@@ -29,6 +30,7 @@ class DigitalBookReviewerAgent:
             return issues
 
         for project in book.projects:
+            issues.extend(self._review_project_student_text(project.project_id, project.project_intro, project.ability_map + project.learning_goals))
             if not project.learning_goals:
                 issues.append(
                     ReviewIssue("medium", project.project_id, "项目缺少学习目标。", "为项目补充可评价的学习目标。")
@@ -43,6 +45,7 @@ class DigitalBookReviewerAgent:
 
             for task in project.tasks:
                 block_types = {block.type for block in task.blocks}
+                issues.extend(self._review_task_video_duplicates(task.task_id, task.blocks))
                 for required_type, message in self.REQUIRED_BLOCK_TYPES.items():
                     if required_type not in block_types:
                         issues.append(
@@ -82,8 +85,12 @@ class DigitalBookReviewerAgent:
         issues: list[ReviewIssue] = []
         if block.type in {"scenario", "implementation"} and not block.markdown.strip():
             issues.append(ReviewIssue("medium", block.block_id, f"{block.title} 缺少正文。", "补充可阅读的 Markdown 正文。"))
+        if block.type in {"scenario", "implementation", "case_example"}:
+            issues.extend(self._review_student_markdown(block))
         if block.type in {"learning_nav", "assessment", "exercises"} and not block.items:
             issues.append(ReviewIssue("medium", block.block_id, f"{block.title} 缺少条目。", "补充列表条目。"))
+        if block.items:
+            issues.extend(self._review_student_items(block))
         if block.type == "video":
             if not block.src:
                 issues.append(ReviewIssue("high", block.block_id, "视频块缺少 src。", "绑定可播放的 mp4 视频资源。"))
@@ -105,6 +112,86 @@ class DigitalBookReviewerAgent:
                     ReviewIssue("high", chunk_id, "内容块引用了不存在的证据片段。", "修正证据引用或补齐证据库。")
                 )
         return issues
+
+    def _review_project_student_text(self, project_id: str, intro: str, items: list[str]) -> list[ReviewIssue]:
+        issues: list[ReviewIssue] = []
+        combined = "\n".join([intro, *items])
+        forbidden = _student_forbidden_terms(combined)
+        if forbidden:
+            issues.append(
+                ReviewIssue(
+                    "high",
+                    project_id,
+                    "项目导学信息包含内部证据或素材处理痕迹。",
+                    f"改写项目简介、学习目标或能力图谱，移除：{', '.join(forbidden[:5])}。",
+                )
+            )
+        return issues
+
+    def _review_task_video_duplicates(self, task_id: str, blocks: list[DigitalBookBlock]) -> list[ReviewIssue]:
+        video_sources = [block.src for block in blocks if block.type == "video" and block.src]
+        duplicate_sources = sorted({src for src in video_sources if video_sources.count(src) > 1})
+        if not duplicate_sources:
+            return []
+        return [
+            ReviewIssue(
+                "medium",
+                task_id,
+                "同一任务中存在重复视频资源。",
+                f"按知识点去重或减少重复展示：{', '.join(duplicate_sources[:3])}。",
+            )
+        ]
+
+    def _review_student_markdown(self, block: DigitalBookBlock) -> list[ReviewIssue]:
+        issues: list[ReviewIssue] = []
+        markdown = block.markdown.strip()
+        if not markdown:
+            return issues
+        forbidden = _student_forbidden_terms(markdown)
+        if forbidden:
+            issues.append(
+                ReviewIssue(
+                    "high",
+                    block.block_id,
+                    "学生端正文包含内部证据或素材处理痕迹。",
+                    f"从学生正文移除这些内容，仅保留教师侧 metadata 追溯：{', '.join(forbidden[:5])}。",
+                )
+            )
+        if block.type == "implementation":
+            plain = re.sub(r"[#>*_\-\d.、：:\s]", "", markdown)
+            if len(plain) < 24:
+                issues.append(
+                    ReviewIssue(
+                        "medium",
+                        block.block_id,
+                        "知识点正文过短，难以支撑学生自学。",
+                        "补充概念说明、操作要点、注意事项或配套视频观察提示。",
+                    )
+                )
+            if "围绕“" in markdown and "观察示范视频" in markdown and len(plain) < 60:
+                issues.append(
+                    ReviewIssue(
+                        "low",
+                        block.block_id,
+                        "知识点正文主要是泛化占位提示。",
+                        "优先从文档片段或 LLM 润色结果补入本知识点的具体内容。",
+                    )
+                )
+        return issues
+
+    def _review_student_items(self, block: DigitalBookBlock) -> list[ReviewIssue]:
+        combined = "\n".join(block.items)
+        forbidden = _student_forbidden_terms(combined)
+        if not forbidden:
+            return []
+        return [
+            ReviewIssue(
+                "high",
+                block.block_id,
+                "学生端列表条目包含内部证据或素材处理痕迹。",
+                f"改写列表条目，移除：{', '.join(forbidden[:5])}。",
+            )
+        ]
 
 
 def render_digital_book_review_markdown(title: str, issues: list[ReviewIssue]) -> str:
@@ -128,3 +215,34 @@ def render_digital_book_review_markdown(title: str, issues: list[ReviewIssue]) -
             lines.append(f"- [{issue.severity}] `{issue.location}` {issue.message}")
             lines.append(f"  建议：{issue.suggestion}")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _student_forbidden_terms(text: str) -> list[str]:
+    terms = [
+        "chunk_id",
+        "证据：",
+        "来源：",
+        "review_status",
+        "Pending_",
+        "待人工",
+        "人工复核",
+        "时间码",
+        "kp_",
+        "agent",
+        "PPT_",
+        "C000",
+        "证据编号",
+        "证据定位",
+        "素材处理",
+        "处理的教学素材",
+    ]
+    hits = [term for term in terms if term.lower() in text.lower()]
+    if re.search(r"\.(?:mp4|flv|mp3|wav|pptx|ppt|jsonl|docx?)\b", text, flags=re.IGNORECASE):
+        hits.append("素材文件名")
+    if re.search(r"`?[A-Za-z]{1,5}[_-]?\d{3,}[A-Za-z0-9_-]*`?", text):
+        hits.append("内部编号")
+    if re.search(r"(?:难度|层级)\s*[：:]\s*(?:basic|practice|advanced)\b", text, flags=re.IGNORECASE):
+        hits.append("内部难度枚举")
+    if re.search(r"\b(?:basic|practice|advanced)/(?:observation|explanation|analysis)\b", text, flags=re.IGNORECASE):
+        hits.append("内部活动枚举")
+    return hits

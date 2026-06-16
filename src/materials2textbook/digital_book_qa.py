@@ -79,7 +79,7 @@ def answer_digital_book_question(
     if not sources:
         return BookAnswer(
             question=question,
-            answer="未在当前数字教材中找到直接相关内容。请换一个知识点、操作词或证据编号再问。",
+            answer="未在当前数字教材中找到直接相关内容。请换一个知识点、操作词或学习问题再问。",
             sources=[],
             used_llm=False,
         )
@@ -87,7 +87,7 @@ def answer_digital_book_question(
         messages = build_book_qa_messages(question, sources)
         return BookAnswer(
             question=question,
-            answer=llm_provider.generate(messages).strip(),
+            answer=_sanitize_student_answer(llm_provider.generate(messages).strip()),
             sources=sources,
             used_llm=True,
         )
@@ -104,7 +104,7 @@ def answer_digital_book_payload(payload: dict[str, Any], *, llm_provider: LLMPro
         return {"answer": "No textbook source fragments were provided.", "citations": [], "used_llm": False}
 
     if llm_provider is not None:
-        answer = llm_provider.generate(build_book_qa_messages(question, sources)).strip()
+        answer = _sanitize_student_answer(llm_provider.generate(build_book_qa_messages(question, sources)).strip())
         used_llm = True
     else:
         answer = _render_local_answer(question, sources)
@@ -121,7 +121,6 @@ def build_book_qa_messages(question: str, sources: list[BookSearchResult]) -> li
                 [
                     f"[{index}] {source.project_title} / {source.task_title} / {source.block_title}",
                     f"type: {source.block_type}",
-                    f"evidence_chunk_ids: {', '.join(source.evidence_chunk_ids) or '无'}",
                     f"text: {source.text}",
                 ]
             )
@@ -131,7 +130,7 @@ def build_book_qa_messages(question: str, sources: list[BookSearchResult]) -> li
             "role": "system",
             "content": (
                 "你是数字教材问书助手。只能依据给定教材片段回答，不得补充片段之外的事实。"
-                "回答要简洁，并保留相关 evidence_chunk_ids 或说明未提供证据编号。"
+                "回答要简洁、面向学生，不要输出 chunk_id、证据编号、文件名、来源路径或素材审核状态。"
             ),
         },
         {
@@ -156,18 +155,119 @@ def render_book_answer_markdown(answer: BookAnswer) -> str:
     ]
     if not answer.sources:
         lines.append("- 暂无匹配来源。")
-    for source in answer.sources:
-        evidence = ", ".join(source.evidence_chunk_ids) or "无"
-        lines.append(f"- `{source.block_id}` {source.project_title} / {source.task_title} / {source.block_title}；证据：{evidence}")
+    for source in _prefer_student_answer_sources(answer.sources, _query_terms(answer.question))[:3]:
+        lines.append(f"- {source.project_title} / {source.task_title} / {source.block_title}")
     return "\n".join(lines).rstrip() + "\n"
 
 
 def _render_local_answer(question: str, sources: list[BookSearchResult]) -> str:
     lines = [f"围绕“{question}”，当前教材中最相关的内容如下："]
-    for index, source in enumerate(sources[:3], start=1):
-        evidence = ", ".join(source.evidence_chunk_ids) or "未提供证据编号"
-        lines.append(f"{index}. {source.block_title}：{source.text}（证据：{evidence}）")
+    terms = _query_terms(question)
+    display_sources = _prefer_student_answer_sources(sources, terms)
+    for index, source in enumerate(display_sources[:3], start=1):
+        excerpt = _student_answer_excerpt(source.text, terms)
+        lines.append(f"{index}. {source.block_title}：{excerpt}")
     return "\n".join(lines)
+
+
+def _prefer_student_answer_sources(sources: list[BookSearchResult], terms: list[str]) -> list[BookSearchResult]:
+    preferred = [
+        source
+        for source in sources
+        if source.block_type not in {"learning_nav", "assessment", "exercises"}
+    ]
+    candidates = preferred or sources
+    focus_terms = _focus_terms(terms)
+    if focus_terms:
+        focused = [
+            source
+            for source in candidates
+            if any(term in f"{source.block_title} {source.text}".lower() for term in focus_terms)
+        ]
+        if focused:
+            return focused
+    return candidates
+
+
+def _focus_terms(terms: list[str]) -> list[str]:
+    generic = {
+        "操作",
+        "注意",
+        "什么",
+        "怎么",
+        "如何",
+        "要点",
+        "说明",
+        "相关",
+        "学习",
+        "知识",
+        "任务",
+        "操作要",
+        "作要",
+        "要注",
+        "注意什",
+        "意什",
+        "要注意",
+        "注意什么",
+    }
+    return [term for term in terms if len(term) >= 2 and term not in generic]
+
+
+def _student_answer_excerpt(text: str, terms: list[str], max_length: int = 180) -> str:
+    cleaned = _sanitize_student_answer(text)
+    cleaned = re.sub(r"[*_#>`]+", "", cleaned)
+    cleaned = re.sub(r"\b\d+[.、]\s*", "。", cleaned)
+    cleaned = cleaned.replace("概念说明：", "。").replace("操作步骤：", "。").replace("注意事项：", "。").replace("常见问题：", "。")
+    sentences = [
+        sentence.strip(" ：:。；;-")
+        for sentence in re.split(r"[。；;]\s*", cleaned)
+        if sentence.strip(" ：:。；;-")
+    ]
+    if not sentences:
+        return cleaned[:max_length].rstrip() + ("..." if len(cleaned) > max_length else "")
+    scored = sorted(
+        enumerate(sentences),
+        key=lambda item: (-_score_match(item[1].lower(), terms), item[0]),
+    )
+    selected = [sentence for _index, sentence in scored[:2] if sentence]
+    excerpt = "；".join(selected) if selected else sentences[0]
+    if len(excerpt) > max_length:
+        excerpt = excerpt[: max_length - 3].rstrip() + "..."
+    return excerpt
+
+
+def _sanitize_student_answer(text: str) -> str:
+    cleaned_lines = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            if cleaned_lines and cleaned_lines[-1]:
+                cleaned_lines.append("")
+            continue
+        if _contains_internal_trace(line):
+            line = _remove_internal_trace(line)
+        if line.strip():
+            cleaned_lines.append(line.strip())
+    cleaned = "\n".join(cleaned_lines).strip()
+    return cleaned or "已找到相关教材内容，请结合对应知识点继续阅读。"
+
+
+def _contains_internal_trace(text: str) -> bool:
+    forbidden = ("chunk_id", "证据：", "证据编号", "来源：", "Pending_", "待人工", "人工复核", "时间码", "PPT_")
+    normalized = text.lower()
+    return any(term.lower() in normalized for term in forbidden) or bool(
+        re.search(r"`?[A-Za-z]{1,5}[_-]?\d{3,}[A-Za-z0-9_-]*`?", text)
+    )
+
+
+def _remove_internal_trace(text: str) -> str:
+    cleaned = re.sub(r"证据\s*[：:]\s*`?[A-Za-z]{1,5}[_-]?\d{3,}[A-Za-z0-9_-]*`?", "", text)
+    cleaned = re.sub(r"chunk_id\s*[：:]\s*`?[A-Za-z]{1,5}[_-]?\d{3,}[A-Za-z0-9_-]*`?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"`?[A-Za-z]{1,5}[_-]?\d{3,}[A-Za-z0-9_-]*`?", "", cleaned)
+    cleaned = re.sub(r"\.(?:mp4|flv|mp3|wav|pptx|ppt|jsonl|docx?)\b", "", cleaned, flags=re.IGNORECASE)
+    for term in ("来源：", "证据编号", "Pending_", "待人工", "人工复核", "时间码", "PPT_"):
+        cleaned = cleaned.replace(term, "")
+    return " ".join(cleaned.split())
 
 
 def _block_text(block: dict[str, Any]) -> str:

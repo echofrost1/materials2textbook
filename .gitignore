@@ -21,3 +21,6 @@ work_materials/work_material1/05_final_deliverables_*/
 .remote_commit.txt
 .new_branch_status.txt
 .new_branch_status2.txt
+
+# Generated student package (too large for normal GitHub blobs)
+digital_book.zip

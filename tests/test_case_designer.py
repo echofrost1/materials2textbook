@@ -37,12 +37,43 @@ def test_case_designer_creates_evidence_grounded_case_examples() -> None:
 
     assert len(enriched.case_examples) == 1
     example = enriched.case_examples[0]
-    assert example.title == "送丝证据分析示例"
+    assert example.title == "送丝课堂应用示例"
     assert example.evidence_chunk_ids == ["C2"]
     assert "新手学生" in example.prompt
-    assert "迁移" in example.prompt
-    assert "待复核" in example.reference_answer
-    assert "C2" in example.reference_answer
+    assert "同类现场任务" in example.prompt
+    assert "迁移" in example.reference_answer
+    assert "示范视频" in example.reference_answer
+    assert "C2" not in example.reference_answer
+    assert "chunk_id" not in example.reference_answer
+    assert "Pending" not in example.reference_answer
+    assert "教师应" not in example.reference_answer
+    assert "结合课堂示范" in example.reference_answer
+
+
+def test_case_designer_hides_internal_review_text_from_student_case() -> None:
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="基本操作",
+        learning_goals=["理解基本操作"],
+        knowledge_points=[
+            KnowledgePoint("kp_01", "送丝", ["C1"], difficulty_level="practice", cluster_id="operation"),
+        ],
+        evidence_chunk_ids=["C1"],
+        learning_path=["kp_01"],
+    )
+    chunk = make_chunk("C1", "送丝", "Pending")
+    chunk.summary = "送丝候选片段 1，由处理队列自动生成，待 agent/人工复核。"
+    chunk.content = "第二回饭,採用左手送司法,一座漢师向前移动,送入龙磁。"
+
+    enriched = CaseDesignerAgent().run([plan], [chunk])[0]
+    answer = enriched.case_examples[0].reference_answer
+
+    assert "候选片段" not in answer
+    assert "agent" not in answer
+    assert "人工复核" not in answer
+    assert "教师应" not in answer
+    assert "漢师" not in answer
+    assert "示范视频" in answer
 
 
 def test_case_designer_keeps_existing_examples() -> None:

@@ -73,3 +73,47 @@ def test_knowledge_organizer_uses_explicit_semantic_cluster() -> None:
     )
 
     assert plans[0].knowledge_points[0].cluster_id == "wire_feeding"
+
+
+def test_knowledge_organizer_filters_obvious_off_topic_welding_process() -> None:
+    chunks = [
+        make_chunk("C1", "钨极氩弧焊基本原理"),
+        make_chunk("C2", "送丝操作"),
+        make_chunk("C3", "焊条电弧焊认知"),
+    ]
+
+    plans = KnowledgeOrganizerAgent().run(chunks)
+
+    titles = [point.title for point in plans[0].knowledge_points]
+    assert "钨极氩弧焊基本原理" in titles
+    assert "送丝操作" in titles
+    assert "焊条电弧焊认知" not in titles
+
+
+def test_knowledge_organizer_filters_media_placeholder_slide() -> None:
+    placeholder = make_chunk("C2", "平对接焊接")
+    placeholder.content = (
+        "2.\n"
+        "钨极氩弧焊\n"
+        "钨极氩弧焊的焊接过程\n"
+        "钨极氩弧焊平对接焊接.flv\n"
+        "学习单元\n"
+        "1\n"
+        "焊接方法的分类及常用的焊接方法\n"
+        "课程\n"
+        "2-3\n"
+        "焊接基础知识"
+    )
+    placeholder.summary = ""
+    placeholder.source_type = "ppt_slide"
+
+    plans = KnowledgeOrganizerAgent().run(
+        [
+            make_chunk("C1", "钨极氩弧焊基本原理"),
+            placeholder,
+        ]
+    )
+
+    titles = [point.title for point in plans[0].knowledge_points]
+    assert "钨极氩弧焊基本原理" in titles
+    assert "平对接焊接" not in titles

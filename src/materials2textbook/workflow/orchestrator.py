@@ -162,6 +162,8 @@ class TextbookWorkflow:
             chunks=chunks,
             output_dir=digital_book_dir,
             copy_media_assets=config.copy_media_assets,
+            llm_provider=self.writer.llm_provider,
+            use_llm=self.writer.use_llm,
         )
         digital_book_review = self.digital_book_reviewer.run(
             _digital_book,

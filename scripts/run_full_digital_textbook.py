@@ -16,6 +16,12 @@ from materials2textbook.io_utils import read_jsonl, write_jsonl
 from materials2textbook.llm.cache import CachingLLMProvider
 from materials2textbook.llm.provider import OpenAICompatibleConfig, OpenAICompatibleProvider
 from materials2textbook.llm.retry import RetryingLLMProvider
+from materials2textbook.exporters.digital_book import (
+    smoke_test_student_package_static_assets,
+    smoke_test_student_package_ask,
+    validate_student_digital_book_package,
+    write_student_digital_book_package,
+)
 from materials2textbook.workflow.config import WorkflowConfig
 from materials2textbook.workflow.orchestrator import TextbookWorkflow
 
@@ -126,6 +132,46 @@ def main() -> None:
         action="store_true",
         help="Copy videos/keyframes into digital_book/assets. Default links to the processing workspace to avoid duplicating large media.",
     )
+    parser.add_argument(
+        "--student-package-output",
+        type=Path,
+        default=None,
+        help="Optional output path for a validated student-facing digital_book.zip package.",
+    )
+    parser.add_argument(
+        "--student-package-asset-fallback-zip",
+        type=Path,
+        default=None,
+        help="Optional existing digital_book.zip to reuse assets when --copy-media-assets is not enabled.",
+    )
+    parser.add_argument(
+        "--student-package-ask-smoke-question",
+        default="",
+        help="Optional local ask-book smoke-test question for the generated student package.",
+    )
+    parser.add_argument(
+        "--student-package-ask-smoke-expected",
+        action="append",
+        default=[],
+        help="Expected term for --student-package-ask-smoke-question. Can be passed multiple times.",
+    )
+    parser.add_argument(
+        "--student-package-max-mb",
+        type=float,
+        default=2048.0,
+        help="Maximum allowed student package size in MB. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--student-package-max-asset-files",
+        type=int,
+        default=0,
+        help="Maximum allowed number of packaged media asset files. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--student-package-skip-static-smoke",
+        action="store_true",
+        help="Skip static HTML/JSON/media reference smoke test for the generated student package.",
+    )
     parser.add_argument("--use-llm", action="store_true", help="Use OpenAI-compatible LLM for supported agents.")
     parser.add_argument("--llm-base-url", default=None)
     parser.add_argument("--llm-api-key", default=None)
@@ -216,6 +262,38 @@ def main() -> None:
     print(f"- agent_outputs: {outputs.manifest_path}")
     print(f"- digital_book_json: {outputs.digital_book_path}")
     print(f"- digital_book_index: {outputs.digital_book_index_path}")
+    if args.student_package_output:
+        final_package_path = args.student_package_output
+        staged_package_path = _staged_output_path(final_package_path)
+        staged_package_path.unlink(missing_ok=True)
+        package_path = write_student_digital_book_package(
+            source_dir=Path(outputs.digital_book_dir),
+            output_zip=staged_package_path,
+            asset_fallback_zip=args.student_package_asset_fallback_zip,
+        )
+        package_issues = validate_student_digital_book_package(
+            package_path,
+            max_package_bytes=int(args.student_package_max_mb * 1024 * 1024),
+            max_asset_files=args.student_package_max_asset_files,
+        )
+        if args.student_package_ask_smoke_question:
+            package_issues.extend(
+                smoke_test_student_package_ask(
+                    package_path,
+                    question=args.student_package_ask_smoke_question,
+                    expected_terms=args.student_package_ask_smoke_expected,
+                )
+            )
+        if not args.student_package_skip_static_smoke:
+            package_issues.extend(smoke_test_student_package_static_assets(package_path))
+        if package_issues:
+            for issue in package_issues:
+                print(f"- student_package_issue: {issue}")
+            package_path.unlink(missing_ok=True)
+            raise SystemExit(1)
+        final_package_path.parent.mkdir(parents=True, exist_ok=True)
+        package_path.replace(final_package_path)
+        print(f"- student_package_zip: {final_package_path}")
 
 def filter_records(
     records: list[dict],
@@ -257,6 +335,11 @@ def _record_knowledge_text(record: dict) -> str:
         record.get("section_title"),
     ]
     return " ".join(str(value) for value in values if value)
+
+
+def _staged_output_path(output: Path) -> Path:
+    output = Path(output)
+    return output.with_name(f".{output.name}.tmp")
 
 
 if __name__ == "__main__":
