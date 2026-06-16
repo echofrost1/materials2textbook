@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -20,28 +21,31 @@ def parse_time_to_ms(value: str | None) -> int | None:
 
 
 def split_semicolon_list(value: Any) -> list[str]:
-    if value is None:
+    if _is_missing(value):
         return []
     if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
+        return [_text(item).strip() for item in value if _text(item).strip()]
     return [part.strip() for part in str(value).split(";") if part.strip()]
 
 
 def as_float(value: Any, default: float = 0.0) -> float:
     try:
-        if value == "":
+        if _is_missing(value):
             return default
-        return float(value)
+        number = float(value)
+        if math.isnan(number) or math.isinf(number):
+            return default
+        return number
     except (TypeError, ValueError):
         return default
 
 
 def video_segment_to_evidence_chunk(record: dict[str, Any]) -> EvidenceChunk:
-    clip_id = str(record.get("clip_id") or record.get("segment_id") or "")
-    asset_id = str(record.get("source_asset_id") or record.get("asset_id") or "")
-    knowledge_point = str(record.get("knowledge_point") or clip_id or "未命名片段")
-    evidence_text = str(record.get("evidence_text") or record.get("transcript_text") or "")
-    summary = str(record.get("clip_summary") or "")
+    clip_id = _first_text(record, "clip_id", "segment_id")
+    asset_id = _first_text(record, "source_asset_id", "asset_id")
+    knowledge_point = _text(record.get("knowledge_point")) or clip_id or "未命名片段"
+    evidence_text = _text(record.get("evidence_text") or record.get("transcript_text"))
+    summary = _text(record.get("clip_summary"))
     tags = split_semicolon_list(record.get("tags"))
 
     return EvidenceChunk(
@@ -51,15 +55,15 @@ def video_segment_to_evidence_chunk(record: dict[str, Any]) -> EvidenceChunk:
         content=evidence_text,
         summary=summary,
         keywords=tags or [knowledge_point],
-        subject=str(record.get("subject") or ""),
-        material_block=str(record.get("material_block") or ""),
-        material_block_code=str(record.get("material_block_code") or ""),
-        recommended_chapter=str(record.get("recommended_chapter") or "待规划章节"),
+        subject=_text(record.get("subject")),
+        material_block=_text(record.get("material_block")),
+        material_block_code=_text(record.get("material_block_code")),
+        recommended_chapter=_text(record.get("recommended_chapter")) or "待规划章节",
         locator=EvidenceLocator(
-            path=str(record.get("clip_output_path") or record.get("source_video") or ""),
-            original_path=str(record.get("original_path") or ""),
-            start_ms=parse_time_to_ms(record.get("start_time")),
-            end_ms=parse_time_to_ms(record.get("end_time")),
+            path=_first_text(record, "clip_output_path", "source_video"),
+            original_path=_text(record.get("original_path")),
+            start_ms=parse_time_to_ms(_text(record.get("start_time"))),
+            end_ms=parse_time_to_ms(_text(record.get("end_time"))),
             keyframe_paths=split_semicolon_list(record.get("keyframe_paths")),
         ),
         score=EvidenceScore(
@@ -67,13 +71,31 @@ def video_segment_to_evidence_chunk(record: dict[str, Any]) -> EvidenceChunk:
             teaching_value=as_float(record.get("usefulness_score"), 0.0),
             confidence=as_float(record.get("quality_score"), 0.0),
         ),
-        review_status=str(record.get("review_status") or ""),
+        review_status=_text(record.get("review_status")),
         metadata={
-            "source_video": record.get("source_video", ""),
-            "start_time": record.get("start_time", ""),
-            "end_time": record.get("end_time", ""),
-            "transcript_status": record.get("transcript_status", ""),
-            "boundary_reason": record.get("boundary_reason", ""),
-            "review_comment": record.get("review_comment", ""),
+            "source_video": _text(record.get("source_video")),
+            "start_time": _text(record.get("start_time")),
+            "end_time": _text(record.get("end_time")),
+            "transcript_status": _text(record.get("transcript_status")),
+            "boundary_reason": _text(record.get("boundary_reason")),
+            "review_comment": _text(record.get("review_comment")),
         },
     )
+
+
+def _is_missing(value: Any) -> bool:
+    return value is None or value == "" or (isinstance(value, float) and math.isnan(value))
+
+
+def _text(value: Any) -> str:
+    if _is_missing(value):
+        return ""
+    return str(value)
+
+
+def _first_text(record: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = record.get(key)
+        if not _is_missing(value):
+            return str(value)
+    return ""

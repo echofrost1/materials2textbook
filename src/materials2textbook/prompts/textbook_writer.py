@@ -16,7 +16,11 @@ def build_textbook_writer_messages(
     for plan in plans:
         evidence_blocks.append(f"章：{plan.title}")
         for point in plan.knowledge_points:
-            evidence_blocks.append(f"知识点：{point.title}")
+            prerequisites = ", ".join(point.prerequisite_ids) if point.prerequisite_ids else "无"
+            evidence_blocks.append(
+                f"知识点：{point.order_index}. {point.title}; "
+                f"difficulty={point.difficulty_level}; cluster={point.cluster_id}; prerequisites={prerequisites}"
+            )
             for chunk_id in point.chunk_ids:
                 chunk = chunk_map.get(chunk_id)
                 if not chunk:
@@ -36,6 +40,17 @@ def build_textbook_writer_messages(
                         ]
                     )
                 )
+        for case in plan.case_examples:
+            evidence_blocks.append(
+                "\n".join(
+                    [
+                        f"案例示例：{case.title}",
+                        f"  prompt: {case.prompt}",
+                        f"  reference_answer: {case.reference_answer}",
+                        f"  evidence_chunk_ids: {', '.join(case.evidence_chunk_ids)}",
+                    ]
+                )
+            )
 
     system = (
         "你是面向中职/高职学生的数字教材编写 Agent。"
@@ -53,6 +68,7 @@ def build_textbook_writer_messages(
             "3. 不主动补充素材之外的新章节。",
             "4. 保留证据引用，格式如：`证据：C000001`。",
             "5. 片段 ASR 质量明显差时，写成待复核表述，不要强行断言。",
+            "6. 如章节计划提供案例示例，需要保留例题、参考分析和 evidence_chunk_ids。",
             "",
             "证据片段：",
             "\n\n".join(evidence_blocks),

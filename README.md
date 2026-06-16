@@ -5,7 +5,7 @@
 当前仓库分成两条协作线：
 
 - 数据处理线：按照 `docs/material_pipeline_forward_plan.md` 建台账、去重、分类、切片和人工复核。
-- 多智能体编排线：读取上游 `video_segments.jsonl`，生成三级教材目录、教材草稿、审核报告和 Word/Markdown 交付物。
+- 多智能体编排线：读取上游 `video_segments.jsonl`，生成三级教材目录、教材草稿、审核报告、Word/Markdown 交付物，以及可被前端阅读器渲染的电子教材包。
 
 ## 快速开始
 
@@ -14,6 +14,30 @@
 ```powershell
 pip install -r requirements.txt
 ```
+
+同伴电脑上已经有完整素材目录时，一键生成可被前端阅读的整本电子教材：
+
+```powershell
+python scripts/run_full_digital_textbook.py --material-root work_materials/work_material1 --title "钨极氩弧焊数字教材"
+```
+
+默认采用媒体引用模式，不重复复制 `converted_mp4/` 中的视频；大素材目录推荐这样运行。需要打包小样例时再追加 `--copy-media-assets`。
+
+默认会读取：
+
+```text
+work_materials/work_material1/02_working_processing/json/video_segments.jsonl
+work_materials/work_material1/02_working_processing/json/ppt_assets.jsonl
+```
+
+并输出：
+
+```text
+work_materials/work_material1/05_final_deliverables/agent_workflow/
+work_materials/work_material1/05_final_deliverables/digital_book/index.html
+```
+
+同伴电脑上的完整运行说明见 [docs/同伴素材一键生成电子教材.md](./docs/同伴素材一键生成电子教材.md)。
 
 运行当前 TIG 样例的多智能体编排：
 
@@ -33,13 +57,72 @@ python scripts/validate_video_segments.py
 python scripts/run_agent_workflow.py --approved-only
 ```
 
-使用 OpenAI-compatible 的 `ecnu-plus` 生成教材正文并执行审核后修订：
+执行多轮审核-修订闭环：
+
+```powershell
+python scripts/run_agent_workflow.py --review-rounds 2
+```
+
+同时接入 PDF/PPT/Markdown/Text 等文档片段：
+
+```powershell
+python scripts/run_agent_workflow.py --document-segments examples/document_segments.jsonl
+```
+
+汇总阅读器导出的学生学习数据包，生成班级学习报告：
+
+```powershell
+python scripts/build_class_learning_report.py `
+  --input-dir examples/study_data `
+  --output-dir work_material1/05_final_deliverables/class_learning_report
+```
+
+对生成的 `digital_book.json` 执行问书，默认使用本地检索并列出证据来源：
+
+```powershell
+python scripts/ask_digital_book.py "送丝操作要注意什么" `
+  --book work_material1/05_final_deliverables/digital_book/digital_book.json `
+  --output work_material1/05_final_deliverables/digital_book/ask_book_answer.md
+```
+
+如需生成式回答，可在配置 OpenAI-compatible LLM 后追加 `--use-llm`。
+
+如果希望阅读器页面里的“AI 问书”调用服务端 LLM，而不是只做本地检索，可启动教师端问书服务：
+
+```powershell
+python scripts/serve_digital_book_ask.py --host 127.0.0.1 --port 8120
+```
+
+然后把生成目录里的 `digital_book/ask_config.js` 改为：
+
+```javascript
+window.DIGITAL_BOOK_ASK_ENDPOINT = 'http://127.0.0.1:8120/ask';
+```
+
+前端只发送问题和已命中的教材片段，API key 留在服务端；接口未配置或不可用时会自动回退到本地检索结果。
+
+阅读器也可以把学习进度、笔记和书签同步到教师端目录，供班级报告脚本汇总：
+
+```powershell
+python scripts/serve_study_data_sync.py --host 127.0.0.1 --port 8121 `
+  --output-dir work_material1/05_final_deliverables/study_data_submissions
+```
+
+然后把 `digital_book/ask_config.js` 中的学习数据端点改为：
+
+```javascript
+window.DIGITAL_BOOK_STUDY_ENDPOINT = 'http://127.0.0.1:8121/study-data';
+```
+
+使用 OpenAI-compatible 的 `ecnu-plus` 增强资料分析、生成教材正文并执行审核后修订：
 
 ```powershell
 copy .env.example .env
 # 编辑 .env，填入 ECNU_PLUS_API_KEY / ECNU_PLUS_BASE_URL / ECNU_PLUS_MODEL
 python scripts/run_agent_workflow.py --use-llm
 ```
+
+`--use-llm` 默认会把调用结果缓存到 `agent_workflow/llm_cache.json`，便于多轮审核、修订和重复调试时复用；需要指定位置可加 `--llm-cache-path path/to/llm_cache.json`，临时关闭可加 `--no-llm-cache`。LLM 调用默认失败重试 2 次，可用 `--llm-max-retries` 和 `--llm-retry-backoff` 调整。
 
 也可以直接传入：
 
@@ -78,8 +161,25 @@ evidence_index.md          人工可读证据索引
 textbook_draft.md/docx     教材草稿
 textbook_final.md/docx     带审核修订提示的教材
 review_report.md/json      审核报告
+review_history.json        多轮审核-修订历史
+revision_diff.md           草稿到最终稿的差异和人工确认清单
 workflow_summary.json      工作流统计
 artifact_manifest.json     本次运行的输入、输出和摘要
+```
+
+电子教材包输出：
+
+```text
+work_material1/05_final_deliverables/digital_book/
+├── digital_book.json       项目、任务、正文、视频、练习和证据引用
+├── index.html              本地电子教材阅读器入口
+├── styles.css
+├── ask_config.js           可选 AI 问书服务端点配置，默认留空走本地检索
+├── app.js
+└── assets/
+    ├── videos/
+    ├── keyframes/
+    └── images/
 ```
 
 校验脚本默认输出到：
@@ -124,16 +224,37 @@ materials2textbook/
 - 校验上游 `video_segments.jsonl` 的字段、时间码、状态、重复 ID 和证据完整性。
 - 转换为统一 `EvidenceChunk`。
 - 严格基于素材片段生成三级教材目录。
+- 保守润色章节、目录和知识点标题，让泛标题结合素材大块形成更适合教材阅读的标题，同时不改变证据范围。
+- 生成带知识点顺序、难度标记、聚类标记和先修关系的学习路径；可优先承接上游或 LLM 输出的语义聚类元数据。
+- 生成观察定位、复述解释、分析迁移三层结构化学习活动，并绑定知识点、证据片段和评价量规。
+- 生成基于证据片段的案例示例，包含学生实训情境、迁移判断、例题、参考分析和 `evidence_chunk_ids`，待复核片段会保留谨慎表述。
 - 生成 Markdown 教材草稿和 Word 文档。
 - 生成结构化审核报告和人工可读 Markdown 审核报告。
+- 审核教材草稿中的证据引用，发现丢失或不存在的 `chunk_id`。
+- 执行段落级事实支撑评分，发现无引用段落、未知引用和待复核证据未标注问题。
+- 执行断言级事实支撑评分，发现无引用断言、未知引用断言、待复核证据未标注断言，以及同一证据/主题下的要求性-禁止性冲突。
+- `--use-llm` 模式下可追加事实支撑、引用覆盖、教学目标和难度梯度深审。
+- `--use-llm` 默认启用持久化 LLM 调用缓存和失败重试，资源分析、正文生成、事实核验、教学深审和修订共用同一调用保护层。
+- 支持 `--review-rounds` 执行多轮审核-修订，并输出 `review_history.json`。
+- 输出 `revision_diff.md`，保留草稿到最终稿的 Markdown 差异和教师人工确认清单。
+- 输出证据覆盖率、引用覆盖率、段落事实支撑率、断言事实支撑率、可正式使用证据率、教学结构完整度和综合质量评分。
+- 输出活动质量评分，检查练习难度梯度、证据绑定、知识点覆盖和评价量规。
+- 输出案例质量评分，检查案例示例的证据绑定、知识点覆盖、学生画像/学习情境和迁移应用要求。
 - 生成按章节/知识点组织的人工可读证据索引。
+- 生成 `digital_book.json` 和本地前端阅读器，支持目录、项目任务、正文、视频、关键帧、案例示例、练习、全文搜索、阅读进度、书签、笔记、字号缩放、本地检索式 AI 问书、可选服务端 LLM 问书、学习数据 JSON 包导出/导入和可选服务端同步。
+- 支持对 `digital_book.json` 执行命令行问书：默认检索教材片段并列证据来源，`--use-llm` 时可基于检索片段生成回答且保留 `evidence_chunk_ids`。
+- 支持聚合多个学习数据 JSON 包，生成班级学习报告，统计平均进度、当前位置分布、热门书签、笔记提交数和异常数据包。
+- 班级学习报告同时输出 JSON、Markdown 和可直接打开的 HTML 页面。
 - 支持草稿模式使用 `Pending_Manual_Timecode` 片段。
 - 默认排除 `rejected` 片段，可用 `--include-rejected` 临时调试。
 - 支持 `--approved-only` 正式模式。
-- 预留 OpenAI-compatible LLM 接口，可接入 `ecnu-plus` 生成教材正文并执行审核后修订。
+- 预留 OpenAI-compatible LLM 接口，可接入 `ecnu-plus` 增强资料分析、生成教材正文并执行审核后修订。
+- 支持 `--document-segments` 接入上游已解析的 PDF/PPT/Markdown/Text 文档片段，并统一转换为 `EvidenceChunk`。
 
 ## 后续方向
 
-- 用 LLM 增强标题润色、ASR 纠错、教材正文改写和审核修订。
-- 接入 PDF、PPT、Markdown 等非视频资料片段。
-- 将 prompt、provider 和模型配置独立成稳定模块。
+完成状态审计见 [docs/多智能体编排完成审计.md](./docs/多智能体编排完成审计.md)。
+
+- 继续增强标题风格统一、人工可编辑标题表和更细粒度的前端问书交互。
+- 继续增强二进制 PDF/PPT 自动解析能力；当前编排线已接收上游解析后的 `document_segments.jsonl`。
+- 继续细化更复杂的跨段落语义一致性和学生画像适配细分规则。

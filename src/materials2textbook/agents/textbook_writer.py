@@ -36,6 +36,15 @@ class TextbookWriterAgent:
                 lines.append(f"- {goal}")
             lines.append("")
 
+            lines.append("### 学习路径")
+            for point in plan.knowledge_points:
+                prerequisites = ", ".join(point.prerequisite_ids) if point.prerequisite_ids else "无"
+                lines.append(
+                    f"- {point.order_index}. {point.title}"
+                    f"（难度：{point.difficulty_level}；聚类：{point.cluster_id}；先修：{prerequisites}）"
+                )
+            lines.append("")
+
             lines.append("### 知识点")
             for point in plan.knowledge_points:
                 lines.extend([f"#### {point.title}", ""])
@@ -50,11 +59,32 @@ class TextbookWriterAgent:
                     lines.append(f"  来源：{locator}")
                     if chunk.review_status and "approved" not in chunk.review_status.lower():
                         lines.append(f"  状态：{chunk.review_status}，建议人工复核后再作为正式教材依据。")
-                lines.append("")
+            lines.append("")
+
+            if plan.case_examples:
+                lines.append("### 案例示例")
+                for example in plan.case_examples:
+                    lines.extend([f"#### {example.title}", ""])
+                    lines.append(f"- 例题：{example.prompt}")
+                    lines.append(f"- 参考分析：{example.reference_answer}")
+                    if example.evidence_chunk_ids:
+                        lines.append(f"- 证据：{', '.join(example.evidence_chunk_ids)}")
+                    lines.append("")
 
             lines.append("### 学习活动")
-            for activity in plan.activities:
-                lines.append(f"- {activity}")
+            if plan.activity_items:
+                for activity in plan.activity_items:
+                    lines.append(f"#### {activity.difficulty_level} · {activity.type}")
+                    lines.append(f"- 任务：{activity.prompt}")
+                    if activity.evidence_chunk_ids:
+                        lines.append(f"- 证据：{', '.join(activity.evidence_chunk_ids)}")
+                    if activity.rubric:
+                        lines.append("- 评价要点：")
+                        for item in activity.rubric:
+                            lines.append(f"  - {item}")
+            else:
+                for activity in plan.activities:
+                    lines.append(f"- {activity}")
             lines.append("")
 
         return "\n".join(lines).rstrip() + "\n"

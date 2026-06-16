@@ -1,5 +1,5 @@
 from materials2textbook.prompts.textbook_writer import build_textbook_writer_messages
-from materials2textbook.schemas import ChapterPlan, EvidenceChunk, EvidenceLocator, EvidenceScore, KnowledgePoint
+from materials2textbook.schemas import CaseExample, ChapterPlan, EvidenceChunk, EvidenceLocator, EvidenceScore, KnowledgePoint
 
 
 def test_textbook_writer_prompt_requires_strict_evidence() -> None:
@@ -24,10 +24,21 @@ def test_textbook_writer_prompt_requires_strict_evidence() -> None:
         learning_goals=[],
         knowledge_points=[KnowledgePoint("kp_01", "送丝", ["C1"])],
         evidence_chunk_ids=["C1"],
+        case_examples=[
+            CaseExample(
+                "case_01",
+                "送丝案例",
+                "如何分析送丝？",
+                "结合 C1 谨慎作答。",
+                evidence_chunk_ids=["C1"],
+            )
+        ],
     )
 
     messages = build_textbook_writer_messages([plan], [chunk], "样章")
     combined = "\n".join(message["content"] for message in messages)
     assert "不得补充素材中没有的新章节或事实" in combined
     assert "chunk_id: C1" in combined
+    assert "案例示例" in combined
+    assert "送丝案例" in combined
     assert "待人工复核" in combined
