@@ -208,25 +208,34 @@ python scripts\merge_material_batch.py `
 ```text
 shielded_metal_arc_welding_video_segments_20260616_175526_keep_reviewed.jsonl
 shielded_metal_arc_welding_ppt_assets_20260616_175526_keep_reviewed.jsonl
+shielded_metal_arc_welding_video_segments_20260616_201511_keep_reviewed.jsonl
+shielded_metal_arc_welding_ppt_assets_20260616_201511_keep_reviewed.jsonl
 ```
 
 结果：
 
 ```text
-video keep: 12 / 12
-PPT keep: 212 / 289
-PPT needs_review: 73
-PPT reject: 4
+batch 20260616_175526:
+  video keep: 12 / 12
+  PPT keep: 212 / 289
+  PPT needs_review: 73
+  PPT reject: 4
+
+batch 20260616_201511:
+  video keep: 18 / 18
+  PPT keep: 149 / 258
+  PPT needs_review: 106
+  PPT reject: 3
 ```
 
 当前主结果：
 
 ```text
-video_segments.jsonl: 52 rows
+video_segments.jsonl: 70 rows
   tig_welding: 40
-  shielded_metal_arc_welding: 12
+  shielded_metal_arc_welding: 30
 
-ppt_assets.jsonl: 627 rows
+ppt_assets.jsonl: 776 rows
   tig_welding: 415
-  shielded_metal_arc_welding: 212
+  shielded_metal_arc_welding: 361
 ```
