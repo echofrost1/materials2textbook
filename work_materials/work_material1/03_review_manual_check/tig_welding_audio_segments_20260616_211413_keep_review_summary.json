@@ -1,0 +1,13 @@
+{
+  "batch_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\tig_welding_audio_segments_20260616_211413.jsonl",
+  "batch_type": "audio",
+  "input_rows": 1,
+  "reviewed_rows_written": 0,
+  "keep_only": true,
+  "decision_counts": {
+    "needs_review": 1
+  },
+  "reviewed_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\tig_welding_audio_segments_20260616_211413_keep_reviewed.jsonl",
+  "reviewed_xlsx": "work_materials\\work_material1\\01_manifest_inventory\\batches\\tig_welding_audio_segments_20260616_211413_keep_reviewed.xlsx",
+  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\tig_welding_audio_segments_20260616_211413_keep_review.xlsx"
+}

@@ -593,6 +593,12 @@ def processed_source_assets(material_root: Path, file_kind: str) -> dict[str, st
     elif file_kind == "ppt":
         paths = [(json_dir / "ppt_assets.jsonl", "Processed_Main")]
         paths.extend((path, "Processed_Batch") for path in (json_dir / "batches").glob("*_ppt_assets_*.jsonl"))
+    elif file_kind == "audio":
+        paths = [(json_dir / "audio_segments.jsonl", "Processed_Main")]
+        paths.extend((path, "Processed_Batch") for path in (json_dir / "batches").glob("*_audio_segments_*.jsonl"))
+    elif file_kind == "structured":
+        paths = [(json_dir / "structured_assets.jsonl", "Processed_Main")]
+        paths.extend((path, "Processed_Batch") for path in (json_dir / "batches").glob("*_structured_assets_*.jsonl"))
     else:
         return {}
     result: dict[str, str] = {}
@@ -619,6 +625,8 @@ def build_processing_queue(material_root: Path, asset_block_map: pd.DataFrame, m
     rows: list[dict[str, Any]] = []
     processed_video = processed_source_assets(material_root, "video")
     processed_ppt = processed_source_assets(material_root, "ppt")
+    processed_audio = processed_source_assets(material_root, "audio")
+    processed_structured = processed_source_assets(material_root, "structured")
     for _, row in merged.iterrows():
         file_type = clean_text(row.get("file_type"))
         block_code = clean_text(row.get("material_block_code"))
@@ -631,6 +639,10 @@ def build_processing_queue(material_root: Path, asset_block_map: pd.DataFrame, m
             processed_status = processed_video.get(clean_text(row.get("asset_id")), "")
         elif file_type == "ppt":
             processed_status = processed_ppt.get(clean_text(row.get("asset_id")), "")
+        elif file_type == "audio":
+            processed_status = processed_audio.get(clean_text(row.get("asset_id")), "")
+        elif file_type in {"document", "spreadsheet"}:
+            processed_status = processed_structured.get(clean_text(row.get("asset_id")), "")
 
         if processed_status:
             status = processed_status

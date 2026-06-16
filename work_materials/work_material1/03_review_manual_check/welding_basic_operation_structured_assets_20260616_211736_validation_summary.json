@@ -1,0 +1,9 @@
+{
+  "batch_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\welding_basic_operation_structured_assets_20260616_211736.jsonl",
+  "batch_type": "structured",
+  "row_count": 6,
+  "pass_validation": true,
+  "error_count": 0,
+  "warning_count": 0,
+  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\welding_basic_operation_structured_assets_20260616_211736_validation.xlsx"
+}

@@ -119,6 +119,10 @@ def infer_type(path: Path) -> str:
         return "video"
     if "ppt_assets" in name:
         return "ppt"
+    if "audio_segments" in name:
+        return "audio"
+    if "structured_assets" in name:
+        return "structured"
     raise ValueError(f"Cannot infer batch type from {path}")
 
 
@@ -352,6 +356,91 @@ def review_ppt(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     return reviewed, report
 
 
+def review_audio(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    audio_segment_id = clean_text(row.get("audio_segment_id"))
+    evidence = clean_text(row.get("evidence_text") or row.get("transcript_text"))
+    hits = term_hits(evidence)
+    duration = 0
+    start = parse_time(row.get("start_time"))
+    end = parse_time(row.get("end_time"))
+    if start is not None and end is not None:
+        duration = max(0, end - start)
+    score = 0.40
+    score += clamp(len(evidence) / 500) * 0.35
+    score += min(len(hits), 3) * 0.06
+    if 30 <= duration <= 240:
+        score += 0.12
+    elif duration > 0:
+        score += 0.05
+    if clean_text(row.get("transcript_status")) == "EMPTY":
+        score -= 0.25
+    decision = decision_from_score(score)
+    reviewed = dict(row)
+    reviewed.update(
+        {
+            "quality_score": round(score, 3),
+            "auto_review_decision": decision,
+            "review_status": "Agent_Keep" if decision == "keep" else ("Agent_Reject" if decision == "reject" else "Needs_Review"),
+            "review_comment": "auto audio review",
+            "review_basis": "rule_score: transcript_length + duration + domain_terms",
+            "domain_term_hits": ";".join(hits),
+            "reviewed_time": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    report = {
+        "asset_unit_id": audio_segment_id,
+        "source_asset_id": clean_text(row.get("source_asset_id")),
+        "asset_type": "audio",
+        "decision": decision,
+        "quality_score": round(score, 3),
+        "evidence_length": len(evidence),
+        "duration_seconds": duration,
+        "domain_term_hits": ";".join(hits),
+    }
+    return reviewed, report
+
+
+def review_structured(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    structured_asset_id = clean_text(row.get("structured_asset_id"))
+    evidence = clean_text(row.get("evidence_text") or row.get("extracted_text"))
+    hits = term_hits(evidence)
+    row_count = int(float(row.get("row_count") or 0))
+    col_count = int(float(row.get("column_count") or 0))
+    score = 0.35
+    score += clamp(len(evidence) / 800) * 0.35
+    score += min(len(hits), 3) * 0.05
+    if row_count > 0 and col_count > 0:
+        score += 0.15
+    if clean_text(row.get("table_type")) in {"question_bank", "assessment_sheet"}:
+        score += 0.08
+    decision = decision_from_score(score)
+    reviewed = dict(row)
+    reviewed.update(
+        {
+            "quality_score": round(score, 3),
+            "auto_review_decision": decision,
+            "review_status": "Agent_Keep" if decision == "keep" else ("Agent_Reject" if decision == "reject" else "Needs_Review"),
+            "review_comment": "auto structured review",
+            "review_basis": "rule_score: table_preview + dimensions + table_type",
+            "domain_term_hits": ";".join(hits),
+            "reviewed_time": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    report = {
+        "asset_unit_id": structured_asset_id,
+        "source_asset_id": clean_text(row.get("source_asset_id")),
+        "asset_type": "structured",
+        "decision": decision,
+        "quality_score": round(score, 3),
+        "evidence_length": len(evidence),
+        "table_type": clean_text(row.get("table_type")),
+        "row_count": row_count,
+        "column_count": col_count,
+        "domain_term_hits": ";".join(hits),
+    }
+    return reviewed, report
+
+
 def output_paths(batch_path: Path, output_prefix: str, keep_only: bool) -> tuple[Path, Path, Path, Path]:
     prefix = output_prefix or batch_path.stem
     suffix = "keep_reviewed" if keep_only else "reviewed"
@@ -366,7 +455,7 @@ def output_paths(batch_path: Path, output_prefix: str, keep_only: bool) -> tuple
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-jsonl", required=True, type=Path)
-    parser.add_argument("--batch-type", choices=["video", "ppt", "auto"], default="auto")
+    parser.add_argument("--batch-type", choices=["video", "ppt", "audio", "structured", "auto"], default="auto")
     parser.add_argument("--output-prefix", default="")
     parser.add_argument("--keep-only", action="store_true", help="Write only keep rows to reviewed JSONL/XLSX.")
     args = parser.parse_args()
@@ -379,8 +468,12 @@ def main() -> int:
     for row in rows:
         if batch_type == "video":
             reviewed, report = review_video(row)
-        else:
+        elif batch_type == "ppt":
             reviewed, report = review_ppt(row)
+        elif batch_type == "audio":
+            reviewed, report = review_audio(row)
+        else:
+            reviewed, report = review_structured(row)
         reviewed_rows.append(reviewed)
         report_rows.append(report)
 

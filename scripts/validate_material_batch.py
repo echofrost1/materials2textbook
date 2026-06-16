@@ -33,6 +33,8 @@ REVIEW_DIR = PROJECT_ROOT / "03_review_manual_check"
 ASSETS_MANIFEST = MANIFEST_DIR / "assets_manifest.xlsx"
 VIDEO_MAIN_JSONL = JSON_DIR / "video_segments.jsonl"
 PPT_MAIN_JSONL = JSON_DIR / "ppt_assets.jsonl"
+AUDIO_MAIN_JSONL = JSON_DIR / "audio_segments.jsonl"
+STRUCTURED_MAIN_JSONL = JSON_DIR / "structured_assets.jsonl"
 
 VIDEO_REQUIRED = [
     "clip_id",
@@ -61,6 +63,36 @@ PPT_REQUIRED = [
     "material_block_code",
     "knowledge_point",
     "recommended_chapter",
+    "evidence_text",
+    "review_status",
+]
+
+AUDIO_REQUIRED = [
+    "audio_segment_id",
+    "source_asset_id",
+    "source_audio",
+    "original_path",
+    "start_time",
+    "end_time",
+    "material_block",
+    "material_block_code",
+    "knowledge_point",
+    "transcript_status",
+    "evidence_text",
+    "boundary_reason",
+    "review_status",
+]
+
+STRUCTURED_REQUIRED = [
+    "structured_asset_id",
+    "source_asset_id",
+    "source_file",
+    "original_path",
+    "sheet_name",
+    "table_type",
+    "material_block",
+    "material_block_code",
+    "knowledge_point",
     "evidence_text",
     "review_status",
 ]
@@ -204,19 +236,65 @@ def validate_ppt_rows(rows: List[Dict[str, Any]], asset_ids: set[str]) -> List[D
     return issues
 
 
+def validate_audio_rows(rows: List[Dict[str, Any]], asset_ids: set[str]) -> List[Dict[str, Any]]:
+    issues: List[Dict[str, Any]] = []
+    ids = [clean_text(row.get("audio_segment_id")) for row in rows]
+    duplicates = {key for key, count in Counter(ids).items() if key and count > 1}
+    existing = existing_ids(AUDIO_MAIN_JSONL, "audio_segment_id")
+    for index, row in enumerate(rows, start=1):
+        label = clean_text(row.get("audio_segment_id")) or f"audio_row_{index}"
+        issues.extend(validate_required(row, AUDIO_REQUIRED, label))
+        if clean_text(row.get("audio_segment_id")) in duplicates:
+            issues.append(issue(label, "error", "duplicate_in_batch", "audio_segment_id", "audio_segment_id duplicate in batch"))
+        if clean_text(row.get("audio_segment_id")) in existing:
+            issues.append(issue(label, "error", "duplicate_in_main", "audio_segment_id", "audio_segment_id already exists in audio_segments.jsonl"))
+        if clean_text(row.get("source_asset_id")) not in asset_ids:
+            issues.append(issue(label, "error", "source_asset_missing", "source_asset_id", "source_asset_id not in assets_manifest.xlsx"))
+        start = parse_time(row.get("start_time"))
+        end = parse_time(row.get("end_time"))
+        if start is None or end is None or end <= start:
+            issues.append(issue(label, "error", "bad_time_range", "start_time/end_time", "invalid audio time range"))
+        if len(clean_text(row.get("evidence_text"))) < 20:
+            issues.append(issue(label, "warning", "weak_evidence", "evidence_text", "audio transcript evidence is short"))
+    return issues
+
+
+def validate_structured_rows(rows: List[Dict[str, Any]], asset_ids: set[str]) -> List[Dict[str, Any]]:
+    issues: List[Dict[str, Any]] = []
+    ids = [clean_text(row.get("structured_asset_id")) for row in rows]
+    duplicates = {key for key, count in Counter(ids).items() if key and count > 1}
+    existing = existing_ids(STRUCTURED_MAIN_JSONL, "structured_asset_id")
+    for index, row in enumerate(rows, start=1):
+        label = clean_text(row.get("structured_asset_id")) or f"structured_row_{index}"
+        issues.extend(validate_required(row, STRUCTURED_REQUIRED, label))
+        if clean_text(row.get("structured_asset_id")) in duplicates:
+            issues.append(issue(label, "error", "duplicate_in_batch", "structured_asset_id", "structured_asset_id duplicate in batch"))
+        if clean_text(row.get("structured_asset_id")) in existing:
+            issues.append(issue(label, "error", "duplicate_in_main", "structured_asset_id", "structured_asset_id already exists in structured_assets.jsonl"))
+        if clean_text(row.get("source_asset_id")) not in asset_ids:
+            issues.append(issue(label, "error", "source_asset_missing", "source_asset_id", "source_asset_id not in assets_manifest.xlsx"))
+        if len(clean_text(row.get("evidence_text"))) < 20:
+            issues.append(issue(label, "warning", "weak_evidence", "evidence_text", "structured evidence preview is short"))
+    return issues
+
+
 def infer_type(path: Path) -> str:
     name = path.name
     if "video_segments" in name:
         return "video"
     if "ppt_assets" in name:
         return "ppt"
+    if "audio_segments" in name:
+        return "audio"
+    if "structured_assets" in name:
+        return "structured"
     raise ValueError(f"Cannot infer batch type from {path}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-jsonl", required=True, type=Path)
-    parser.add_argument("--batch-type", choices=["video", "ppt", "auto"], default="auto")
+    parser.add_argument("--batch-type", choices=["video", "ppt", "audio", "structured", "auto"], default="auto")
     parser.add_argument("--output-prefix", default="")
     args = parser.parse_args()
 
@@ -226,8 +304,12 @@ def main() -> int:
     asset_ids = manifest_asset_ids()
     if batch_type == "video":
         issues = validate_video_rows(rows, asset_ids)
-    else:
+    elif batch_type == "ppt":
         issues = validate_ppt_rows(rows, asset_ids)
+    elif batch_type == "audio":
+        issues = validate_audio_rows(rows, asset_ids)
+    else:
+        issues = validate_structured_rows(rows, asset_ids)
 
     severity_counts = Counter(item["severity"] for item in issues)
     pass_validation = severity_counts.get("error", 0) == 0

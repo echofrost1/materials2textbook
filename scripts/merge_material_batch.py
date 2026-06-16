@@ -21,8 +21,12 @@ REVIEW_DIR = PROJECT_ROOT / "03_review_manual_check"
 
 VIDEO_MAIN_JSONL = JSON_DIR / "video_segments.jsonl"
 PPT_MAIN_JSONL = JSON_DIR / "ppt_assets.jsonl"
+AUDIO_MAIN_JSONL = JSON_DIR / "audio_segments.jsonl"
+STRUCTURED_MAIN_JSONL = JSON_DIR / "structured_assets.jsonl"
 VIDEO_MAIN_XLSX = MANIFEST_DIR / "video_segments.xlsx"
 PPT_MAIN_XLSX = MANIFEST_DIR / "ppt_assets.xlsx"
+AUDIO_MAIN_XLSX = MANIFEST_DIR / "audio_segments.xlsx"
+STRUCTURED_MAIN_XLSX = MANIFEST_DIR / "structured_assets.xlsx"
 
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -61,6 +65,10 @@ def infer_type(path: Path) -> str:
         return "video"
     if "ppt_assets" in name:
         return "ppt"
+    if "audio_segments" in name:
+        return "audio"
+    if "structured_assets" in name:
+        return "structured"
     raise ValueError(f"Cannot infer batch type from {path}")
 
 
@@ -86,13 +94,28 @@ def backup(path: Path, stamp: str) -> Path | None:
 
 
 def id_field_for(batch_type: str) -> str:
-    return "clip_id" if batch_type == "video" else "ppt_asset_id"
+    return {
+        "video": "clip_id",
+        "ppt": "ppt_asset_id",
+        "audio": "audio_segment_id",
+        "structured": "structured_asset_id",
+    }[batch_type]
+
+
+def main_paths_for(batch_type: str) -> tuple[Path, Path]:
+    if batch_type == "video":
+        return VIDEO_MAIN_JSONL, VIDEO_MAIN_XLSX
+    if batch_type == "ppt":
+        return PPT_MAIN_JSONL, PPT_MAIN_XLSX
+    if batch_type == "audio":
+        return AUDIO_MAIN_JSONL, AUDIO_MAIN_XLSX
+    return STRUCTURED_MAIN_JSONL, STRUCTURED_MAIN_XLSX
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-jsonl", required=True, type=Path)
-    parser.add_argument("--batch-type", choices=["video", "ppt", "auto"], default="auto")
+    parser.add_argument("--batch-type", choices=["video", "ppt", "audio", "structured", "auto"], default="auto")
     parser.add_argument("--allow-warnings", action="store_true")
     parser.add_argument("--skip-validation-check", action="store_true")
     args = parser.parse_args()
@@ -110,8 +133,7 @@ def main() -> int:
                 "Review the validation report or pass --allow-warnings."
             )
 
-    main_jsonl = VIDEO_MAIN_JSONL if batch_type == "video" else PPT_MAIN_JSONL
-    main_xlsx = VIDEO_MAIN_XLSX if batch_type == "video" else PPT_MAIN_XLSX
+    main_jsonl, main_xlsx = main_paths_for(batch_type)
     batch_rows = read_jsonl(batch_path)
     main_rows = read_jsonl(main_jsonl)
     field = id_field_for(batch_type)
