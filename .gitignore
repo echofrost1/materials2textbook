@@ -5,8 +5,12 @@ work_material1/05_final_deliverables/validation/
 work_material1/05_final_deliverables/
 .env
 work_materials/work_material1/00_raw_client_materials/
-work_materials/work_material1/05_final_deliverables/
+work_materials/work_material1/05_final_deliverables/agent_workflow/
+work_materials/work_material1/05_final_deliverables/validation/
+work_materials/work_material1/05_final_deliverables/digital_book.zip
+work_materials/work_material1/05_final_deliverables/digital_book/assets/videos/
 work_materials/work_material1/05_final_deliverables_*/
+work_materials/work_material1/digital_book/
 
 # Python cache
 **/__pycache__/
