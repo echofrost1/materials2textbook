@@ -37,6 +37,19 @@ def load_dotenv(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+class ProgressLLMProvider:
+    def __init__(self, provider) -> None:
+        self.provider = provider
+        self.calls = 0
+
+    def generate(self, messages: list[dict[str, str]]) -> str:
+        self.calls += 1
+        print(f"[llm] request {self.calls} start", flush=True)
+        response = self.provider.generate(messages)
+        print(f"[llm] request {self.calls} done, chars={len(response)}", flush=True)
+        return response
+
+
 def default_material_root() -> Path:
     full_root = ROOT / "work_materials" / "work_material1"
     if full_root.exists():
@@ -68,6 +81,7 @@ def build_llm_provider(args: argparse.Namespace, output_dir: Path):
         )
     if not args.no_llm_cache:
         provider = CachingLLMProvider(provider, args.llm_cache_path or output_dir / "llm_cache.json")
+    provider = ProgressLLMProvider(provider)
     return provider
 
 
@@ -203,6 +217,9 @@ def main() -> None:
         raise SystemExit(f"Missing video segments: {video_segments_path}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[runner] material_root={material_root}", flush=True)
+    print(f"[runner] output_dir={output_dir}", flush=True)
+    print("[runner] loading video segments", flush=True)
     video_records = read_jsonl(video_segments_path)
     video_records = filter_records(
         video_records,
@@ -212,12 +229,14 @@ def main() -> None:
     )
     if not video_records:
         raise SystemExit("No video segment records matched the selected filters.")
+    print(f"[runner] selected video records={len(video_records)}", flush=True)
     selected_video_segments_path = output_dir / "selected_video_segments.jsonl"
     write_jsonl(selected_video_segments_path, video_records)
 
     document_paths = [path.resolve() for path in args.document_segments]
     if ppt_assets_path.exists():
         document_paths.insert(0, ppt_assets_path)
+    print(f"[runner] document evidence sources={len(document_paths)}", flush=True)
     combined_document_path = None
     document_records = []
     for path in document_paths:
@@ -233,8 +252,10 @@ def main() -> None:
     if document_records:
         combined_document_path = output_dir / "combined_document_segments.jsonl"
         write_jsonl(combined_document_path, document_records)
+    print(f"[runner] selected document records={len(document_records)}", flush=True)
 
     provider = build_llm_provider(args, output_dir)
+    print(f"[runner] use_llm={args.use_llm}", flush=True)
     workflow = TextbookWorkflow(llm_provider=provider, use_llm=args.use_llm)
     config = WorkflowConfig(
         include_pending=not args.approved_only,

@@ -34,6 +34,10 @@ from materials2textbook.workflow.reporting import build_workflow_summary, render
 from materials2textbook.workflow.token_budget import apply_evidence_token_budget
 
 
+def _progress(message: str) -> None:
+    print(f"[workflow] {message}", flush=True)
+
+
 class TextbookWorkflow:
     """Run the first multi-agent orchestration loop over processed material segments."""
 
@@ -66,9 +70,11 @@ class TextbookWorkflow:
         max_chapter_input_tokens: int = 12000,
     ) -> WorkflowOutputs:
         config = config or WorkflowConfig()
+        _progress("reading selected video and document evidence")
         records = read_jsonl(video_segments_path)
         document_records = read_jsonl(document_segments_path) if document_segments_path else []
 
+        _progress(f"analyzing resources: videos={len(records)}, documents={len(document_records)}")
         raw_chunks = self.resource_analyst.run_mixed(records, document_records)
         chunks = [
             chunk
@@ -77,6 +83,8 @@ class TextbookWorkflow:
             and config.allows_teaching_value(chunk.score.teaching_value)
         ]
         filter_skipped_chunks = len(raw_chunks) - len(chunks)
+        _progress(f"resource chunks ready: kept={len(chunks)}, skipped_by_filter={filter_skipped_chunks}")
+        _progress("applying evidence token budget")
         chunks, token_budget_report = apply_evidence_token_budget(
             chunks,
             max_input_tokens=config.max_input_tokens,
@@ -91,6 +99,7 @@ class TextbookWorkflow:
         book_plan = None
         book_plan_review = []
         if book_mode:
+            _progress("planning whole-book chapter structure")
             book_plan = self.book_planner.run(
                 title=title,
                 chunks=chunks,
@@ -101,23 +110,32 @@ class TextbookWorkflow:
             book_plan_review = review_book_plan(book_plan, chunks)
             plans = book_plan_to_chapter_plans(book_plan, chunks)
         else:
+            _progress("organizing selected evidence into chapter plans")
             plans = self.organizer.run(
                 chunks,
                 max_chunks_per_knowledge_point=config.max_chunks_per_knowledge_point,
             )
+        _progress(f"chapter plans ready: chapters={len(plans)}")
+        _progress("polishing titles")
         plans = self.title_polisher.run(plans, chunks)
+        _progress("designing learning activities")
         plans = self.activity_designer.run(plans)
+        _progress("designing teaching cases")
         plans = self.case_designer.run(plans, chunks)
+        _progress("building outline")
         outlines = self.outline_planner.run(chunks)
         outlines = self.title_polisher.run_outlines(outlines, chunks)
         outline_markdown = render_outline_markdown(outlines, title)
+        _progress("writing textbook draft")
         draft = self.writer.run(plans, chunks, title=title)
 
         current_markdown = draft
         review_history = []
         reports = []
         for round_index in range(1, config.normalized_review_rounds() + 1):
+            _progress(f"review round {round_index}: checking evidence support")
             fact_issues = self.evidence_reviewer.run(plans, chunks, current_markdown)
+            _progress(f"review round {round_index}: checking pedagogy")
             pedagogy_issues = self.pedagogy_reviewer.run(plans, current_markdown)
             reports = self.review_composer.run(plans, fact_issues, pedagogy_issues)
             issue_count = sum(len(report.fact_issues) + len(report.pedagogy_issues) for report in reports)
@@ -129,10 +147,12 @@ class TextbookWorkflow:
                 }
             )
             if round_index < config.normalized_review_rounds() and issue_count:
+                _progress(f"review round {round_index}: revising draft, issues={issue_count}")
                 current_markdown = self.revision.run(current_markdown, reports)
             else:
                 break
 
+        _progress("building workflow summary and final revision")
         summary = build_workflow_summary(
             title=title,
             source_records=len(records) + len(document_records),
@@ -174,6 +194,7 @@ class TextbookWorkflow:
         manifest_path = output_dir / "artifact_manifest.json"
         digital_book_dir = output_dir.parent / "digital_book"
 
+        _progress("writing workflow artifacts")
         write_json(outline_path, outlines)
         write_text(outline_markdown_path, outline_markdown)
         if book_plan:
@@ -194,6 +215,7 @@ class TextbookWorkflow:
         write_text(final_path, final)
         markdown_to_docx(draft, draft_docx_path)
         markdown_to_docx(final, final_docx_path)
+        _progress("exporting digital book")
         _digital_book, digital_book_path, digital_book_index_path = export_digital_book(
             title=title,
             plans=plans,
@@ -204,6 +226,7 @@ class TextbookWorkflow:
             use_llm=self.writer.use_llm,
             book_plan=book_plan,
         )
+        _progress("reviewing exported digital book")
         digital_book_review = self.digital_book_reviewer.run(
             _digital_book,
             {chunk.chunk_id for chunk in chunks},
@@ -287,6 +310,7 @@ class TextbookWorkflow:
         }
         write_json(manifest_path, manifest)
 
+        _progress("workflow complete")
         return WorkflowOutputs(
             outline_path=str(outline_path),
             outline_markdown_path=str(outline_markdown_path),

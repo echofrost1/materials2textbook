@@ -32,6 +32,8 @@ class CachingLLMProvider:
 
         self.stats.misses += 1
         response = self.provider.generate(messages)
+        if not isinstance(response, str) or not response.strip():
+            raise RuntimeError("LLM cache received an empty response and will not store it.")
         self._cache[key] = response
         self._save()
         return response
@@ -42,7 +44,7 @@ class CachingLLMProvider:
         data = json.loads(self.cache_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"LLM cache must be a JSON object: {self.cache_path}")
-        return {str(key): str(value) for key, value in data.items()}
+        return {str(key): value for key, value in data.items() if isinstance(value, str) and value.strip()}
 
     def _save(self) -> None:
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)

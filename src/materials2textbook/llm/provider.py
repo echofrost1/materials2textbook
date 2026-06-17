@@ -82,6 +82,9 @@ class OpenAICompatibleProvider:
             raise RuntimeError(f"LLM request failed: {exc}") from exc
 
         try:
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(f"Unexpected LLM response shape: {data}") from exc
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError(f"Unexpected empty LLM response content: {data}")
+        return content
