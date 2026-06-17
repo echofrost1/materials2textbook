@@ -52,7 +52,7 @@ chapter_readiness_report.xlsx
 - `scripts/build_chapter_evidence_pack.py`
 - `scripts/run_chapter_digital_textbook.py`
 - `src/materials2textbook/prompts/textbook_writer.py`
-- LLM 空响应处理和终端进度打印
+- LLM 空响应/短响应自动回退、写作模式记录和终端进度打印
 
 最新单章试探结果显示，“钨极氩弧焊”素材包可以生成，但质量分布不均：
 
@@ -229,8 +229,18 @@ scripts/run_chapter_digital_textbook.py
 -> 只使用该章视频、PPT、参考文本
 -> 生成单章教材正文
 -> 生成单章审核报告
+-> 生成单章生成诊断报告
 -> 生成单章电子教材预览
 ```
+
+当前单章入口会额外输出：
+
+```text
+chapter_generation_report.json
+chapter_generation_report.md
+```
+
+这个报告用于判断生成是否真正启用了 LLM、是否触发规则写作兜底、最终正文有多长、输入了多少视频/PPT/文档证据、是否仍残留“学习路径”或原始证据列表。若学生端内容明显空洞，优先看这里的 `writer_generation_mode`、`use_llm_requested`、`llm_cache_entries`、`final_markdown_chars` 和证据缺口统计，而不是直接扩大 prompt。
 
 优先级 2：改 writer prompt。
 
@@ -446,6 +456,8 @@ chapter_readiness_report.xlsx
 preview-only 输出
 writer prompt 教材扩写
 章节报告输出
+LLM 失败或短输出自动回退
+生成诊断报告输出
 ```
 
 ### 第三步：角色 B

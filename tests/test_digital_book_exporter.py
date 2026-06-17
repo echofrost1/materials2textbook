@@ -104,14 +104,20 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert "focusAskTerms" in app_js
     assert "renderMarkdown" in app_js
     assert "renderInlineMarkdown" in app_js
+    assert "renderMarkdownTable" in app_js
+    assert "safeMarkdownUrl" in app_js
+    assert "<blockquote>" in app_js
+    assert "<pre><code" in app_js
+    assert "<table><thead>" in app_js
+    assert "https?:|mailto:" in app_js
     assert "videoActions" in app_js
     assert "video.pause()" in app_js
     assert "video.preload = 'metadata'" in app_js
     assert "video.playsInline = true" in app_js
     assert "浏览器阻止了自动播放" in app_js
     assert "document.createElement('pre')" not in app_js
-    assert ".split(/\\n{2,}/)" in app_js
-    assert ".replace(/\\n/g, '<br>')" in app_js
+    assert ".split(/\\n{2,}/)" not in app_js
+    assert "renderMarkdown(sanitizeStudentAnswer" in app_js
     assert "block.type || block.block_type" in app_js
     assert "[2, 3, 4]" in app_js
     assert "chunkId.toLowerCase() === term" not in app_js
@@ -205,6 +211,9 @@ def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path:
     assert "tocChapter" in app_js
     assert "toc-chapter-toggle" in app_js
     assert "toc-section-list" in app_js
+    assert "blockHeading" in app_js
+    assert "block-marker" in app_js
+    assert "sectionHeading" not in app_js
     assert "collapsed" in app_js
     assert "button.dataset.target === id" in app_js
     assert "层级：" not in json_path.read_text(encoding="utf-8")
