@@ -1,0 +1,35 @@
+{
+  "generated_at": "2026-06-17T19:26:13",
+  "chapter": "焊接设备与安全",
+  "source_records_total": 1075,
+  "selected_records": 168,
+  "source_type_counts": {
+    "video": 12,
+    "ppt": 104,
+    "reference_text": 40,
+    "structured": 12
+  },
+  "quality_gate_counts": {
+    "pass": 168
+  },
+  "evidence_role_counts": {
+    "primary": 12,
+    "support": 104,
+    "reference": 52
+  },
+  "readiness_counts": {
+    "ready": 8
+  },
+  "ready_knowledge_points": [
+    "基础安全",
+    "个人防护",
+    "设备组成",
+    "焊机与电源",
+    "焊接辅助设备",
+    "气瓶与用气安全",
+    "用电安全",
+    "作业环境"
+  ],
+  "partial_ready_knowledge_points": [],
+  "not_ready_knowledge_points": []
+}

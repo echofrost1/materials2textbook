@@ -1,0 +1,39 @@
+{
+  "generated_at": "2026-06-17T19:26:13",
+  "chapter": "焊条电弧焊",
+  "source_records_total": 1075,
+  "selected_records": 511,
+  "source_type_counts": {
+    "video": 35,
+    "ppt": 390,
+    "reference_text": 80,
+    "structured": 6
+  },
+  "quality_gate_counts": {
+    "pass": 509,
+    "weak": 2
+  },
+  "evidence_role_counts": {
+    "primary": 35,
+    "support": 390,
+    "reference": 86
+  },
+  "readiness_counts": {
+    "partial_ready": 1,
+    "ready": 8
+  },
+  "ready_knowledge_points": [
+    "焊条与药皮",
+    "焊接电弧",
+    "设备与工具",
+    "引弧",
+    "运条",
+    "接头与收弧",
+    "平焊操作",
+    "常见缺陷"
+  ],
+  "partial_ready_knowledge_points": [
+    "章节概述"
+  ],
+  "not_ready_knowledge_points": []
+}

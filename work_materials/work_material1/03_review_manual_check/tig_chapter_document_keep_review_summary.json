@@ -1,0 +1,13 @@
+{
+  "batch_jsonl": "work_materials\\work_material1\\05_final_deliverables\\chapter_work\\tig_welding\\chapter_document_segments.jsonl",
+  "batch_type": "reference",
+  "input_rows": 92,
+  "reviewed_rows_written": 92,
+  "keep_only": true,
+  "decision_counts": {
+    "keep": 92
+  },
+  "reviewed_jsonl": "work_materials\\work_material1\\05_final_deliverables\\chapter_work\\tig_welding\\tig_chapter_document_keep_reviewed.jsonl",
+  "reviewed_xlsx": "work_materials\\work_material1\\01_manifest_inventory\\batches\\tig_chapter_document_keep_reviewed.xlsx",
+  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\tig_chapter_document_keep_review.xlsx"
+}

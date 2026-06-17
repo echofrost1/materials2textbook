@@ -22,6 +22,7 @@ work_materials/work_material1/05_final_deliverables/digital_book/server*.log
 work_materials/work_material1/05_final_deliverables/chapter_work/*/agent_workflow/
 work_materials/work_material1/05_final_deliverables/chapter_work/*/digital_book/
 work_materials/work_material1/05_final_deliverables/chapter_work/*/digital_book.zip
+work_materials/work_material1/05_final_deliverables/chapter_work/**/*.zip
 work_materials/work_material1/05_final_deliverables_*/
 work_materials/work_material1/digital_book/
 
@@ -44,3 +45,7 @@ work_materials/work_material1/digital_book/
 
 # Generated student package (too large for normal GitHub blobs)
 digital_book.zip
+work_materials/work_material1/05_final_deliverables/*.zip
+
+# Local preview server logs
+.digital_book_server_*.log

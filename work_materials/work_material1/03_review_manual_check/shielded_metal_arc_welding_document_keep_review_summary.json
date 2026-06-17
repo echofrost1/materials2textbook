@@ -1,0 +1,13 @@
+{
+  "batch_jsonl": "work_materials\\work_material1\\05_final_deliverables\\chapter_work\\shielded_metal_arc_welding\\chapter_document_segments.jsonl",
+  "batch_type": "reference",
+  "input_rows": 86,
+  "reviewed_rows_written": 86,
+  "keep_only": true,
+  "decision_counts": {
+    "keep": 86
+  },
+  "reviewed_jsonl": "work_materials\\work_material1\\05_final_deliverables\\chapter_work\\shielded_metal_arc_welding\\shielded_metal_arc_welding_document_keep_reviewed.jsonl",
+  "reviewed_xlsx": "work_materials\\work_material1\\01_manifest_inventory\\batches\\shielded_metal_arc_welding_document_keep_reviewed.xlsx",
+  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\shielded_metal_arc_welding_document_keep_review.xlsx"
+}

@@ -1,0 +1,111 @@
+{
+  "chapter_work_root": "D:\\text python\\work20260612\\work_materials\\work_material1\\05_final_deliverables\\chapter_work",
+  "output_root": "D:\\text python\\work20260612\\work_materials\\work_material1\\05_final_deliverables\\chapter_work\\whole_book_backfilled_inputs",
+  "outputs": {
+    "video": "D:\\text python\\work20260612\\work_materials\\work_material1\\05_final_deliverables\\chapter_work\\whole_book_backfilled_inputs\\whole_book_video_fixed.jsonl",
+    "ppt": "D:\\text python\\work20260612\\work_materials\\work_material1\\05_final_deliverables\\chapter_work\\whole_book_backfilled_inputs\\whole_book_ppt_fixed.jsonl",
+    "document": "D:\\text python\\work20260612\\work_materials\\work_material1\\05_final_deliverables\\chapter_work\\whole_book_backfilled_inputs\\whole_book_document_fixed.jsonl"
+  },
+  "selected_counts": {
+    "video": 28,
+    "ppt": 93,
+    "document": 84
+  },
+  "chapters": [
+    {
+      "order": 1,
+      "slug": "welding_equipment_safety",
+      "title": "焊接安全与设备基础",
+      "include_in_generation": true,
+      "readiness_counts": {
+        "ready": 8
+      },
+      "video_reviewed_rows": 12,
+      "video_selected_rows": 6,
+      "ppt_reviewed_rows": 104,
+      "ppt_selected_rows": 25,
+      "document_reviewed_rows": 52,
+      "document_selected_rows": 15
+    },
+    {
+      "order": 2,
+      "slug": "shielded_metal_arc_welding",
+      "title": "焊条电弧焊",
+      "include_in_generation": true,
+      "readiness_counts": {
+        "ready": 8,
+        "partial_ready": 1
+      },
+      "video_reviewed_rows": 35,
+      "video_selected_rows": 6,
+      "ppt_reviewed_rows": 390,
+      "ppt_selected_rows": 25,
+      "document_reviewed_rows": 86,
+      "document_selected_rows": 15
+    },
+    {
+      "order": 3,
+      "slug": "tig_welding",
+      "title": "钨极氩弧焊",
+      "include_in_generation": true,
+      "readiness_counts": {
+        "ready": 10
+      },
+      "video_reviewed_rows": 40,
+      "video_selected_rows": 6,
+      "ppt_reviewed_rows": 415,
+      "ppt_selected_rows": 25,
+      "document_reviewed_rows": 92,
+      "document_selected_rows": 15
+    },
+    {
+      "order": 4,
+      "slug": "welding_basic_operation",
+      "title": "焊接基本操作",
+      "include_in_generation": true,
+      "readiness_counts": {
+        "ready": 6,
+        "partial_ready": 2
+      },
+      "video_reviewed_rows": 20,
+      "video_selected_rows": 6,
+      "ppt_reviewed_rows": 2,
+      "ppt_selected_rows": 2,
+      "document_reviewed_rows": 90,
+      "document_selected_rows": 15
+    },
+    {
+      "order": 5,
+      "slug": "welding_defects_quality",
+      "title": "焊接缺陷与质量检验",
+      "include_in_generation": true,
+      "readiness_counts": {
+        "ready": 2,
+        "partial_ready": 2,
+        "not_ready": 1
+      },
+      "video_reviewed_rows": 12,
+      "video_selected_rows": 4,
+      "ppt_reviewed_rows": 131,
+      "ppt_selected_rows": 15,
+      "document_reviewed_rows": 151,
+      "document_selected_rows": 12
+    },
+    {
+      "order": 6,
+      "slug": "welding_training_assessment",
+      "title": "综合实训与考核",
+      "include_in_generation": true,
+      "readiness_counts": {
+        "ready": 3,
+        "not_ready": 2
+      },
+      "video_reviewed_rows": 0,
+      "video_selected_rows": 0,
+      "ppt_reviewed_rows": 1,
+      "ppt_selected_rows": 1,
+      "document_reviewed_rows": 200,
+      "document_selected_rows": 12
+    }
+  ]
+}

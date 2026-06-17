@@ -7,7 +7,8 @@ const state = {
 };
 
 async function loadBook() {
-  const response = await fetch('digital_book.json');
+  const version = new URLSearchParams(window.location.search).get('v') || Date.now().toString();
+  const response = await fetch(`digital_book.json?v=${version}`);
   state.book = await response.json();
   renderBook(state.book);
 }
@@ -28,12 +29,48 @@ function renderBook(book) {
 function renderToc(book) {
   const toc = document.getElementById('toc');
   toc.innerHTML = '';
+  const plan = book.metadata?.book_plan;
+  if (plan?.chapters?.length) {
+    for (const chapter of plan.chapters) {
+      toc.appendChild(tocChapter(chapter, false));
+    }
+    return;
+  }
   for (const project of book.projects || []) {
     toc.appendChild(tocLink(project.title, project.project_id, 'project'));
     for (const task of project.tasks || []) {
       toc.appendChild(tocLink(task.title, task.task_id, 'task'));
     }
   }
+}
+
+function tocChapter(chapter, expanded) {
+  const wrap = el('div', `toc-chapter${expanded ? '' : ' collapsed'}`);
+  const button = el('button', 'toc-chapter-toggle');
+  button.type = 'button';
+  button.dataset.target = chapter.chapter_id;
+  const icon = el('span', 'toc-chapter-icon');
+  const label = el('span', '');
+  label.textContent = `第${chapter.chapter_no}章 ${chapter.title}`;
+  button.appendChild(icon);
+  button.appendChild(label);
+  const sectionList = el('div', 'toc-section-list');
+  for (const section of chapter.sections || []) {
+    sectionList.appendChild(tocLink(`${section.section_no} ${section.title}`, section.section_id || chapter.chapter_id, 'task'));
+  }
+  const syncIcon = () => {
+    icon.textContent = wrap.classList.contains('collapsed') ? '▶' : '▼';
+  };
+  button.addEventListener('click', () => {
+    wrap.classList.toggle('collapsed');
+    syncIcon();
+    setActiveSection(chapter.chapter_id);
+    document.getElementById(chapter.chapter_id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  syncIcon();
+  wrap.appendChild(button);
+  wrap.appendChild(sectionList);
+  return wrap;
 }
 
 function tocLink(text, id, className) {
@@ -48,7 +85,12 @@ function tocLink(text, id, className) {
 function renderContent(book) {
   const root = document.getElementById('content');
   root.innerHTML = '';
+  const outline = renderBookOutline(book);
+  if (outline) root.appendChild(outline);
+  const bookChapters = book.metadata?.book_plan?.chapters || [];
   for (const project of book.projects || []) {
+    const chapterPlan = bookChapters.find((chapter) => chapter.chapter_id === project.project_id);
+    const anchoredSections = new Set();
     const section = el('section', 'project');
     section.id = project.project_id;
     section.appendChild(heading('h2', project.title));
@@ -62,8 +104,11 @@ function renderContent(book) {
       taskEl.id = task.task_id;
       taskEl.appendChild(heading('h3', task.title));
       taskEl.appendChild(tagRow('知识点', task.knowledge_points || []));
-      taskEl.appendChild(tagRow('重点词', task.key_terms || []));
       for (const block of task.blocks || []) {
+        for (const sectionPlan of matchingChapterSections(chapterPlan, block, anchoredSections)) {
+          taskEl.appendChild(sectionAnchor(sectionPlan.section_id));
+          anchoredSections.add(sectionPlan.section_id);
+        }
         taskEl.appendChild(renderBlock(block));
       }
       root.appendChild(taskEl);
@@ -78,29 +123,92 @@ function renderBlock(block) {
   if (block.type === 'video') {
     const video = document.createElement('video');
     video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
     video.src = block.src;
     if (block.poster) video.poster = block.poster;
     if (block.start_time) video.dataset.startTime = block.start_time;
+    if (block.end_time) video.dataset.endTime = block.end_time;
     video.addEventListener('loadedmetadata', () => {
       const seconds = timeToSeconds(video.dataset.startTime || '');
       if (seconds > 0) video.currentTime = seconds;
     }, { once: true });
+    video.addEventListener('timeupdate', () => {
+      const endSeconds = timeToSeconds(video.dataset.endTime || '');
+      if (endSeconds > 0 && video.currentTime >= endSeconds) {
+        video.pause();
+        video.currentTime = timeToSeconds(video.dataset.startTime || '');
+      }
+    });
     node.appendChild(video);
+    node.appendChild(videoActions(video));
     node.appendChild(paragraph(`${block.start_time || ''} - ${block.end_time || ''}`));
   } else if (block.items && block.items.length) {
     node.appendChild(list(block.items));
   }
   if (block.markdown) {
-    const pre = el('pre', 'markdown');
-    pre.textContent = block.markdown;
-    node.appendChild(pre);
-  }
-  if (block.evidence_chunk_ids && block.evidence_chunk_ids.length) {
-    const evidence = el('div', 'evidence');
-    evidence.textContent = `证据：${block.evidence_chunk_ids.join(', ')}`;
-    node.appendChild(evidence);
+    const markdown = el('div', 'markdown');
+    markdown.innerHTML = renderMarkdown(block.markdown);
+    node.appendChild(markdown);
   }
   return node;
+}
+
+function videoActions(video) {
+  const wrap = el('div', 'video-actions');
+  const toggle = el('button', 'video-toggle');
+  const status = el('span', 'video-status');
+  toggle.type = 'button';
+  const syncLabel = () => {
+    toggle.textContent = video.paused ? '播放' : '暂停';
+    if (!video.paused) status.textContent = '';
+  };
+  toggle.addEventListener('click', async () => {
+    if (video.paused) {
+      try {
+        status.textContent = '';
+        const startSeconds = timeToSeconds(video.dataset.startTime || '');
+        const endSeconds = timeToSeconds(video.dataset.endTime || '');
+        if (startSeconds > 0 && (video.currentTime < startSeconds || (endSeconds > 0 && video.currentTime >= endSeconds))) {
+          video.currentTime = startSeconds;
+        }
+        await video.play();
+      } catch (error) {
+        status.textContent = '浏览器阻止了自动播放，请直接点击视频控件播放。';
+      }
+    } else {
+      video.pause();
+    }
+    syncLabel();
+  });
+  video.addEventListener('play', syncLabel);
+  video.addEventListener('pause', syncLabel);
+  video.addEventListener('ended', syncLabel);
+  syncLabel();
+  wrap.appendChild(toggle);
+  wrap.appendChild(status);
+  return wrap;
+}
+
+function renderMarkdown(value) {
+  const blocks = String(value || '')
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  return blocks.map((block) => `<p>${renderInlineMarkdown(block).replace(/\n/g, '<br>')}</p>`).join('');
+}
+
+function renderInlineMarkdown(value) {
+  return escapeHtml(value).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function buildAskIndex(book) {
@@ -114,17 +222,17 @@ function buildAskIndex(book) {
           block.title,
           block.markdown || '',
           ...(block.items || []),
-          ...(block.evidence_chunk_ids || []),
         ];
         const text = textParts.join(' ').replace(/\s+/g, ' ').trim();
         if (!text) continue;
         rows.push({
           id: block.block_id,
+          blockType: block.type || block.block_type || '',
           projectTitle: project.title,
           taskTitle: task.title,
           blockTitle: block.title,
           text,
-          evidence: block.evidence_chunk_ids || [],
+          evidence: [],
         });
       }
     }
@@ -137,22 +245,78 @@ async function answerQuestion(rawQuestion) {
   const terms = tokenizeQuestion(rawQuestion);
   answer.innerHTML = '';
   if (!terms.length) {
-    answer.textContent = '请输入要检索的知识点、操作步骤或证据编号。';
+    answer.textContent = '请输入要检索的知识点、操作步骤或学习问题。';
     return;
   }
   const results = state.askIndex
     .map((row) => ({ row, score: scoreAskRow(row, terms) }))
     .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 3);
-  if (!results.length) {
-    answer.textContent = '暂未在本教材中找到直接相关内容。可以换一个知识点、操作词或 chunk_id 再问。';
+    .sort((left, right) => right.score - left.score);
+  const focusedResults = preferAskResults(results, terms).slice(0, 3);
+  if (!focusedResults.length) {
+    answer.textContent = '暂未在本教材中找到直接相关内容。可以换一个知识点、操作词或学习问题再问。';
     return;
   }
-  const remoteAnswered = await answerWithRemoteService(rawQuestion, results, answer);
+  const remoteAnswered = await answerWithRemoteService(rawQuestion, focusedResults, answer);
   if (!remoteAnswered) {
-    renderLocalAskResults(results, terms, answer);
+    renderLocalAskResults(focusedResults, terms, answer);
   }
+}
+
+function matchingChapterSections(chapterPlan, block, anchoredSections) {
+  if (!chapterPlan?.sections?.length || !block) return [];
+  const title = normalizeText(block.title || '');
+  const blockId = normalizeText(block.block_id || '');
+  if (!title && !blockId) return [];
+  const result = [];
+  for (const section of chapterPlan.sections) {
+    if (!section.section_id || anchoredSections.has(section.section_id)) continue;
+    const candidates = [section.title, ...(section.knowledge_points || [])].map(normalizeText).filter(Boolean);
+    if (candidates.some((item) => title.includes(item) || item.includes(title) || blockId.includes(item))) {
+      result.push(section);
+    }
+  }
+  return result;
+}
+
+function normalizeText(value) {
+  return String(value || '').replace(/[\s\-_/：:，,。、《》()（）]/g, '').toLowerCase();
+}
+
+function sectionAnchor(id) {
+  const anchor = el('span', 'section-anchor');
+  anchor.id = id;
+  return anchor;
+}
+
+function renderBookOutline(book) {
+  const plan = book.metadata?.book_plan;
+  if (!plan?.chapters?.length) return null;
+  const section = el('section', 'book-outline');
+  section.id = 'book_outline';
+  section.appendChild(heading('h2', '教材大纲'));
+  const chapterList = document.createElement('ol');
+  for (const chapter of plan.chapters) {
+    const chapterItem = document.createElement('li');
+    chapterItem.appendChild(document.createTextNode(`第${chapter.chapter_no}章 ${chapter.title}`));
+    const sectionList = document.createElement('ol');
+    for (const item of chapter.sections || []) {
+      const sectionItem = document.createElement('li');
+      sectionItem.appendChild(document.createTextNode(`${item.section_no} ${item.title}`));
+      const pointList = document.createElement('ol');
+      for (const point of item.knowledge_points || []) {
+        const pointItem = document.createElement('li');
+        pointItem.textContent = point;
+        pointList.appendChild(pointItem);
+      }
+      if (pointList.children.length) sectionItem.appendChild(pointList);
+      sectionList.appendChild(sectionItem);
+    }
+    if (sectionList.children.length) chapterItem.appendChild(sectionList);
+    chapterList.appendChild(chapterItem);
+  }
+  section.appendChild(chapterList);
+  return section;
 }
 
 function renderLocalAskResults(results, terms, answer) {
@@ -205,14 +369,19 @@ function buildAskPayload(question, results) {
 function renderRemoteAnswer(payload, answer) {
   answer.innerHTML = '';
   const wrap = el('div', 'ask-result');
-  wrap.appendChild(paragraph(payload.answer || payload.markdown || 'Remote service returned an empty answer.'));
-  const citations = payload.citations || payload.evidence_chunk_ids || [];
-  if (citations.length) {
-    const evidence = document.createElement('small');
-    evidence.textContent = `Evidence: ${citations.join(', ')}`;
-    wrap.appendChild(evidence);
-  }
+  wrap.appendChild(paragraph(sanitizeStudentAnswer(payload.answer || payload.markdown || 'Remote service returned an empty answer.')));
   answer.appendChild(wrap);
+}
+
+function sanitizeStudentAnswer(value) {
+  return String(value || '')
+    .replace(/证据\s*[：:]\s*`?[A-Za-z]{1,5}[_-]?\d{3,}[A-Za-z0-9_-]*`?/gi, '')
+    .replace(/chunk_id\s*[：:]\s*`?[A-Za-z]{1,5}[_-]?\d{3,}[A-Za-z0-9_-]*`?/gi, '')
+    .replace(/`?[A-Za-z]{1,5}[_-]?\d{3,}[A-Za-z0-9_-]*`?/g, '')
+    .replace(/\.(?:mp4|flv|mp3|wav|pptx|ppt|jsonl|docx?)\b/gi, '')
+    .replace(/证据编号|来源：|Pending_|待人工|人工复核|时间码|PPT_/g, '')
+    .replace(/\s+/g, ' ')
+    .trim() || '已找到相关教材内容，请结合对应知识点继续阅读。';
 }
 
 function renderAskResult(row, terms) {
@@ -225,20 +394,27 @@ function renderAskResult(row, terms) {
   title.appendChild(link);
   wrap.appendChild(title);
   wrap.appendChild(paragraph(excerptForTerms(row.text, terms)));
-  if (row.evidence.length) {
-    const evidence = document.createElement('small');
-    evidence.textContent = `证据：${row.evidence.join(', ')}`;
-    wrap.appendChild(evidence);
-  }
   return wrap;
 }
 
 function tokenizeQuestion(value) {
-  return [...new Set((value || '')
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}_-]+/u)
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 2))];
+  const terms = [];
+  const pushTerm = (term) => {
+    const cleaned = String(term || '').toLowerCase().trim();
+    if (cleaned.length >= 2) terms.push(cleaned);
+  };
+  for (const token of String(value || '').split(/[^\p{L}\p{N}_-]+/u)) {
+    pushTerm(token);
+    const cjkRuns = token.match(/[\u3400-\u9fff]{2,}/g) || [];
+    for (const run of cjkRuns) {
+      for (const size of [2, 3, 4]) {
+        for (let index = 0; index <= run.length - size; index += 1) {
+          pushTerm(run.slice(index, index + size));
+        }
+      }
+    }
+  }
+  return [...new Set(terms)];
 }
 
 function scoreAskRow(row, terms) {
@@ -248,11 +424,26 @@ function scoreAskRow(row, terms) {
   for (const term of terms) {
     if (text.includes(term)) score += term.length >= 5 ? 3 : 1;
     if (title.includes(term)) score += 4;
-    if ((row.evidence || []).some((chunkId) => chunkId.toLowerCase() === term)) {
-      score += Math.max(1, 12 / Math.max(1, row.evidence.length));
-    }
   }
+  if (['learning_nav', 'assessment', 'exercises'].includes(row.blockType)) score -= 3;
   return score;
+}
+
+function preferAskResults(results, terms) {
+  const primary = results.filter((item) => !['learning_nav', 'assessment', 'exercises'].includes(item.row.blockType));
+  const candidates = primary.length ? primary : results;
+  const focus = focusAskTerms(terms);
+  if (!focus.length) return candidates;
+  const focused = candidates.filter((item) => {
+    const haystack = `${item.row.blockTitle} ${item.row.text}`.toLowerCase();
+    return focus.some((term) => haystack.includes(term));
+  });
+  return focused.length ? focused : candidates;
+}
+
+function focusAskTerms(terms) {
+  const generic = new Set(['操作', '注意', '什么', '怎么', '如何', '要点', '说明', '相关', '学习', '知识', '任务', '操作要', '作要', '要注', '注意什', '意什', '要注意', '注意什么']);
+  return terms.filter((term) => term.length >= 2 && !generic.has(term));
 }
 
 function excerptForTerms(text, terms) {
@@ -328,7 +519,7 @@ function restoreReaderState() {
 }
 
 function bindScrollTracking() {
-  const sections = [...document.querySelectorAll('.project, .task')];
+  const sections = [...document.querySelectorAll('.project, .task, .section-anchor')];
   let ticking = false;
   window.addEventListener('scroll', () => {
     if (ticking) return;
@@ -356,6 +547,9 @@ function setActiveSection(id) {
   localStorage.setItem(`${state.storageKey}.activeId`, id);
   for (const link of document.querySelectorAll('.toc a')) {
     link.classList.toggle('active', link.getAttribute('href') === `#${id}`);
+  }
+  for (const button of document.querySelectorAll('.toc-chapter-toggle')) {
+    button.classList.toggle('active', button.dataset.target === id);
   }
 }
 

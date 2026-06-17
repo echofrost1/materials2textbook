@@ -1,0 +1,13 @@
+{
+  "batch_jsonl": "work_materials\\work_material1\\05_final_deliverables\\chapter_work\\welding_defects_quality\\chapter_document_segments.jsonl",
+  "batch_type": "reference",
+  "input_rows": 25,
+  "reviewed_rows_written": 25,
+  "keep_only": true,
+  "decision_counts": {
+    "keep": 25
+  },
+  "reviewed_jsonl": "work_materials\\work_material1\\05_final_deliverables\\chapter_work\\welding_defects_quality\\welding_defects_quality_document_keep_reviewed.jsonl",
+  "reviewed_xlsx": "work_materials\\work_material1\\01_manifest_inventory\\batches\\welding_defects_quality_document_keep_reviewed.xlsx",
+  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\welding_defects_quality_document_keep_review.xlsx"
+}

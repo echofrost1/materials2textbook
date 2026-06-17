@@ -1,1 +1,320 @@
-[]
+[
+  {
+    "severity": "medium",
+    "location": "chapter_01_task_01",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_01_task_02",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_01_task_03",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_01",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_01",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_02",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_02",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_03",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_03",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_04",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_04",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_05",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_06",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_07",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_07",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_08",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_02_task_08",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_01",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_02",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_02",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_03",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_03",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_04",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_04",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_05",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_06",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_06",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_07",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_07",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_08",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_09",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_03_task_09",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_01",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_02",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_02",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_03",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_04",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_04",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_05",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_05",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_06",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_06",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_07",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_07",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_04_task_08",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_05_task_01",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_05_task_01",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_05_task_02",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_05_task_03",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_05_task_04",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_05_task_04",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_06_task_01",
+    "message": "缺少学习导航。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  },
+  {
+    "severity": "medium",
+    "location": "chapter_06_task_01",
+    "message": "缺少视频资源块。",
+    "suggestion": "补齐项目化教材的任务结构后再交付前端阅读器。"
+  }
+]

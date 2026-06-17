@@ -2680,10 +2680,18 @@ function renderBlock(block) {
     video.src = block.src;
     if (block.poster) video.poster = block.poster;
     if (block.start_time) video.dataset.startTime = block.start_time;
+    if (block.end_time) video.dataset.endTime = block.end_time;
     video.addEventListener('loadedmetadata', () => {
       const seconds = timeToSeconds(video.dataset.startTime || '');
       if (seconds > 0) video.currentTime = seconds;
     }, { once: true });
+    video.addEventListener('timeupdate', () => {
+      const endSeconds = timeToSeconds(video.dataset.endTime || '');
+      if (endSeconds > 0 && video.currentTime >= endSeconds) {
+        video.pause();
+        video.currentTime = timeToSeconds(video.dataset.startTime || '');
+      }
+    });
     node.appendChild(video);
     node.appendChild(videoActions(video));
     node.appendChild(paragraph(`${block.start_time || ''} - ${block.end_time || ''}`));
@@ -2711,6 +2719,11 @@ function videoActions(video) {
     if (video.paused) {
       try {
         status.textContent = '';
+        const startSeconds = timeToSeconds(video.dataset.startTime || '');
+        const endSeconds = timeToSeconds(video.dataset.endTime || '');
+        if (startSeconds > 0 && (video.currentTime < startSeconds || (endSeconds > 0 && video.currentTime >= endSeconds))) {
+          video.currentTime = startSeconds;
+        }
         await video.play();
       } catch (error) {
         status.textContent = '浏览器阻止了自动播放，请直接点击视频控件播放。';

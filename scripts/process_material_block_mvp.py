@@ -55,6 +55,8 @@ BLOCK_CHAPTERS = {
     "shielded_metal_arc_welding": ("焊条电弧焊", "焊条电弧焊基本操作"),
     "welding_basic_operation": ("焊接基本操作", "焊接基本操作"),
     "welding_equipment_safety": ("焊接设备与安全", "焊接设备与安全"),
+    "welding_defects_quality": ("焊接缺陷与质量检验", "焊接缺陷与质量检验"),
+    "welding_training_assessment": ("综合实训与考核", "综合实训与考核"),
     "gas_welding_and_cutting": ("气焊与气割", "气焊与气割基本操作"),
     "tig_welding": ("钨极氩弧焊", "钨极氩弧焊基本操作"),
 }

@@ -1,42 +1,38 @@
 {
-  "generated_at": "2026-06-17T17:10:29",
+  "generated_at": "2026-06-17T18:04:26",
   "chapter": "钨极氩弧焊",
   "source_records_total": 1075,
-  "selected_records": 549,
+  "selected_records": 547,
   "source_type_counts": {
     "video": 40,
-    "ppt": 417,
+    "ppt": 415,
     "reference_text": 80,
     "structured": 12
   },
   "quality_gate_counts": {
     "weak": 46,
-    "pass": 503
+    "pass": 501
   },
   "evidence_role_counts": {
     "primary": 26,
-    "support": 427,
+    "support": 425,
     "reference": 96
   },
   "readiness_counts": {
-    "ready": 2,
-    "partial_ready": 4,
-    "not_ready": 4
+    "ready": 10
   },
   "ready_knowledge_points": [
     "基本原理",
-    "设备组成"
-  ],
-  "partial_ready_knowledge_points": [
+    "设备组成",
     "焊前准备",
     "非接触引弧",
     "送丝操作",
-    "收弧操作"
-  ],
-  "not_ready_knowledge_points": [
+    "收弧操作",
     "打底焊",
     "填充焊",
     "盖面焊",
     "常见缺陷与纠正"
-  ]
+  ],
+  "partial_ready_knowledge_points": [],
+  "not_ready_knowledge_points": []
 }

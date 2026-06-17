@@ -1,0 +1,175 @@
+{
+  "book_dir": "D:\\text python\\work20260612\\work_materials\\work_material1\\05_final_deliverables\\digital_book",
+  "clips_cut": 21,
+  "clips": [
+    {
+      "block_id": "p01_t01_kp01_media01",
+      "clip": "assets/videos/clips/p01_t01_kp01_media01_106_212.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000006_1焊接坡口.mp4",
+      "source_start_time": "00:01:46",
+      "source_end_time": "00:03:32",
+      "duration_seconds": 106
+    },
+    {
+      "block_id": "p01_t02_kp01_media01",
+      "clip": "assets/videos/clips/p01_t02_kp01_media01_0_55.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000022_4焊缝收尾.mp4",
+      "source_start_time": "00:00:00",
+      "source_end_time": "00:00:55",
+      "duration_seconds": 55
+    },
+    {
+      "block_id": "p01_t02_kp01_media02",
+      "clip": "assets/videos/clips/p01_t02_kp01_media02_0_116.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000017_3焊缝的连接.mp4",
+      "source_start_time": "00:00:00",
+      "source_end_time": "00:01:56",
+      "duration_seconds": 116
+    },
+    {
+      "block_id": "p01_t03_kp01_media01",
+      "clip": "assets/videos/clips/p01_t03_kp01_media01_77_155.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000013_2盖面层焊接技能讲授.mp4",
+      "source_start_time": "00:01:17",
+      "source_end_time": "00:02:35",
+      "duration_seconds": 78
+    },
+    {
+      "block_id": "p01_t03_kp01_media02",
+      "clip": "assets/videos/clips/p01_t03_kp01_media02_116_232.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000017_3焊缝的连接.mp4",
+      "source_start_time": "00:01:56",
+      "source_end_time": "00:03:52",
+      "duration_seconds": 116
+    },
+    {
+      "block_id": "p02_t05_kp01_media01",
+      "clip": "assets/videos/clips/p02_t05_kp01_media01_53_106.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000007_1焊条电弧焊的基本原理.mp4",
+      "source_start_time": "00:00:53",
+      "source_end_time": "00:01:46",
+      "duration_seconds": 53
+    },
+    {
+      "block_id": "p02_t06_kp01_media01",
+      "clip": "assets/videos/clips/p02_t06_kp01_media01_0_85.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000021_4焊条的分类.mp4",
+      "source_start_time": "00:00:00",
+      "source_end_time": "00:01:25",
+      "duration_seconds": 85
+    },
+    {
+      "block_id": "p02_t06_kp01_media02",
+      "clip": "assets/videos/clips/p02_t06_kp01_media02_0_88.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000008_1焊条的组成及作用.mp4",
+      "source_start_time": "00:00:00",
+      "source_end_time": "00:01:28",
+      "duration_seconds": 88
+    },
+    {
+      "block_id": "p03_t01_kp01_media01",
+      "clip": "assets/videos/clips/p03_t01_kp01_media01_0_81.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000053_钨极氩弧焊平对接焊接.mp4",
+      "source_start_time": "00:00:00",
+      "source_end_time": "00:01:21",
+      "duration_seconds": 81
+    },
+    {
+      "block_id": "p03_t01_kp01_media02",
+      "clip": "assets/videos/clips/p03_t01_kp01_media02_328_414.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000066_基本原理.mp4",
+      "source_start_time": "00:05:28",
+      "source_end_time": "00:06:54",
+      "duration_seconds": 86
+    },
+    {
+      "block_id": "p03_t05_kp01_media01",
+      "clip": "assets/videos/clips/p03_t05_kp01_media01_81_162.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000053_钨极氩弧焊平对接焊接.mp4",
+      "source_start_time": "00:01:21",
+      "source_end_time": "00:02:42",
+      "duration_seconds": 81
+    },
+    {
+      "block_id": "p03_t05_kp01_media02",
+      "clip": "assets/videos/clips/p03_t05_kp01_media02_0_48.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000068_焊前定位焊.mp4",
+      "source_start_time": "00:00:00",
+      "source_end_time": "00:00:48",
+      "duration_seconds": 48
+    },
+    {
+      "block_id": "p03_t08_kp01_media01",
+      "clip": "assets/videos/clips/p03_t08_kp01_media01_0_24.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000071_送丝.mp4",
+      "source_start_time": "00:00:00",
+      "source_end_time": "00:00:24",
+      "duration_seconds": 24
+    },
+    {
+      "block_id": "p04_t01_kp01_media01",
+      "clip": "assets/videos/clips/p04_t01_kp01_media01_0_62.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000035_焊条电弧焊安全操作规范.mp4",
+      "source_start_time": "00:00:00",
+      "source_end_time": "00:01:02",
+      "duration_seconds": 62
+    },
+    {
+      "block_id": "p04_t01_kp01_media02",
+      "clip": "assets/videos/clips/p04_t01_kp01_media02_51_101.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000024_6焊工面罩的安装与使用.mp4",
+      "source_start_time": "00:00:51",
+      "source_end_time": "00:01:41",
+      "duration_seconds": 50
+    },
+    {
+      "block_id": "p04_t03_kp01_media01",
+      "clip": "assets/videos/clips/p04_t03_kp01_media01_0_50.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000060_气焊与气割安全操作.mp4",
+      "source_start_time": "00:00:00",
+      "source_end_time": "00:00:50",
+      "duration_seconds": 50
+    },
+    {
+      "block_id": "p04_t08_kp01_media01",
+      "clip": "assets/videos/clips/p04_t08_kp01_media01_62_123.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000035_焊条电弧焊安全操作规范.mp4",
+      "source_start_time": "00:01:02",
+      "source_end_time": "00:02:03",
+      "duration_seconds": 61
+    },
+    {
+      "block_id": "p04_t08_kp01_media02",
+      "clip": "assets/videos/clips/p04_t08_kp01_media02_0_44.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000034_焊接电缆.mp4",
+      "source_start_time": "00:00:00",
+      "source_end_time": "00:00:44",
+      "duration_seconds": 44
+    },
+    {
+      "block_id": "p05_t02_kp01_media01",
+      "clip": "assets/videos/clips/p05_t02_kp01_media01_0_81.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000012_2焊芯及其作用.mp4",
+      "source_start_time": "00:00:00",
+      "source_end_time": "00:01:21",
+      "duration_seconds": 81
+    },
+    {
+      "block_id": "p05_t02_kp01_media02",
+      "clip": "assets/videos/clips/p05_t02_kp01_media02_67_134.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000032_常见缺陷.mp4",
+      "source_start_time": "00:01:07",
+      "source_end_time": "00:02:14",
+      "duration_seconds": 67
+    },
+    {
+      "block_id": "p05_t03_kp01_media01",
+      "clip": "assets/videos/clips/p05_t03_kp01_media01_97_194.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000036_焊缝清理焊后检查.mp4",
+      "source_start_time": "00:01:37",
+      "source_end_time": "00:03:14",
+      "duration_seconds": 97
+    }
+  ],
+  "skipped": []
+}

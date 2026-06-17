@@ -1,0 +1,15 @@
+{
+  "batch_jsonl": "work_materials\\work_material1\\05_final_deliverables\\chapter_work\\tig_welding\\chapter_ppt_assets.jsonl",
+  "batch_type": "ppt",
+  "input_rows": 415,
+  "reviewed_rows_written": 246,
+  "keep_only": true,
+  "decision_counts": {
+    "keep": 246,
+    "reject": 10,
+    "needs_review": 159
+  },
+  "reviewed_jsonl": "work_materials\\work_material1\\05_final_deliverables\\chapter_work\\tig_welding\\tig_chapter_ppt_keep_reviewed.jsonl",
+  "reviewed_xlsx": "work_materials\\work_material1\\01_manifest_inventory\\batches\\tig_chapter_ppt_keep_reviewed.xlsx",
+  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\tig_chapter_ppt_keep_review.xlsx"
+}

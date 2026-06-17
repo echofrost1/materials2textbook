@@ -41,8 +41,26 @@ class ResourceAnalystAgent:
         return [self._enhance_chunk(chunk) for chunk in valid_chunks]
 
     def _enhance_chunk(self, chunk: EvidenceChunk) -> EvidenceChunk:
-        raw_response = self.llm_provider.generate(build_resource_analyst_messages(chunk))
-        payload = _parse_json_object(raw_response)
+        try:
+            raw_response = self.llm_provider.generate(build_resource_analyst_messages(chunk))
+        except Exception as exc:
+            metadata = dict(chunk.metadata)
+            metadata["llm_resource_analysis"] = {
+                "enabled": True,
+                "fallback": True,
+                "error": str(exc)[:500],
+            }
+            return replace(chunk, metadata=metadata)
+        try:
+            payload = _parse_json_object(raw_response)
+        except Exception as exc:
+            metadata = dict(chunk.metadata)
+            metadata["llm_resource_analysis"] = {
+                "enabled": True,
+                "fallback": True,
+                "error": str(exc)[:500],
+            }
+            return replace(chunk, metadata=metadata)
 
         summary = _non_empty_string(payload.get("summary")) or chunk.summary
         normalized_content = _non_empty_string(payload.get("normalized_content")) or chunk.content
