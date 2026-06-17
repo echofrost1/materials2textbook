@@ -56,7 +56,7 @@ function tocChapter(chapter, expanded) {
   button.appendChild(label);
   const sectionList = el('div', 'toc-section-list');
   for (const section of chapter.sections || []) {
-    sectionList.appendChild(tocLink(`${section.section_no} ${section.title}`, section.section_id || chapter.chapter_id, 'task'));
+    sectionList.appendChild(tocLink(`${section.section_no} ${section.title}`, section.section_id || chapter.chapter_id, 'task toc-section-link'));
   }
   const syncIcon = () => {
     icon.textContent = wrap.classList.contains('collapsed') ? '▶' : '▼';
@@ -119,7 +119,7 @@ function renderContent(book) {
 function renderBlock(block) {
   const node = el('article', `block block-${block.type}`);
   node.id = block.block_id;
-  node.appendChild(heading('h4', block.title));
+  node.appendChild(blockHeading(block.title));
   if (block.type === 'video') {
     const video = document.createElement('video');
     video.controls = true;
@@ -152,6 +152,18 @@ function renderBlock(block) {
     node.appendChild(markdown);
   }
   return node;
+}
+
+function blockHeading(text) {
+  const title = heading('h4', '');
+  title.className = 'block-heading';
+  const marker = el('span', 'block-marker block-heading-marker');
+  marker.setAttribute('aria-hidden', 'true');
+  const label = el('span', 'block-heading-label');
+  label.textContent = text;
+  title.appendChild(marker);
+  title.appendChild(label);
+  return title;
 }
 
 function videoActions(video) {
@@ -191,15 +203,162 @@ function videoActions(video) {
 }
 
 function renderMarkdown(value) {
-  const blocks = String(value || '')
-    .split(/\n{2,}/)
-    .map((block) => block.trim())
-    .filter(Boolean);
-  return blocks.map((block) => `<p>${renderInlineMarkdown(block).replace(/\n/g, '<br>')}</p>`).join('');
+  const lines = String(value || '').replace(/\r\n?/g, '\n').split('\n');
+  const html = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    const fence = line.match(/^```\s*([\w-]+)?\s*$/);
+    if (fence) {
+      const codeLines = [];
+      index += 1;
+      while (index < lines.length && !/^```\s*$/.test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      const language = fence[1] ? ` language-${escapeHtml(fence[1])}` : '';
+      html.push(`<pre><code class="${language.trim()}">${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+      continue;
+    }
+
+    if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+      html.push('<hr>');
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(headingMatch[2].trim())}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      const quoteLines = [];
+      while (index < lines.length && /^>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^>\s?/, ''));
+        index += 1;
+      }
+      html.push(`<blockquote>${renderMarkdown(quoteLines.join('\n'))}</blockquote>`);
+      continue;
+    }
+
+    if (isTableStart(lines, index)) {
+      const tableLines = [lines[index], lines[index + 1]];
+      index += 2;
+      while (index < lines.length && isTableRow(lines[index])) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      html.push(renderMarkdownTable(tableLines));
+      continue;
+    }
+
+    const listMatch = line.match(/^(\s*)([-*+] |\d+[.)]\s+)(.+)$/);
+    if (listMatch) {
+      const ordered = /\d/.test(listMatch[2][0]);
+      const tag = ordered ? 'ol' : 'ul';
+      const items = [];
+      while (index < lines.length) {
+        const itemMatch = lines[index].match(/^(\s*)([-*+] |\d+[.)]\s+)(.+)$/);
+        if (!itemMatch || (/\d/.test(itemMatch[2][0]) !== ordered)) break;
+        const itemLines = [itemMatch[3]];
+        index += 1;
+        while (index < lines.length && lines[index].trim() && !/^(\s*)([-*+] |\d+[.)]\s+)/.test(lines[index])) {
+          itemLines.push(lines[index].trim());
+          index += 1;
+        }
+        items.push(`<li>${renderInlineMarkdown(itemLines.join('\n')).replace(/\n/g, '<br>')}</li>`);
+      }
+      html.push(`<${tag}>${items.join('')}</${tag}>`);
+      continue;
+    }
+
+    const paragraphLines = [line.trim()];
+    index += 1;
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !/^```/.test(lines[index]) &&
+      !/^(#{1,6})\s+/.test(lines[index]) &&
+      !/^>\s?/.test(lines[index]) &&
+      !/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(lines[index]) &&
+      !/^(\s*)([-*+] |\d+[.)]\s+)/.test(lines[index]) &&
+      !isTableStart(lines, index)
+    ) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+    html.push(`<p>${renderInlineMarkdown(paragraphLines.join('\n')).replace(/\n/g, '<br>')}</p>`);
+  }
+  return html.join('');
 }
 
 function renderInlineMarkdown(value) {
-  return escapeHtml(value).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  const codeSpans = [];
+  let text = escapeHtml(value).replace(/`([^`]+)`/g, (_match, code) => {
+    const token = `%%CODE${codeSpans.length}%%`;
+    codeSpans.push(`<code>${code}</code>`);
+    return token;
+  });
+  text = text
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>')
+    .replace(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+&quot;[^&]*&quot;)?\)/g, (_match, alt, rawUrl) => {
+      const url = safeMarkdownUrl(rawUrl);
+      return url ? `<img src="${url}" alt="${escapeHtml(alt)}">` : escapeHtml(alt);
+    })
+    .replace(/\[([^\]]+)\]\(([^\s)]+)(?:\s+&quot;[^&]*&quot;)?\)/g, (_match, label, rawUrl) => {
+      const url = safeMarkdownUrl(rawUrl);
+      return url ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>` : label;
+    });
+  return text.replace(/%%CODE(\d+)%%/g, (_match, index) => codeSpans[Number(index)] || '');
+}
+
+function isTableStart(lines, index) {
+  return isTableRow(lines[index]) && index + 1 < lines.length && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[index + 1] || '');
+}
+
+function isTableRow(line) {
+  return /^\s*\|.*\|\s*$/.test(line || '');
+}
+
+function renderMarkdownTable(lines) {
+  const headers = splitTableRow(lines[0]);
+  const aligns = splitTableRow(lines[1]).map((cell) => {
+    const value = cell.trim();
+    if (value.startsWith(':') && value.endsWith(':')) return 'center';
+    if (value.endsWith(':')) return 'right';
+    return 'left';
+  });
+  const bodyRows = lines.slice(2).map(splitTableRow);
+  const ths = headers.map((cell, index) => `<th style="text-align:${aligns[index] || 'left'}">${renderInlineMarkdown(cell.trim())}</th>`).join('');
+  const rows = bodyRows.map((row) => {
+    const tds = headers.map((_header, index) => `<td style="text-align:${aligns[index] || 'left'}">${renderInlineMarkdown((row[index] || '').trim())}</td>`).join('');
+    return `<tr>${tds}</tr>`;
+  }).join('');
+  return `<table><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function splitTableRow(line) {
+  return String(line || '').trim().replace(/^\|/, '').replace(/\|$/, '').split('|');
+}
+
+function safeMarkdownUrl(rawUrl) {
+  const decoded = String(rawUrl || '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
+  if (!decoded || /^[a-z][a-z0-9+.-]*:/i.test(decoded) && !/^(https?:|mailto:)/i.test(decoded)) return '';
+  return escapeHtml(decoded);
 }
 
 function escapeHtml(value) {
@@ -369,7 +528,9 @@ function buildAskPayload(question, results) {
 function renderRemoteAnswer(payload, answer) {
   answer.innerHTML = '';
   const wrap = el('div', 'ask-result');
-  wrap.appendChild(paragraph(sanitizeStudentAnswer(payload.answer || payload.markdown || 'Remote service returned an empty answer.')));
+  const markdown = el('div', 'markdown');
+  markdown.innerHTML = renderMarkdown(sanitizeStudentAnswer(payload.answer || payload.markdown || 'Remote service returned an empty answer.'));
+  wrap.appendChild(markdown);
   answer.appendChild(wrap);
 }
 

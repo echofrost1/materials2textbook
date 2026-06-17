@@ -84,19 +84,19 @@
     },
     {
       "block_id": "p03_t05_kp01_media01",
-      "clip": "assets/videos/clips/p03_t05_kp01_media01_81_162.mp4",
-      "source": "../../02_working_processing/converted_mp4/A000053_钨极氩弧焊平对接焊接.mp4",
-      "source_start_time": "00:01:21",
-      "source_end_time": "00:02:42",
-      "duration_seconds": 81
-    },
-    {
-      "block_id": "p03_t05_kp01_media02",
-      "clip": "assets/videos/clips/p03_t05_kp01_media02_0_48.mp4",
+      "clip": "assets/videos/clips/p03_t05_kp01_media01_0_48.mp4",
       "source": "../../02_working_processing/converted_mp4/A000068_焊前定位焊.mp4",
       "source_start_time": "00:00:00",
       "source_end_time": "00:00:48",
       "duration_seconds": 48
+    },
+    {
+      "block_id": "p03_t05_kp01_media02",
+      "clip": "assets/videos/clips/p03_t05_kp01_media02_81_162.mp4",
+      "source": "../../02_working_processing/converted_mp4/A000053_钨极氩弧焊平对接焊接.mp4",
+      "source_start_time": "00:01:21",
+      "source_end_time": "00:02:42",
+      "duration_seconds": 81
     },
     {
       "block_id": "p03_t08_kp01_media01",

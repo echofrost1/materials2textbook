@@ -1,0 +1,8 @@
+[
+  {
+    "severity": "low",
+    "location": "chapter_03",
+    "message": "章节节次数较多。",
+    "suggestion": "考虑拆分章节或收缩知识点。"
+  }
+]

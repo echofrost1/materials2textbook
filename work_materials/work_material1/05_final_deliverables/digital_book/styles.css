@@ -308,6 +308,87 @@ video {
 .markdown p { margin: 0 0 12px; }
 .markdown p:last-child { margin-bottom: 0; }
 .markdown strong { font-weight: 700; }
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 18px 0 10px;
+  color: #101828;
+  line-height: 1.35;
+}
+.markdown h1 { font-size: 22px; }
+.markdown h2 { font-size: 20px; }
+.markdown h3 { font-size: 18px; }
+.markdown h4 { font-size: 16px; }
+.markdown h5,
+.markdown h6 { font-size: 15px; }
+.markdown ul,
+.markdown ol {
+  margin: 0 0 14px 22px;
+  padding: 0;
+}
+.markdown li { margin: 4px 0; }
+.markdown blockquote {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-left: 3px solid #2f80ed;
+  background: #f6f9ff;
+  color: #344054;
+}
+.markdown pre {
+  margin: 0 0 14px;
+  padding: 12px;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: #111827;
+  color: #f9fafb;
+}
+.markdown code {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #eef2f7;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+.markdown pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+.markdown table {
+  width: 100%;
+  margin: 0 0 14px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.markdown th,
+.markdown td {
+  padding: 8px 10px;
+  border: 1px solid #d0d5dd;
+  vertical-align: top;
+}
+.markdown th {
+  background: #f2f4f7;
+  font-weight: 700;
+}
+.markdown a {
+  color: #1d4ed8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 8px 0 14px;
+}
+.markdown hr {
+  margin: 18px 0;
+  border: 0;
+  border-top: 1px solid #d0d5dd;
+}
 
 /* Gemini-inspired immersive reader theme. Kept as an override layer so the
    existing generated HTML and learning-state behavior stay compatible. */
@@ -770,6 +851,32 @@ video {
   padding: 3px 8px;
   font-size: 13px;
   line-height: 1.22;
+}
+.toc-section-link {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+}
+.block-marker {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  flex: 0 0 auto;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid var(--brand-color);
+}
+.block-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.block-heading-marker {
+  margin-top: 2px;
+  filter: drop-shadow(0 1px 1px rgba(37, 99, 235, 0.2));
+}
+.block-heading-label {
+  min-width: 0;
 }
 .toc-section-list a:hover {
   padding-left: 10px;
