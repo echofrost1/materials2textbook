@@ -18,6 +18,10 @@ work_materials/work_material1/05_final_deliverables/agent_workflow/
 work_materials/work_material1/05_final_deliverables/validation/
 work_materials/work_material1/05_final_deliverables/digital_book.zip
 work_materials/work_material1/05_final_deliverables/digital_book/assets/videos/
+work_materials/work_material1/05_final_deliverables/digital_book/server*.log
+work_materials/work_material1/05_final_deliverables/chapter_work/*/agent_workflow/
+work_materials/work_material1/05_final_deliverables/chapter_work/*/digital_book/
+work_materials/work_material1/05_final_deliverables/chapter_work/*/digital_book.zip
 work_materials/work_material1/05_final_deliverables_*/
 work_materials/work_material1/digital_book/
 
