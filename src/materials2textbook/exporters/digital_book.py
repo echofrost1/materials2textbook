@@ -12,7 +12,10 @@ from materials2textbook.io_utils import write_json, write_text
 from materials2textbook.llm.provider import LLMProvider
 from materials2textbook.prompts.digital_book_polisher import build_digital_book_polisher_messages
 from materials2textbook.schemas import (
+    BookChapterPlan,
     BookPlan,
+    BookSectionPlan,
+    CaseExample,
     ChapterPlan,
     DigitalBook,
     DigitalBookBlock,
@@ -56,94 +59,19 @@ def build_digital_book(
     projects: list[DigitalBookProject] = []
 
     for project_index, plan in enumerate(plans, start=1):
-        task_blocks: list[DigitalBookBlock] = [
-            DigitalBookBlock(
-                block_id=f"p{project_index:02d}_scenario",
-                type="scenario",
-                title="情境导入",
-                markdown=f"围绕“{plan.title}”的真实教学素材，观察视频片段并完成本任务的知识学习与操作分析。",
-                evidence_chunk_ids=plan.evidence_chunk_ids,
-            ),
-            DigitalBookBlock(
-                block_id=f"p{project_index:02d}_learning_nav",
-                type="learning_nav",
-                title="学习路径",
-                items=[_format_learning_path_item(point, plan.knowledge_points) for point in plan.knowledge_points],
-                evidence_chunk_ids=plan.evidence_chunk_ids,
-            ),
-        ]
-
-        key_terms: list[str] = []
-        for point_index, point in enumerate(plan.knowledge_points, start=1):
-            point_chunks = [chunk_map[chunk_id] for chunk_id in point.chunk_ids if chunk_id in chunk_map]
-            key_terms.extend(point.title for _chunk in point_chunks[:1])
-            implementation_text, polish_metadata = _render_point_markdown(
-                point.title,
-                point.summary,
-                point_chunks,
-                llm_provider=llm_provider,
-                use_llm=use_llm,
-            )
-            task_blocks.append(
-                DigitalBookBlock(
-                    block_id=f"p{project_index:02d}_kp{point_index:02d}_text",
-                    type="implementation",
-                    title=point.title,
-                    markdown=implementation_text,
-                    evidence_chunk_ids=[chunk.chunk_id for chunk in point_chunks],
-                    metadata={"teacher_evidence": _teacher_evidence_refs(point_chunks), **polish_metadata},
-                )
-            )
-            for media_index, chunk in enumerate(_select_video_chunks(point_chunks), start=1):
-                media_block = _build_video_block(
-                    chunk=chunk,
-                    output_dir=output_dir,
-                    block_id=f"p{project_index:02d}_kp{point_index:02d}_media{media_index:02d}",
-                    assets=assets,
-                    copy_media_assets=copy_media_assets,
-                )
-                if media_block:
-                    task_blocks.append(media_block)
-
-        if plan.case_examples:
-            for case_index, case in enumerate(plan.case_examples, start=1):
-                task_blocks.append(
-                    DigitalBookBlock(
-                        block_id=f"p{project_index:02d}_case{case_index:02d}",
-                        type="case_example",
-                        title=case.title,
-                        markdown=f"**例题**：{case.prompt}\n\n**参考分析**：{case.reference_answer}",
-                        evidence_chunk_ids=case.evidence_chunk_ids,
-                    )
-                )
-
-        task_blocks.extend(
-            [
-                DigitalBookBlock(
-                    block_id=f"p{project_index:02d}_assessment",
-                    type="assessment",
-                    title="任务评价",
-                    items=_assessment_items(plan),
-                    evidence_chunk_ids=plan.evidence_chunk_ids,
-                ),
-                DigitalBookBlock(
-                    block_id=f"p{project_index:02d}_exercises",
-                    type="exercises",
-                    title="思考与练习",
-                    items=_exercise_items(plan),
-                    evidence_chunk_ids=plan.evidence_chunk_ids,
-                ),
-            ]
-        )
-
         chapter_no = _book_chapter_no(book_plan, plan.chapter_id) or project_index
-        task = DigitalBookTask(
-            task_id=f"{plan.chapter_id}_task_01",
-            title=f"{chapter_no}.1 {plan.title}",
-            blocks=task_blocks,
-            knowledge_points=[point.title for point in plan.knowledge_points],
-            key_terms=_dedupe(key_terms),
-            evidence_chunk_ids=plan.evidence_chunk_ids,
+        chapter_plan = _book_chapter_plan(book_plan, plan.chapter_id)
+        tasks = _build_chapter_tasks(
+            plan=plan,
+            chapter_plan=chapter_plan,
+            chapter_no=chapter_no,
+            project_index=project_index,
+            chunk_map=chunk_map,
+            output_dir=output_dir,
+            assets=assets,
+            copy_media_assets=copy_media_assets,
+            llm_provider=llm_provider,
+            use_llm=use_llm,
         )
         projects.append(
             DigitalBookProject(
@@ -156,7 +84,7 @@ def build_digital_book(
                     "操作过程分析与质量判断",
                 ],
                 learning_goals=plan.learning_goals,
-                tasks=[task],
+                tasks=tasks,
             )
         )
 
@@ -1274,6 +1202,242 @@ def _teacher_evidence_refs(chunks: list[EvidenceChunk]) -> list[dict[str, str]]:
             }
         )
     return refs
+
+
+def _build_chapter_tasks(
+    *,
+    plan: ChapterPlan,
+    chapter_plan: BookChapterPlan | None,
+    chapter_no: int,
+    project_index: int,
+    chunk_map: dict[str, EvidenceChunk],
+    output_dir: Path,
+    assets: dict[str, list[dict]],
+    copy_media_assets: bool,
+    llm_provider: LLMProvider | None,
+    use_llm: bool,
+) -> list[DigitalBookTask]:
+    section_groups = _section_groups_for_plan(plan, chapter_plan)
+    tasks: list[DigitalBookTask] = []
+    used_case_ids: set[str] = set()
+
+    for task_index, (section, points) in enumerate(section_groups, start=1):
+        task_title = _section_task_title(chapter_no, task_index, section, plan)
+        task_evidence_ids = _task_evidence_ids(section, points, plan)
+        task_blocks: list[DigitalBookBlock] = [
+            DigitalBookBlock(
+                block_id=f"p{project_index:02d}_t{task_index:02d}_scenario",
+                type="scenario",
+                title="情境导入",
+                markdown=f"本节围绕“{_section_display_title(section, plan)}”展开学习，结合教材正文、示范视频和课堂任务理解关键知识。",
+                evidence_chunk_ids=task_evidence_ids,
+            )
+        ]
+
+        key_terms: list[str] = []
+        for point_index, point in enumerate(points, start=1):
+            point_chunks = [chunk_map[chunk_id] for chunk_id in point.chunk_ids if chunk_id in chunk_map]
+            key_terms.extend(point.title for _chunk in point_chunks[:1])
+            implementation_text, polish_metadata = _render_point_markdown(
+                point.title,
+                point.summary,
+                point_chunks,
+                llm_provider=llm_provider,
+                use_llm=use_llm,
+            )
+            task_blocks.append(
+                DigitalBookBlock(
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_kp{point_index:02d}_text",
+                    type="implementation",
+                    title=point.title,
+                    markdown=implementation_text,
+                    evidence_chunk_ids=[chunk.chunk_id for chunk in point_chunks],
+                    metadata={"teacher_evidence": _teacher_evidence_refs(point_chunks), **polish_metadata},
+                )
+            )
+            for media_index, chunk in enumerate(_select_video_chunks(point_chunks), start=1):
+                media_block = _build_video_block(
+                    chunk=chunk,
+                    output_dir=output_dir,
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_kp{point_index:02d}_media{media_index:02d}",
+                    assets=assets,
+                    copy_media_assets=copy_media_assets,
+                )
+                if media_block:
+                    task_blocks.append(media_block)
+
+        section_cases = _cases_for_points(plan.case_examples, points, used_case_ids)
+        for case_index, case in enumerate(section_cases, start=1):
+            used_case_ids.add(case.case_id)
+            task_blocks.append(
+                DigitalBookBlock(
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_case{case_index:02d}",
+                    type="case_example",
+                    title=case.title,
+                    markdown=f"**例题**：{case.prompt}\n\n**参考分析**：{case.reference_answer}",
+                    evidence_chunk_ids=case.evidence_chunk_ids,
+                )
+            )
+
+        task_blocks.extend(
+            [
+                DigitalBookBlock(
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_assessment",
+                    type="assessment",
+                    title="学习评价",
+                    items=_assessment_items_for_points(points),
+                    evidence_chunk_ids=task_evidence_ids,
+                ),
+                DigitalBookBlock(
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_exercises",
+                    type="exercises",
+                    title="思考与练习",
+                    items=_exercise_items_for_points(points),
+                    evidence_chunk_ids=task_evidence_ids,
+                ),
+            ]
+        )
+
+        tasks.append(
+            DigitalBookTask(
+                task_id=f"{plan.chapter_id}_task_{task_index:02d}",
+                title=task_title,
+                blocks=task_blocks,
+                knowledge_points=[point.title for point in points],
+                key_terms=_dedupe(key_terms),
+                evidence_chunk_ids=task_evidence_ids,
+            )
+        )
+
+    unused_cases = [case for case in plan.case_examples if case.case_id not in used_case_ids]
+    if unused_cases and tasks:
+        for case_index, case in enumerate(unused_cases, start=1):
+            tasks[-1].blocks.append(
+                DigitalBookBlock(
+                    block_id=f"p{project_index:02d}_t{len(tasks):02d}_extra_case{case_index:02d}",
+                    type="case_example",
+                    title=case.title,
+                    markdown=f"**例题**：{case.prompt}\n\n**参考分析**：{case.reference_answer}",
+                    evidence_chunk_ids=case.evidence_chunk_ids,
+                )
+            )
+    return tasks
+
+
+def _section_groups_for_plan(
+    plan: ChapterPlan,
+    chapter_plan: BookChapterPlan | None,
+) -> list[tuple[BookSectionPlan | None, list[KnowledgePoint]]]:
+    if not chapter_plan or not chapter_plan.sections:
+        return [(None, plan.knowledge_points)]
+
+    remaining = list(plan.knowledge_points)
+    groups: list[tuple[BookSectionPlan | None, list[KnowledgePoint]]] = []
+    for section in chapter_plan.sections:
+        points = _points_for_section(section, remaining)
+        if not points:
+            continue
+        used_ids = {id(point) for point in points}
+        remaining = [point for point in remaining if id(point) not in used_ids]
+        groups.append((section, points))
+    if remaining:
+        groups.append((None, remaining))
+    return groups or [(None, plan.knowledge_points)]
+
+
+def _points_for_section(section: BookSectionPlan, points: list[KnowledgePoint]) -> list[KnowledgePoint]:
+    keys = {_match_key(value) for value in section.knowledge_point_ids + [section.title] if value}
+    result = [point for point in points if _match_key(point.title) in keys]
+    if result:
+        return result
+    return [
+        point
+        for point in points
+        if any(key and (key in _match_key(point.title) or _match_key(point.title) in key) for key in keys)
+    ]
+
+
+def _task_evidence_ids(section: BookSectionPlan | None, points: list[KnowledgePoint], plan: ChapterPlan) -> list[str]:
+    ids: list[str] = []
+    if section:
+        ids.extend(section.primary_material_ids)
+    for point in points:
+        ids.extend(point.chunk_ids)
+    if section:
+        ids.extend(section.reference_material_ids)
+    return _dedupe(ids) or plan.evidence_chunk_ids
+
+
+def _cases_for_points(
+    cases: list[CaseExample],
+    points: list[KnowledgePoint],
+    used_case_ids: set[str],
+) -> list[CaseExample]:
+    point_ids = {point.knowledge_point_id for point in points}
+    point_titles = {_match_key(point.title) for point in points}
+    result: list[CaseExample] = []
+    for case in cases:
+        if case.case_id in used_case_ids:
+            continue
+        target_ids = set(case.target_knowledge_point_ids)
+        title_key = _match_key(case.title)
+        if target_ids & point_ids or any(key and key in title_key for key in point_titles):
+            result.append(case)
+    return result
+
+
+def _section_task_title(chapter_no: int, task_index: int, section: BookSectionPlan | None, plan: ChapterPlan) -> str:
+    title = _section_display_title(section, plan)
+    section_no = section.section_no if section and section.section_no else f"{chapter_no}.{task_index}"
+    return f"{section_no} {title}"
+
+
+def _section_display_title(section: BookSectionPlan | None, plan: ChapterPlan) -> str:
+    if section and section.title:
+        title = _strip_outline_prefix(section.title)
+        if len(plan.knowledge_points) == 1 and not _titles_overlap(title, plan.title):
+            return plan.title
+        return title
+    return plan.title
+
+
+def _assessment_items_for_points(points: list[KnowledgePoint]) -> list[str]:
+    if not points:
+        return _assessment_items(ChapterPlan("", "", [], [], []))
+    lead = points[0].title
+    return [
+        f"能说出“{lead}”相关的核心概念或关键操作。",
+        "能结合教材资源说明关键动作、工件状态或质量要求。",
+        "能用自己的话概括本节至少一个注意事项或判断依据。",
+    ]
+
+
+def _exercise_items_for_points(points: list[KnowledgePoint]) -> list[str]:
+    return [
+        f"结合示范视频和学习要点，说明“{point.title}”的关键内容。"
+        for point in points[:5]
+    ] or ["结合示范视频和学习要点，总结本节的关键学习收获。"]
+
+
+def _match_key(value: str) -> str:
+    return re.sub(r"[\s\-_/：:，,。、《》()（）.0-9]+", "", str(value or "").strip().lower())
+
+
+def _titles_overlap(left: str, right: str) -> bool:
+    left_key = _match_key(left)
+    right_key = _match_key(right)
+    if not left_key or not right_key:
+        return False
+    return left_key in right_key or right_key in left_key or any(term in left_key and term in right_key for term in ("焊接", "安全", "焊条", "钨极", "气焊"))
+
+
+def _book_chapter_plan(book_plan: BookPlan | None, chapter_id: str) -> BookChapterPlan | None:
+    if not book_plan:
+        return None
+    for chapter in book_plan.chapters:
+        if chapter.chapter_id == chapter_id:
+            return chapter
+    return None
 
 
 def _book_chapter_no(book_plan: BookPlan | None, chapter_id: str) -> int:
@@ -2492,7 +2656,6 @@ function renderContent(book) {
       taskEl.id = task.task_id;
       taskEl.appendChild(heading('h3', task.title));
       taskEl.appendChild(tagRow('知识点', task.knowledge_points || []));
-      taskEl.appendChild(tagRow('重点词', task.key_terms || []));
       for (const block of task.blocks || []) {
         for (const sectionPlan of matchingChapterSections(chapterPlan, block, anchoredSections)) {
           taskEl.appendChild(sectionAnchor(sectionPlan.section_id));

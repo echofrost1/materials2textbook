@@ -136,11 +136,7 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert any(block.type == "case_example" for block in book.projects[0].tasks[0].blocks)
     assert "证据定位" not in " ".join(book.projects[0].ability_map)
     assert "人工复核" not in " ".join(book.projects[0].ability_map)
-    learning_nav = next(block for block in book.projects[0].tasks[0].blocks if block.type == "learning_nav")
-    assert learning_nav.items == ["1. 送丝"]
-    assert "层级：" not in " ".join(learning_nav.items)
-    assert "先修：" not in " ".join(learning_nav.items)
-    assert "basic" not in " ".join(learning_nav.items)
+    assert not any(block.type == "learning_nav" for block in book.projects[0].tasks[0].blocks)
     assert "数字教材" in index_html
 
 
@@ -215,6 +211,95 @@ def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path:
     assert "先修：" not in json_path.read_text(encoding="utf-8")
 
 
+def test_export_digital_book_splits_chapter_into_section_tasks(tmp_path: Path) -> None:
+    chunks = [
+        EvidenceChunk(
+            chunk_id="C1",
+            asset_id="C1",
+            title="基本原理",
+            content="基本原理内容",
+            summary="基本原理摘要",
+            keywords=["基本原理"],
+            subject="焊接技术",
+            material_block="钨极氩弧焊",
+            material_block_code="tig_welding",
+            recommended_chapter="钨极氩弧焊",
+            locator=EvidenceLocator(),
+            score=EvidenceScore(teaching_value=0.8),
+            review_status="approved",
+        ),
+        EvidenceChunk(
+            chunk_id="C2",
+            asset_id="C2",
+            title="送丝操作",
+            content="送丝操作内容",
+            summary="送丝操作摘要",
+            keywords=["送丝"],
+            subject="焊接技术",
+            material_block="钨极氩弧焊",
+            material_block_code="tig_welding",
+            recommended_chapter="钨极氩弧焊",
+            locator=EvidenceLocator(),
+            score=EvidenceScore(teaching_value=0.8),
+            review_status="approved",
+        ),
+    ]
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="钨极氩弧焊",
+        learning_goals=["理解钨极氩弧焊"],
+        knowledge_points=[
+            KnowledgePoint("kp_01", "基本原理", ["C1"], order_index=1),
+            KnowledgePoint("kp_02", "送丝操作", ["C2"], order_index=2),
+        ],
+        evidence_chunk_ids=["C1", "C2"],
+    )
+    book_plan = BookPlan(
+        book_id="sample",
+        title="样书",
+        planning_strategy="manifest_xlsx_first",
+        chapters=[
+            BookChapterPlan(
+                chapter_id="chapter_01",
+                chapter_no=1,
+                title="钨极氩弧焊",
+                learning_goals=["理解钨极氩弧焊"],
+                sections=[
+                    BookSectionPlan(
+                        section_id="chapter_01_section_01",
+                        section_no="1.1",
+                        title="基本原理",
+                        knowledge_point_ids=["基本原理"],
+                        primary_material_ids=["C1"],
+                    ),
+                    BookSectionPlan(
+                        section_id="chapter_01_section_02",
+                        section_no="1.2",
+                        title="送丝操作",
+                        knowledge_point_ids=["送丝操作"],
+                        primary_material_ids=["C2"],
+                    ),
+                ],
+                primary_material_ids=["C1", "C2"],
+            )
+        ],
+    )
+
+    book, _, _ = export_digital_book(
+        title="样书",
+        plans=[plan],
+        chunks=chunks,
+        output_dir=tmp_path / "digital_book",
+        book_plan=book_plan,
+    )
+
+    tasks = book.projects[0].tasks
+    assert [task.title for task in tasks] == ["1.1 基本原理", "1.2 送丝操作"]
+    assert [task.knowledge_points for task in tasks] == [["基本原理"], ["送丝操作"]]
+    assert tasks[0].evidence_chunk_ids == ["C1"]
+    assert tasks[1].evidence_chunk_ids == ["C2"]
+
+
 def test_export_digital_book_default_student_copy_is_readable_utf8(tmp_path: Path) -> None:
     plan = ChapterPlan(
         chapter_id="chapter_01",
@@ -246,7 +331,7 @@ def test_export_digital_book_default_student_copy_is_readable_utf8(tmp_path: Pat
     assert "第1章 钨极氩弧焊基本操作" in visible_text
     assert "本章围绕“钨极氩弧焊基本操作”展开学习" in visible_text
     assert "情境导入" in visible_text
-    assert "学习路径" in visible_text
+    assert "学习路径" not in visible_text
     assert "示范观察与要点提取" in visible_text
     assert "数字教材" in index_path.read_text(encoding="utf-8")
     assert not any(token in visible_text for token in ["鎯", "瀛", "璇", "閽", "鏁", "鈥"])

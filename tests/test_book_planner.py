@@ -7,6 +7,7 @@ from openpyxl import Workbook
 from materials2textbook.agents.book_planner import (
     BookPlannerAgent,
     book_plan_to_chapter_plans,
+    render_curriculum_order_yaml,
     render_book_outline_markdown,
     review_book_plan,
 )
@@ -55,6 +56,43 @@ def test_book_planner_prefers_manifest_xlsx_chapter_and_section(tmp_path: Path) 
     assert plan.chapters[0].sections[0].title == "1.1 基本原理"
     assert plan.chapters[0].sections[0].knowledge_point_ids == ["钨极氩弧焊基本原理"]
     assert plan.chapters[0].primary_material_ids == ["C1"]
+
+
+def test_book_planner_can_auto_plan_from_asset_block_map(tmp_path: Path) -> None:
+    manifest = tmp_path / "asset_block_map.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(
+        [
+            "asset_id",
+            "filename",
+            "material_block_code",
+            "material_block_cn",
+            "knowledge_point_code",
+            "knowledge_point_cn",
+            "confidence",
+            "active_for_index",
+            "needs_confirmation",
+        ]
+    )
+    sheet.append(["A2", "tig.mp4", "M04", "钨极氩弧焊", "KP02", "送丝", 0.9, "true", "false"])
+    sheet.append(["A1", "safe.pptx", "M01", "焊接设备与安全", "KP01", "安全操作", 0.9, "true", "false"])
+    workbook.save(manifest)
+    chunks = [
+        make_chunk("C_tig", "送丝", asset_id="A2", source_type="video_segment"),
+        make_chunk("C_safe", "安全操作", asset_id="A1", source_type="ppt_slide"),
+    ]
+
+    plan = BookPlannerAgent().run(title="样书", chunks=chunks, manifest_xlsx=manifest)
+    yaml = render_curriculum_order_yaml(plan)
+
+    assert [chapter.title for chapter in plan.chapters] == ["焊接设备与安全", "钨极氩弧焊"]
+    assert plan.chapters[0].sections[0].title == "安全操作"
+    assert plan.chapters[1].sections[0].title == "送丝"
+    assert plan.metadata["curriculum_order"][:2] == ["焊接设备与安全", "钨极氩弧焊"]
+    assert "curriculum_order_source" in plan.metadata
+    assert "chapter_order:" in yaml
+    assert "title: 焊接设备与安全" in yaml
 
 
 def test_book_planner_fills_missing_manifest_fields_from_chunks() -> None:

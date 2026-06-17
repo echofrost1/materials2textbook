@@ -11,6 +11,7 @@ from materials2textbook.agents.activity_designer import ActivityDesignerAgent
 from materials2textbook.agents.book_planner import (
     BookPlannerAgent,
     book_plan_to_chapter_plans,
+    render_curriculum_order_yaml,
     render_book_outline_markdown,
     render_book_plan_review_markdown,
     review_book_plan,
@@ -155,6 +156,7 @@ class TextbookWorkflow:
         outline_markdown_path = output_dir / "textbook_outline.md"
         book_plan_path = book_plan_output or output_dir / "book_plan.json"
         book_outline_path = output_dir / "book_outline.md"
+        curriculum_order_path = output_dir / "curriculum_order.generated.yml"
         book_plan_review_path = output_dir / "book_plan_review.json"
         book_plan_review_markdown_path = output_dir / "book_plan_review.md"
         evidence_chunks_path = output_dir / "evidence_chunks.jsonl"
@@ -177,6 +179,7 @@ class TextbookWorkflow:
         if book_plan:
             write_json(book_plan_path, book_plan)
             write_text(book_outline_path, render_book_outline_markdown(book_plan))
+            write_text(curriculum_order_path, render_curriculum_order_yaml(book_plan))
             write_json(book_plan_review_path, book_plan_review)
             write_text(book_plan_review_markdown_path, render_book_plan_review_markdown(title, book_plan_review))
         write_jsonl(evidence_chunks_path, chunks)
@@ -277,6 +280,7 @@ class TextbookWorkflow:
                 "digital_book_review_markdown": _portable_path(digital_book_review_markdown_path),
                 "book_plan": _portable_path(book_plan_path) if book_plan else "",
                 "book_outline": _portable_path(book_outline_path) if book_plan else "",
+                "curriculum_order": _portable_path(curriculum_order_path) if book_plan else "",
                 "book_plan_review_json": _portable_path(book_plan_review_path) if book_plan else "",
                 "book_plan_review_markdown": _portable_path(book_plan_review_markdown_path) if book_plan else "",
             },

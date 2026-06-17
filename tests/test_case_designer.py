@@ -76,6 +76,42 @@ def test_case_designer_hides_internal_review_text_from_student_case() -> None:
     assert "示范视频" in answer
 
 
+def test_case_designer_filters_curriculum_table_text_from_case_answer() -> None:
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="钨极氩弧焊",
+        learning_goals=["理解钨极氩弧焊"],
+        knowledge_points=[
+            KnowledgePoint("kp_01", "钨极氩弧焊认知", ["C1"], difficulty_level="advanced", cluster_id="extension"),
+        ],
+        evidence_chunk_ids=["C1"],
+        learning_path=["kp_01"],
+    )
+    chunk = make_chunk("C1", "钨极氩弧焊认知")
+    chunk.summary = (
+        "模块 2 基础知识；课程 2-1 焊接识图 课程 2-2 常用金属材料知识 "
+        "教学要求 1. 了解交流电的基本概念 课程 2-6 电工基本知识 "
+        "以讲授法的授课方法 重点：正弦交流电 难点：变压器的工作原理"
+    )
+    chunk.content = chunk.summary
+
+    enriched = CaseDesignerAgent().run([plan], [chunk])[0]
+    answer = enriched.case_examples[0].reference_answer
+
+    assert "模块 2" not in answer
+    assert "课程 2-1" not in answer
+    assert "教学要求" not in answer
+    assert "授课方法" not in answer
+    assert "教材中的概念说明" in answer
+
+    chunk.summary = "模块 2 基础知识"
+    chunk.content = chunk.summary
+    enriched = CaseDesignerAgent().run([plan], [chunk])[0]
+    answer = enriched.case_examples[0].reference_answer
+    assert "模块 2" not in answer
+    assert "教材中的概念说明" in answer
+
+
 def test_case_designer_keeps_existing_examples() -> None:
     plan = ChapterPlan(
         chapter_id="chapter_01",

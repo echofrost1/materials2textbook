@@ -47,10 +47,15 @@ def _summarize_evidence(evidence_ids: list[str], chunk_map: dict[str, EvidenceCh
         if _looks_like_internal_review_text(_clean_student_text(summary)):
             summary = chunk.content
         summary = _best_student_sentence(summary)
-        if not summary or _looks_like_internal_review_text(summary) or _looks_like_low_quality_asr(summary):
+        if (
+            not summary
+            or _looks_like_internal_review_text(summary)
+            or _looks_like_low_quality_asr(summary)
+            or _looks_like_curriculum_table_text(summary)
+        ):
             continue
         parts.append(summary)
-    return "；".join(dict.fromkeys(parts[:3])) or "观察示范视频中的关键动作和工件状态"
+    return "；".join(dict.fromkeys(parts[:3])) or "教材中的概念说明、课堂示范和操作观察点"
 
 
 def _build_case_prompt(title: str, evidence_summary: str) -> str:
@@ -76,6 +81,8 @@ def _build_reference_answer(title: str, evidence_summary: str) -> str:
 
 def _best_student_sentence(text: str) -> str:
     cleaned = _clean_student_text(text)
+    if _looks_like_curriculum_table_text(cleaned):
+        return ""
     parts = [
         part.strip(" ：:-，。；;")
         for part in re.split(r"[。；;]\s*|\s{2,}", cleaned)
@@ -83,7 +90,7 @@ def _best_student_sentence(text: str) -> str:
     ]
     candidates = []
     for part in parts:
-        if _looks_like_internal_review_text(part) or _looks_like_low_quality_asr(part):
+        if _looks_like_internal_review_text(part) or _looks_like_low_quality_asr(part) or _looks_like_curriculum_table_text(part):
             continue
         if len(part) < 8:
             continue
@@ -188,6 +195,33 @@ def _looks_like_internal_review_text(text: str) -> bool:
 def _looks_like_low_quality_asr(text: str) -> bool:
     bad_terms = ("無幾", "壓護", "夫妻娘", "罕", "隱", "鈉", "漢师", "龙磁")
     return any(term in text for term in bad_terms)
+
+
+def _looks_like_curriculum_table_text(text: str) -> bool:
+    normalized = str(text or "")
+    if not normalized:
+        return False
+    table_terms = (
+        "教学要求",
+        "授课方法",
+        "课程 2-",
+        "课程2-",
+        "模块 2",
+        "模块2",
+        "重点：",
+        "难点：",
+        "学时",
+        "职业功能",
+        "工作内容",
+        "技能要求",
+        "课程内容",
+        "讲授法",
+    )
+    hit_count = sum(1 for term in table_terms if term in normalized)
+    numbered_course_count = len(re.findall(r"课程\s*\d+[-－]\d+", normalized))
+    has_numbered_module = bool(re.search(r"模块\s*\d+", normalized))
+    has_numbered_course = bool(re.search(r"课程\s*\d+[-－]\d+", normalized))
+    return has_numbered_module or has_numbered_course or hit_count >= 2 or numbered_course_count >= 2
 
 
 def _is_unapproved_video_transcript(chunk: EvidenceChunk) -> bool:

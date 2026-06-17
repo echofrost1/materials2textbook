@@ -23,6 +23,20 @@ DEFAULT_CHAPTER_TOKEN_BUDGET = 12000
 DEFAULT_CHAPTER_VIDEO_BUDGET = 3
 DEFAULT_CHAPTER_DOCUMENT_BUDGET = 20
 DEFAULT_MAX_KNOWLEDGE_POINTS = 8
+DEFAULT_WELDING_CHAPTER_ORDER = [
+    "焊接设备与安全",
+    "焊接基本操作",
+    "焊条电弧焊",
+    "钨极氩弧焊",
+    "二氧化碳气体保护焊",
+    "气焊与气割",
+    "焊接质量检验",
+    "综合训练与考核",
+    "机械制图-投影法",
+    "工程材料-性能测试",
+    "焊接鉴定与试题",
+    "教材参考资料",
+]
 
 
 @dataclass
@@ -35,6 +49,11 @@ class ManifestMaterial:
     source_type: str = ""
     path: str = ""
     notes: str = ""
+    chapter_code: str = ""
+    section_code: str = ""
+    confidence: float = 1.0
+    active_for_index: bool = True
+    needs_confirmation: bool = False
 
 
 class BookPlannerAgent:
@@ -51,7 +70,9 @@ class BookPlannerAgent:
         chapter_token_budget: int = DEFAULT_CHAPTER_TOKEN_BUDGET,
     ) -> BookPlan:
         manifest_rows = read_manifest_xlsx(manifest_xlsx) if manifest_xlsx else []
-        manifest_by_id = {row.material_id: row for row in manifest_rows if row.material_id}
+        manifest_by_id = _best_manifest_by_id(manifest_rows)
+        curriculum_order = build_curriculum_order(manifest_rows, chunks)
+        curriculum_index = {title: index for index, title in enumerate(curriculum_order, start=1)}
         chunk_ids = {chunk.chunk_id for chunk in chunks}
         primary_owner: dict[str, str] = {}
         chapters: dict[str, list[EvidenceChunk]] = defaultdict(list)
@@ -76,7 +97,7 @@ class BookPlannerAgent:
 
         ordered_chapters = sorted(
             chapters.items(),
-            key=lambda item: (_chapter_order(item[0], item[1], manifest_rows), item[0]),
+            key=lambda item: (_chapter_order(item[0], item[1], manifest_rows, curriculum_index), item[0]),
         )
         if max_chapters > 0:
             ordered_chapters = ordered_chapters[:max_chapters]
@@ -136,7 +157,11 @@ class BookPlannerAgent:
                 "chapter_document_budget": DEFAULT_CHAPTER_DOCUMENT_BUDGET,
                 "max_knowledge_points_per_chapter": max_knowledge_points_per_chapter,
             },
-            metadata={"manifest_xlsx": str(manifest_xlsx or "")},
+            metadata={
+                "manifest_xlsx": str(manifest_xlsx or ""),
+                "curriculum_order": curriculum_order,
+                "curriculum_order_source": "manifest_plus_default_welding_rules",
+            },
         )
 
 
@@ -174,15 +199,102 @@ def read_manifest_xlsx(path: Path | None) -> list[ManifestMaterial]:
                 ManifestMaterial(
                     material_id=material_id,
                     title=title,
-                    chapter=_field(normalized, "chapter", "chapter_title", "recommended_chapter", "章节", "章", "章标题"),
-                    section=_field(normalized, "section", "section_title", "节", "小节", "节标题"),
-                    knowledge_point=_field(normalized, "knowledge_point", "知识点", "知识点名称"),
-                    source_type=_field(normalized, "source_type", "素材类型", "资源类型", "类型"),
+                    chapter=_field(
+                        normalized,
+                        "chapter",
+                        "chapter_title",
+                        "recommended_chapter",
+                        "target_chapter",
+                        "material_block_cn",
+                        "material_block",
+                        "章节",
+                        "章",
+                        "章标题",
+                    ),
+                    section=_field(
+                        normalized,
+                        "section",
+                        "section_title",
+                        "target_section",
+                        "knowledge_point_cn",
+                        "knowledge_point",
+                        "节",
+                        "小节",
+                        "节标题",
+                    ),
+                    knowledge_point=_field(normalized, "knowledge_point", "knowledge_point_cn", "知识点", "知识点名称"),
+                    source_type=_field(normalized, "source_type", "asset_type", "file_type", "素材类型", "资源类型", "类型"),
                     path=_field(normalized, "path", "文件路径", "路径", "original_path"),
                     notes=_field(normalized, "notes", "备注", "说明"),
+                    chapter_code=_field(normalized, "chapter_code", "material_block_code", "章编码", "板块编码"),
+                    section_code=_field(normalized, "section_code", "knowledge_point_code", "节编码", "知识点编码"),
+                    confidence=_parse_float(_field(normalized, "confidence", "classification_confidence", "置信度"), 1.0),
+                    active_for_index=_parse_bool(_field(normalized, "active_for_index", "active_for_processing", "是否启用"), default=True),
+                    needs_confirmation=_parse_bool(_field(normalized, "needs_confirmation", "需要确认"), default=False),
                 )
             )
     return rows
+
+
+def build_curriculum_order(manifest_rows: list[ManifestMaterial], chunks: list[EvidenceChunk]) -> list[str]:
+    """Build a deterministic course order from manifest data plus welding defaults."""
+
+    counts: Counter[str] = Counter()
+    code_by_chapter: dict[str, str] = {}
+    for row in manifest_rows:
+        chapter = row.chapter.strip()
+        if not chapter:
+            continue
+        counts[chapter] += 1
+        if row.chapter_code and chapter not in code_by_chapter:
+            code_by_chapter[chapter] = row.chapter_code
+    for chunk in chunks:
+        chapter = _first_text(
+            chunk.metadata.get("chapter"),
+            chunk.metadata.get("chapter_title"),
+            chunk.metadata.get("target_chapter"),
+            chunk.material_block,
+            chunk.recommended_chapter,
+        )
+        if chapter:
+            counts[chapter] += 1
+            if chunk.material_block_code and chapter not in code_by_chapter:
+                code_by_chapter[chapter] = chunk.material_block_code
+
+    result: list[str] = []
+    for title in DEFAULT_WELDING_CHAPTER_ORDER:
+        match = _find_matching_chapter(title, counts)
+        if match and match not in result:
+            result.append(match)
+
+    remaining = [title for title in counts if title not in result]
+    remaining.sort(key=lambda title: (_code_sort_key(code_by_chapter.get(title, "")), -counts[title], title))
+    result.extend(remaining)
+    return result
+
+
+def render_curriculum_order_yaml(book_plan: BookPlan) -> str:
+    order = list(book_plan.metadata.get("curriculum_order") or [chapter.title for chapter in book_plan.chapters])
+    lines = [
+        "# Auto-generated by materials2textbook.",
+        "# It is deterministic and can be regenerated from the manifest; manual review is optional.",
+        f"title: {book_plan.title}",
+        f"source: {book_plan.metadata.get('curriculum_order_source', 'auto')}",
+        "chapter_order:",
+    ]
+    for index, title in enumerate(order, start=1):
+        chapter = next((item for item in book_plan.chapters if item.title == title), None)
+        if chapter:
+            lines.append(f"  - order: {index}")
+            lines.append(f"    title: {title}")
+            lines.append(f"    sections: {len(chapter.sections)}")
+            lines.append(f"    primary_materials: {len(chapter.primary_material_ids)}")
+        else:
+            lines.append(f"  - order: {index}")
+            lines.append(f"    title: {title}")
+            lines.append("    sections: 0")
+            lines.append("    primary_materials: 0")
+    return "\n".join(lines) + "\n"
 
 
 def book_plan_to_chapter_plans(book_plan: BookPlan, chunks: list[EvidenceChunk]) -> list[ChapterPlan]:
@@ -333,12 +445,35 @@ def _budget_primary_materials(chunks: list[EvidenceChunk]) -> list[str]:
     return _dedupe(videos[:DEFAULT_CHAPTER_VIDEO_BUDGET] + documents[:DEFAULT_CHAPTER_DOCUMENT_BUDGET])
 
 
+def _best_manifest_by_id(manifest_rows: list[ManifestMaterial]) -> dict[str, ManifestMaterial]:
+    grouped: dict[str, list[ManifestMaterial]] = defaultdict(list)
+    for row in manifest_rows:
+        if row.material_id:
+            grouped[row.material_id].append(row)
+        if row.path:
+            grouped[row.path].append(row)
+            grouped[Path(row.path).name].append(row)
+
+    result: dict[str, ManifestMaterial] = {}
+    for key, rows in grouped.items():
+        result[key] = sorted(rows, key=_manifest_priority)[0]
+    return result
+
+
+def _manifest_priority(row: ManifestMaterial) -> tuple[int, int, float, str]:
+    inactive_penalty = 1 if not row.active_for_index else 0
+    confirmation_penalty = 1 if row.needs_confirmation else 0
+    return (inactive_penalty, confirmation_penalty, -row.confidence, row.title)
+
+
 def _manifest_for_chunk(chunk: EvidenceChunk, manifest_by_id: dict[str, ManifestMaterial]) -> ManifestMaterial | None:
     candidates = [
         chunk.chunk_id,
         chunk.asset_id,
         chunk.metadata.get("asset_id", ""),
+        chunk.metadata.get("source_asset_id", ""),
         chunk.metadata.get("source_video", ""),
+        Path(str(chunk.metadata.get("source_video", ""))).name if chunk.metadata.get("source_video") else "",
         chunk.locator.path,
         Path(chunk.locator.path).name if chunk.locator.path else "",
         chunk.locator.original_path,
@@ -350,10 +485,17 @@ def _manifest_for_chunk(chunk: EvidenceChunk, manifest_by_id: dict[str, Manifest
     return None
 
 
-def _chapter_order(title: str, chunks: list[EvidenceChunk], manifest_rows: list[ManifestMaterial]) -> int:
+def _chapter_order(
+    title: str,
+    chunks: list[EvidenceChunk],
+    manifest_rows: list[ManifestMaterial],
+    curriculum_index: dict[str, int] | None = None,
+) -> int:
+    if curriculum_index and title in curriculum_index:
+        return curriculum_index[title]
     for row in manifest_rows:
         if row.chapter == title:
-            match = re.search(r"\d+", row.chapter)
+            match = re.search(r"\d+", row.chapter_code or row.chapter)
             if match:
                 return int(match.group())
     orders = [int(chunk.metadata.get("chapter_order")) for chunk in chunks if str(chunk.metadata.get("chapter_order", "")).isdigit()]
@@ -402,6 +544,43 @@ def _field(row: dict[str, str], *names: str) -> str:
         if value:
             return value
     return ""
+
+
+def _parse_float(value: str, default: float) -> float:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_bool(value: str, *, default: bool) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "y", "是", "启用", "有效", "active"}
+
+
+def _find_matching_chapter(default_title: str, counts: Counter[str]) -> str:
+    if default_title in counts:
+        return default_title
+    normalized_default = _normalize_title(default_title)
+    for title in counts:
+        normalized_title = _normalize_title(title)
+        if normalized_default and (normalized_default in normalized_title or normalized_title in normalized_default):
+            return title
+    return ""
+
+
+def _code_sort_key(code: str) -> tuple[int, str]:
+    text = str(code or "").strip()
+    match = re.search(r"\d+", text)
+    if match:
+        return (int(match.group()), text)
+    return (999, text)
+
+
+def _normalize_title(value: str) -> str:
+    return re.sub(r"[\s\-_/：:，,。、《》()（）]+", "", value.strip().lower())
 
 
 def _normalize_header(value: str) -> str:
