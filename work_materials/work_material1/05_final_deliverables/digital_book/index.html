@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>数字教材</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">数字教材</div>
+    <input id="searchInput" class="search" type="search" placeholder="搜索目录与正文">
+    <nav id="toc" class="toc"></nav>
+    <section class="study-panel">
+      <div class="progress-row">
+        <span>阅读进度</span>
+        <strong id="progressLabel">0%</strong>
+      </div>
+      <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+      <button id="bookmarkCurrent" class="icon-action" title="收藏当前任务" aria-label="收藏当前任务">★</button>
+      <div id="bookmarks" class="bookmarks"></div>
+      <label class="note-label" for="readerNote">学习笔记</label>
+      <textarea id="readerNote" class="note" rows="6" placeholder="记录本教材的课堂提示、疑问或复核意见"></textarea>
+      <div class="sync-actions">
+        <button id="exportStudyData" type="button">导出学习数据</button>
+        <button id="importStudyData" type="button">导入学习数据</button>
+        <button id="syncStudyData" type="button">同步学习数据</button>
+        <input id="studyDataFile" type="file" accept="application/json" hidden>
+      </div>
+      <div id="syncStatus" class="sync-status" aria-live="polite"></div>
+      <label class="note-label" for="askInput">AI 问书</label>
+      <div class="ask-box">
+        <input id="askInput" class="ask-input" type="search" placeholder="输入知识点、操作或证据编号">
+        <button id="askButton" class="ask-button" type="button">问</button>
+      </div>
+      <div id="askAnswer" class="ask-answer"></div>
+    </section>
+  </aside>
+  <main class="reader">
+    <header class="toolbar">
+      <div>
+        <h1 id="bookTitle">加载中...</h1>
+        <p id="bookMeta"></p>
+      </div>
+      <div class="tools">
+        <button id="fontSmaller" title="缩小字号">A-</button>
+        <button id="fontLarger" title="放大字号">A+</button>
+      </div>
+    </header>
+    <div id="content" class="content"></div>
+  </main>
+  <script src="ask_config.js?v=20260616"></script>
+  <script src="app.js?v=20260616"></script>
+</body>
+</html>

@@ -1,16 +1,21 @@
-# Raw client materials and generated deliverables
-work_material1/00_raw_client_materials/
-work_material1/05_final_deliverables/agent_workflow/
-work_material1/05_final_deliverables/validation/
-work_material1/05_final_deliverables/
-.env
+# Raw client materials (too large, not under version control)
 work_materials/work_material1/00_raw_client_materials/
+
+# Generated large media artifacts (reproducible from raw materials)
+work_materials/work_material1/02_working_processing/audio/
+work_materials/work_material1/02_working_processing/converted_mp4/
+work_materials/work_material1/02_working_processing/keyframes/
+
+# Generated deliverables: keep lightweight reader files trackable, ignore bulky/rebuildable outputs
 work_materials/work_material1/05_final_deliverables/agent_workflow/
 work_materials/work_material1/05_final_deliverables/validation/
 work_materials/work_material1/05_final_deliverables/digital_book.zip
 work_materials/work_material1/05_final_deliverables/digital_book/assets/videos/
 work_materials/work_material1/05_final_deliverables_*/
 work_materials/work_material1/digital_book/
+
+# Environment
+.env
 
 # Python cache
 **/__pycache__/
