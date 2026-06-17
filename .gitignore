@@ -23,6 +23,9 @@ work_materials/work_material1/05_final_deliverables/chapter_work/*/agent_workflo
 work_materials/work_material1/05_final_deliverables/chapter_work/*/digital_book/
 work_materials/work_material1/05_final_deliverables/chapter_work/*/digital_book.zip
 work_materials/work_material1/05_final_deliverables/chapter_work/**/*.zip
+work_materials/work_material1/05_final_deliverables/chapter_work/*/writer_inputs/
+work_materials/work_material1/05_final_deliverables/chapter_work/*/chapter_evidence_gap_log.*
+work_materials/work_material1/05_final_deliverables/chapter_work/*/chapter_generation_report.*
 work_materials/work_material1/05_final_deliverables_*/
 work_materials/work_material1/digital_book/
 
@@ -42,6 +45,7 @@ work_materials/work_material1/digital_book/
 .remote_commit.txt
 .new_branch_status.txt
 .new_branch_status2.txt
+.preview/
 
 # Generated student package (too large for normal GitHub blobs)
 digital_book.zip

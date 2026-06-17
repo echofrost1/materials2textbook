@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
+from openpyxl import Workbook
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -199,8 +199,19 @@ def write_compatible_inputs(
 
 
 def to_excel_safe(rows: list[dict[str, Any]], path: Path) -> None:
-    cleaned = [{key: excel_safe(value) for key, value in row.items()} for row in rows]
-    pd.DataFrame(cleaned).to_excel(path, index=False, engine="openpyxl")
+    workbook = Workbook()
+    sheet = workbook.active
+    headers: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in headers:
+                headers.append(key)
+    if headers:
+        sheet.append(headers)
+        for row in rows:
+            sheet.append([excel_safe(row.get(header, "")) for header in headers])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(path)
 
 
 def excel_safe(value: Any) -> Any:

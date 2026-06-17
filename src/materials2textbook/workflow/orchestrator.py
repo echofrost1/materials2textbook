@@ -270,6 +270,8 @@ class TextbookWorkflow:
                 "pedagogy_issue_count": summary.pedagogy_issue_count,
                 "review_rounds_requested": config.normalized_review_rounds(),
                 "review_rounds_completed": len(review_history),
+                "writer_generation_mode": self.writer.last_generation_mode,
+                "writer_generation_warning": self.writer.last_generation_warning,
                 "evidence_coverage_rate": summary.evidence_coverage_rate,
                 "citation_coverage_rate": summary.citation_coverage_rate,
                 "paragraph_support_rate": summary.paragraph_support_rate,
