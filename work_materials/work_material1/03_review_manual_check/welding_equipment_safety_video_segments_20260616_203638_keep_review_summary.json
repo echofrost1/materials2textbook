@@ -1,0 +1,13 @@
+{
+  "batch_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\welding_equipment_safety_video_segments_20260616_203638.jsonl",
+  "batch_type": "video",
+  "input_rows": 10,
+  "reviewed_rows_written": 10,
+  "keep_only": true,
+  "decision_counts": {
+    "keep": 10
+  },
+  "reviewed_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\welding_equipment_safety_video_segments_20260616_203638_keep_reviewed.jsonl",
+  "reviewed_xlsx": "work_materials\\work_material1\\01_manifest_inventory\\batches\\welding_equipment_safety_video_segments_20260616_203638_keep_reviewed.xlsx",
+  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\welding_equipment_safety_video_segments_20260616_203638_keep_review.xlsx"
+}

@@ -1,0 +1,14 @@
+{
+  "batch_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\gas_welding_and_cutting_audio_segments_20260616_211435.jsonl",
+  "batch_type": "audio",
+  "input_rows": 2,
+  "reviewed_rows_written": 2,
+  "keep_only": false,
+  "decision_counts": {
+    "keep": 1,
+    "needs_review": 1
+  },
+  "reviewed_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\gas_welding_and_cutting_audio_segments_20260616_211435_reviewed.jsonl",
+  "reviewed_xlsx": "work_materials\\work_material1\\01_manifest_inventory\\batches\\gas_welding_and_cutting_audio_segments_20260616_211435_reviewed.xlsx",
+  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\gas_welding_and_cutting_audio_segments_20260616_211435_review.xlsx"
+}

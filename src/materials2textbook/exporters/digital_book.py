@@ -2018,6 +2018,87 @@ video {
 .markdown p { margin: 0 0 12px; }
 .markdown p:last-child { margin-bottom: 0; }
 .markdown strong { font-weight: 700; }
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 18px 0 10px;
+  color: #101828;
+  line-height: 1.35;
+}
+.markdown h1 { font-size: 22px; }
+.markdown h2 { font-size: 20px; }
+.markdown h3 { font-size: 18px; }
+.markdown h4 { font-size: 16px; }
+.markdown h5,
+.markdown h6 { font-size: 15px; }
+.markdown ul,
+.markdown ol {
+  margin: 0 0 14px 22px;
+  padding: 0;
+}
+.markdown li { margin: 4px 0; }
+.markdown blockquote {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-left: 3px solid #2f80ed;
+  background: #f6f9ff;
+  color: #344054;
+}
+.markdown pre {
+  margin: 0 0 14px;
+  padding: 12px;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: #111827;
+  color: #f9fafb;
+}
+.markdown code {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #eef2f7;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+.markdown pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+.markdown table {
+  width: 100%;
+  margin: 0 0 14px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.markdown th,
+.markdown td {
+  padding: 8px 10px;
+  border: 1px solid #d0d5dd;
+  vertical-align: top;
+}
+.markdown th {
+  background: #f2f4f7;
+  font-weight: 700;
+}
+.markdown a {
+  color: #1d4ed8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 8px 0 14px;
+}
+.markdown hr {
+  margin: 18px 0;
+  border: 0;
+  border-top: 1px solid #d0d5dd;
+}
 
 /* Gemini-inspired immersive reader theme. Kept as an override layer so the
    existing generated HTML and learning-state behavior stay compatible. */
@@ -2481,6 +2562,32 @@ video {
   font-size: 13px;
   line-height: 1.22;
 }
+.toc-section-link {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+}
+.block-marker {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  flex: 0 0 auto;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid var(--brand-color);
+}
+.block-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.block-heading-marker {
+  margin-top: 2px;
+  filter: drop-shadow(0 1px 1px rgba(37, 99, 235, 0.2));
+}
+.block-heading-label {
+  min-width: 0;
+}
 .toc-section-list a:hover {
   padding-left: 10px;
 }
@@ -2608,7 +2715,7 @@ function tocChapter(chapter, expanded) {
   button.appendChild(label);
   const sectionList = el('div', 'toc-section-list');
   for (const section of chapter.sections || []) {
-    sectionList.appendChild(tocLink(`${section.section_no} ${section.title}`, section.section_id || chapter.chapter_id, 'task'));
+    sectionList.appendChild(tocLink(`${section.section_no} ${section.title}`, section.section_id || chapter.chapter_id, 'task toc-section-link'));
   }
   const syncIcon = () => {
     icon.textContent = wrap.classList.contains('collapsed') ? '▶' : '▼';
@@ -2671,7 +2778,7 @@ function renderContent(book) {
 function renderBlock(block) {
   const node = el('article', `block block-${block.type}`);
   node.id = block.block_id;
-  node.appendChild(heading('h4', block.title));
+  node.appendChild(blockHeading(block.title));
   if (block.type === 'video') {
     const video = document.createElement('video');
     video.controls = true;
@@ -2696,6 +2803,18 @@ function renderBlock(block) {
     node.appendChild(markdown);
   }
   return node;
+}
+
+function blockHeading(text) {
+  const title = heading('h4', '');
+  title.className = 'block-heading';
+  const marker = el('span', 'block-marker block-heading-marker');
+  marker.setAttribute('aria-hidden', 'true');
+  const label = el('span', 'block-heading-label');
+  label.textContent = text;
+  title.appendChild(marker);
+  title.appendChild(label);
+  return title;
 }
 
 function videoActions(video) {
@@ -2730,15 +2849,162 @@ function videoActions(video) {
 }
 
 function renderMarkdown(value) {
-  const blocks = String(value || '')
-    .split(/\\n{2,}/)
-    .map((block) => block.trim())
-    .filter(Boolean);
-  return blocks.map((block) => `<p>${renderInlineMarkdown(block).replace(/\\n/g, '<br>')}</p>`).join('');
+  const lines = String(value || '').replace(/\\r\\n?/g, '\\n').split('\\n');
+  const html = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    const fence = line.match(/^```\\s*([\\w-]+)?\\s*$/);
+    if (fence) {
+      const codeLines = [];
+      index += 1;
+      while (index < lines.length && !/^```\\s*$/.test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      const language = fence[1] ? ` language-${escapeHtml(fence[1])}` : '';
+      html.push(`<pre><code class="${language.trim()}">${escapeHtml(codeLines.join('\\n'))}</code></pre>`);
+      continue;
+    }
+
+    if (/^\\s*([-*_])(?:\\s*\\1){2,}\\s*$/.test(line)) {
+      html.push('<hr>');
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\\s+(.+)$/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(headingMatch[2].trim())}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (/^>\\s?/.test(line)) {
+      const quoteLines = [];
+      while (index < lines.length && /^>\\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^>\\s?/, ''));
+        index += 1;
+      }
+      html.push(`<blockquote>${renderMarkdown(quoteLines.join('\\n'))}</blockquote>`);
+      continue;
+    }
+
+    if (isTableStart(lines, index)) {
+      const tableLines = [lines[index], lines[index + 1]];
+      index += 2;
+      while (index < lines.length && isTableRow(lines[index])) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      html.push(renderMarkdownTable(tableLines));
+      continue;
+    }
+
+    const listMatch = line.match(/^(\\s*)([-*+] |\\d+[.)]\\s+)(.+)$/);
+    if (listMatch) {
+      const ordered = /\\d/.test(listMatch[2][0]);
+      const tag = ordered ? 'ol' : 'ul';
+      const items = [];
+      while (index < lines.length) {
+        const itemMatch = lines[index].match(/^(\\s*)([-*+] |\\d+[.)]\\s+)(.+)$/);
+        if (!itemMatch || (/\\d/.test(itemMatch[2][0]) !== ordered)) break;
+        const itemLines = [itemMatch[3]];
+        index += 1;
+        while (index < lines.length && lines[index].trim() && !/^(\\s*)([-*+] |\\d+[.)]\\s+)/.test(lines[index])) {
+          itemLines.push(lines[index].trim());
+          index += 1;
+        }
+        items.push(`<li>${renderInlineMarkdown(itemLines.join('\\n')).replace(/\\n/g, '<br>')}</li>`);
+      }
+      html.push(`<${tag}>${items.join('')}</${tag}>`);
+      continue;
+    }
+
+    const paragraphLines = [line.trim()];
+    index += 1;
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !/^```/.test(lines[index]) &&
+      !/^(#{1,6})\\s+/.test(lines[index]) &&
+      !/^>\\s?/.test(lines[index]) &&
+      !/^\\s*([-*_])(?:\\s*\\1){2,}\\s*$/.test(lines[index]) &&
+      !/^(\\s*)([-*+] |\\d+[.)]\\s+)/.test(lines[index]) &&
+      !isTableStart(lines, index)
+    ) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+    html.push(`<p>${renderInlineMarkdown(paragraphLines.join('\\n')).replace(/\\n/g, '<br>')}</p>`);
+  }
+  return html.join('');
 }
 
 function renderInlineMarkdown(value) {
-  return escapeHtml(value).replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+  const codeSpans = [];
+  let text = escapeHtml(value).replace(/`([^`]+)`/g, (_match, code) => {
+    const token = `%%CODE${codeSpans.length}%%`;
+    codeSpans.push(`<code>${code}</code>`);
+    return token;
+  });
+  text = text
+    .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
+    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+    .replace(/(^|[^*])\\*([^*\\n]+)\\*/g, '$1<em>$2</em>')
+    .replace(/(^|[^_])_([^_\\n]+)_/g, '$1<em>$2</em>')
+    .replace(/!\\[([^\\]]*)\\]\\(([^\\s)]+)(?:\\s+&quot;[^&]*&quot;)?\\)/g, (_match, alt, rawUrl) => {
+      const url = safeMarkdownUrl(rawUrl);
+      return url ? `<img src="${url}" alt="${escapeHtml(alt)}">` : escapeHtml(alt);
+    })
+    .replace(/\\[([^\\]]+)\\]\\(([^\\s)]+)(?:\\s+&quot;[^&]*&quot;)?\\)/g, (_match, label, rawUrl) => {
+      const url = safeMarkdownUrl(rawUrl);
+      return url ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>` : label;
+    });
+  return text.replace(/%%CODE(\\d+)%%/g, (_match, index) => codeSpans[Number(index)] || '');
+}
+
+function isTableStart(lines, index) {
+  return isTableRow(lines[index]) && index + 1 < lines.length && /^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$/.test(lines[index + 1] || '');
+}
+
+function isTableRow(line) {
+  return /^\\s*\\|.*\\|\\s*$/.test(line || '');
+}
+
+function renderMarkdownTable(lines) {
+  const headers = splitTableRow(lines[0]);
+  const aligns = splitTableRow(lines[1]).map((cell) => {
+    const value = cell.trim();
+    if (value.startsWith(':') && value.endsWith(':')) return 'center';
+    if (value.endsWith(':')) return 'right';
+    return 'left';
+  });
+  const bodyRows = lines.slice(2).map(splitTableRow);
+  const ths = headers.map((cell, index) => `<th style="text-align:${aligns[index] || 'left'}">${renderInlineMarkdown(cell.trim())}</th>`).join('');
+  const rows = bodyRows.map((row) => {
+    const tds = headers.map((_header, index) => `<td style="text-align:${aligns[index] || 'left'}">${renderInlineMarkdown((row[index] || '').trim())}</td>`).join('');
+    return `<tr>${tds}</tr>`;
+  }).join('');
+  return `<table><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function splitTableRow(line) {
+  return String(line || '').trim().replace(/^\\|/, '').replace(/\\|$/, '').split('|');
+}
+
+function safeMarkdownUrl(rawUrl) {
+  const decoded = String(rawUrl || '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
+  if (!decoded || /^[a-z][a-z0-9+.-]*:/i.test(decoded) && !/^(https?:|mailto:)/i.test(decoded)) return '';
+  return escapeHtml(decoded);
 }
 
 function escapeHtml(value) {
@@ -2908,7 +3174,9 @@ function buildAskPayload(question, results) {
 function renderRemoteAnswer(payload, answer) {
   answer.innerHTML = '';
   const wrap = el('div', 'ask-result');
-  wrap.appendChild(paragraph(sanitizeStudentAnswer(payload.answer || payload.markdown || 'Remote service returned an empty answer.')));
+  const markdown = el('div', 'markdown');
+  markdown.innerHTML = renderMarkdown(sanitizeStudentAnswer(payload.answer || payload.markdown || 'Remote service returned an empty answer.'));
+  wrap.appendChild(markdown);
   answer.appendChild(wrap);
 }
 

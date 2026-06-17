@@ -5,12 +5,26 @@ work_materials/work_material1/00_raw_client_materials/
 work_materials/work_material1/02_working_processing/audio/
 work_materials/work_material1/02_working_processing/converted_mp4/
 work_materials/work_material1/02_working_processing/keyframes/
+work_materials/work_material1/02_working_processing/json/backups/
+
+# Loose raw/reference files accidentally placed at material root
+work_materials/work_material1/*.pdf
+
+# Local recovery scratch area
+recovered_old_code/
 
 # Generated deliverables: keep lightweight reader files trackable, ignore bulky/rebuildable outputs
 work_materials/work_material1/05_final_deliverables/agent_workflow/
 work_materials/work_material1/05_final_deliverables/validation/
 work_materials/work_material1/05_final_deliverables/digital_book.zip
 work_materials/work_material1/05_final_deliverables/digital_book/assets/videos/
+work_materials/work_material1/05_final_deliverables/digital_book/server*.log
+work_materials/work_material1/05_final_deliverables/chapter_work/*/agent_workflow/
+work_materials/work_material1/05_final_deliverables/chapter_work/*/digital_book/
+work_materials/work_material1/05_final_deliverables/chapter_work/*/digital_book.zip
+work_materials/work_material1/05_final_deliverables/chapter_work/*/writer_inputs/
+work_materials/work_material1/05_final_deliverables/chapter_work/*/chapter_evidence_gap_log.*
+work_materials/work_material1/05_final_deliverables/chapter_work/*/chapter_generation_report.*
 work_materials/work_material1/05_final_deliverables_*/
 work_materials/work_material1/digital_book/
 
@@ -30,6 +44,7 @@ work_materials/work_material1/digital_book/
 .remote_commit.txt
 .new_branch_status.txt
 .new_branch_status2.txt
+.preview/
 
 # Generated student package (too large for normal GitHub blobs)
 digital_book.zip
