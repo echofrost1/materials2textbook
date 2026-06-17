@@ -87,6 +87,44 @@ class ChapterPlan:
 
 
 @dataclass
+class BookSectionPlan:
+    section_id: str
+    section_no: str
+    title: str
+    knowledge_point_ids: list[str]
+    primary_material_ids: list[str] = field(default_factory=list)
+    reference_material_ids: list[str] = field(default_factory=list)
+    recommended_video_ids: list[str] = field(default_factory=list)
+    needs_case: bool = True
+    needs_exercises: bool = True
+
+
+@dataclass
+class BookChapterPlan:
+    chapter_id: str
+    chapter_no: int
+    title: str
+    learning_goals: list[str]
+    sections: list[BookSectionPlan]
+    primary_material_ids: list[str] = field(default_factory=list)
+    reference_material_ids: list[str] = field(default_factory=list)
+    token_budget: int = 12000
+    video_budget: int = 3
+    document_budget: int = 20
+
+
+@dataclass
+class BookPlan:
+    book_id: str
+    title: str
+    planning_strategy: str
+    chapters: list[BookChapterPlan]
+    material_stats: dict[str, int] = field(default_factory=dict)
+    budget: dict[str, int] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class OutlineTopic:
     topic_id: str
     title: str

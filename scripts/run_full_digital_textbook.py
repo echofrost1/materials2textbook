@@ -102,6 +102,17 @@ def main() -> None:
         help="Additional document/PPT/table JSONL evidence. Can be passed multiple times.",
     )
     parser.add_argument("--output-dir", type=Path, default=None, help="Override agent workflow output directory.")
+    parser.add_argument("--book-mode", action="store_true", help="Enable whole-book planning before chapter generation.")
+    parser.add_argument(
+        "--manifest-xlsx",
+        type=Path,
+        default=None,
+        help="XLSX manifest prepared by the teammate. Used first for chapter/section allocation in --book-mode.",
+    )
+    parser.add_argument("--book-plan-output", type=Path, default=None, help="Optional output path for book_plan.json.")
+    parser.add_argument("--chapter-output-root", type=Path, default=None, help="Reserved output root for per-chapter artifacts.")
+    parser.add_argument("--max-chapter-input-tokens", type=int, default=12000, help="Per-chapter input token budget for --book-mode.")
+    parser.add_argument("--max-chapters", type=int, default=0, help="Limit planned chapters in --book-mode; 0 means no limit.")
     parser.add_argument("--approved-only", action="store_true", help="Only include approved evidence.")
     parser.add_argument("--include-rejected", action="store_true", help="Include rejected evidence.")
     parser.add_argument("--min-teaching-value", type=float, default=0.0)
@@ -245,6 +256,11 @@ def main() -> None:
         title=args.title,
         config=config,
         document_segments_path=combined_document_path,
+        book_mode=args.book_mode,
+        manifest_xlsx=args.manifest_xlsx.resolve() if args.manifest_xlsx else None,
+        book_plan_output=args.book_plan_output.resolve() if args.book_plan_output else None,
+        max_chapters=args.max_chapters,
+        max_chapter_input_tokens=args.max_chapter_input_tokens,
     )
 
     print("Full digital textbook generated:")
@@ -257,6 +273,9 @@ def main() -> None:
     print(f"- max_input_tokens: {args.max_input_tokens}")
     print(f"- max_tokens_per_evidence_chunk: {args.max_tokens_per_evidence_chunk}")
     print(f"- summarize_over_budget: {args.summarize_over_budget}")
+    print(f"- book_mode: {args.book_mode}")
+    if args.manifest_xlsx:
+        print(f"- manifest_xlsx: {args.manifest_xlsx.resolve()}")
     if combined_document_path:
         print(f"- combined_document_segments: {combined_document_path}")
     print(f"- agent_outputs: {outputs.manifest_path}")

@@ -12,6 +12,10 @@ from materials2textbook.io_utils import write_json, write_text
 from materials2textbook.llm.provider import LLMProvider
 from materials2textbook.prompts.digital_book_polisher import build_digital_book_polisher_messages
 from materials2textbook.schemas import (
+    BookChapterPlan,
+    BookPlan,
+    BookSectionPlan,
+    CaseExample,
     ChapterPlan,
     DigitalBook,
     DigitalBookBlock,
@@ -48,112 +52,39 @@ def build_digital_book(
     copy_media_assets: bool = True,
     llm_provider: LLMProvider | None = None,
     use_llm: bool = False,
+    book_plan: BookPlan | None = None,
 ) -> DigitalBook:
     chunk_map = {chunk.chunk_id: chunk for chunk in chunks}
     assets: dict[str, list[dict]] = {"videos": [], "keyframes": [], "images": []}
     projects: list[DigitalBookProject] = []
 
     for project_index, plan in enumerate(plans, start=1):
-        task_blocks: list[DigitalBookBlock] = [
-            DigitalBookBlock(
-                block_id=f"p{project_index:02d}_scenario",
-                type="scenario",
-                title="情境导入",
-                markdown=f"围绕“{plan.title}”的真实教学素材，观察视频片段并完成本任务的知识学习与操作分析。",
-                evidence_chunk_ids=plan.evidence_chunk_ids,
-            ),
-            DigitalBookBlock(
-                block_id=f"p{project_index:02d}_learning_nav",
-                type="learning_nav",
-                title="学习路径",
-                items=[_format_learning_path_item(point, plan.knowledge_points) for point in plan.knowledge_points],
-                evidence_chunk_ids=plan.evidence_chunk_ids,
-            ),
-        ]
-
-        key_terms: list[str] = []
-        for point_index, point in enumerate(plan.knowledge_points, start=1):
-            point_chunks = [chunk_map[chunk_id] for chunk_id in point.chunk_ids if chunk_id in chunk_map]
-            key_terms.extend(point.title for _chunk in point_chunks[:1])
-            implementation_text, polish_metadata = _render_point_markdown(
-                point.title,
-                point.summary,
-                point_chunks,
-                llm_provider=llm_provider,
-                use_llm=use_llm,
-            )
-            task_blocks.append(
-                DigitalBookBlock(
-                    block_id=f"p{project_index:02d}_kp{point_index:02d}_text",
-                    type="implementation",
-                    title=point.title,
-                    markdown=implementation_text,
-                    evidence_chunk_ids=[chunk.chunk_id for chunk in point_chunks],
-                    metadata={"teacher_evidence": _teacher_evidence_refs(point_chunks), **polish_metadata},
-                )
-            )
-            for media_index, chunk in enumerate(_select_video_chunks(point_chunks), start=1):
-                media_block = _build_video_block(
-                    chunk=chunk,
-                    output_dir=output_dir,
-                    block_id=f"p{project_index:02d}_kp{point_index:02d}_media{media_index:02d}",
-                    assets=assets,
-                    copy_media_assets=copy_media_assets,
-                )
-                if media_block:
-                    task_blocks.append(media_block)
-
-        if plan.case_examples:
-            for case_index, case in enumerate(plan.case_examples, start=1):
-                task_blocks.append(
-                    DigitalBookBlock(
-                        block_id=f"p{project_index:02d}_case{case_index:02d}",
-                        type="case_example",
-                        title=case.title,
-                        markdown=f"**例题**：{case.prompt}\n\n**参考分析**：{case.reference_answer}",
-                        evidence_chunk_ids=case.evidence_chunk_ids,
-                    )
-                )
-
-        task_blocks.extend(
-            [
-                DigitalBookBlock(
-                    block_id=f"p{project_index:02d}_assessment",
-                    type="assessment",
-                    title="任务评价",
-                    items=_assessment_items(plan),
-                    evidence_chunk_ids=plan.evidence_chunk_ids,
-                ),
-                DigitalBookBlock(
-                    block_id=f"p{project_index:02d}_exercises",
-                    type="exercises",
-                    title="思考与练习",
-                    items=_exercise_items(plan),
-                    evidence_chunk_ids=plan.evidence_chunk_ids,
-                ),
-            ]
-        )
-
-        task = DigitalBookTask(
-            task_id=f"task_{project_index:02d}_01",
-            title=f"任务{project_index}.1 {plan.title}",
-            blocks=task_blocks,
-            knowledge_points=[point.title for point in plan.knowledge_points],
-            key_terms=_dedupe(key_terms),
-            evidence_chunk_ids=plan.evidence_chunk_ids,
+        chapter_no = _book_chapter_no(book_plan, plan.chapter_id) or project_index
+        chapter_plan = _book_chapter_plan(book_plan, plan.chapter_id)
+        tasks = _build_chapter_tasks(
+            plan=plan,
+            chapter_plan=chapter_plan,
+            chapter_no=chapter_no,
+            project_index=project_index,
+            chunk_map=chunk_map,
+            output_dir=output_dir,
+            assets=assets,
+            copy_media_assets=copy_media_assets,
+            llm_provider=llm_provider,
+            use_llm=use_llm,
         )
         projects.append(
             DigitalBookProject(
-                project_id=f"project_{project_index:02d}",
-                title=f"项目{project_index} {plan.title}",
-                project_intro=f"本项目围绕“{plan.title}”展开学习，结合示范视频和学习要点理解相关知识与操作。",
+                project_id=plan.chapter_id,
+                title=f"第{chapter_no}章 {plan.title}",
+                project_intro=f"本章围绕“{plan.title}”展开学习，结合示范视频和学习要点理解相关知识与操作。",
                 ability_map=[
                     "示范观察与要点提取",
                     "知识点理解与复述",
                     "操作过程分析与质量判断",
                 ],
                 learning_goals=plan.learning_goals,
-                tasks=[task],
+                tasks=tasks,
             )
         )
 
@@ -163,6 +94,7 @@ def build_digital_book(
         metadata={
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "format": "materials2textbook.digital_book.v1",
+            "book_plan": _book_plan_metadata(book_plan),
         },
         projects=projects,
         assets=assets,
@@ -178,6 +110,7 @@ def export_digital_book(
     copy_media_assets: bool = True,
     llm_provider: LLMProvider | None = None,
     use_llm: bool = False,
+    book_plan: BookPlan | None = None,
 ) -> tuple[DigitalBook, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     book = build_digital_book(
@@ -188,11 +121,13 @@ def export_digital_book(
         copy_media_assets=copy_media_assets,
         llm_provider=llm_provider,
         use_llm=use_llm,
+        book_plan=book_plan,
     )
     json_path = output_dir / "digital_book.json"
     index_path = output_dir / "index.html"
     write_json(json_path, book)
-    write_text(index_path, VIEWER_HTML)
+    asset_version = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    write_text(index_path, VIEWER_HTML.replace("__ASSET_VERSION__", asset_version))
     write_text(output_dir / "styles.css", VIEWER_CSS)
     write_text(output_dir / "ask_config.js", ASK_CONFIG_JS)
     write_text(output_dir / "app.js", VIEWER_JS)
@@ -698,47 +633,146 @@ def _render_point_markdown(
 
 
 def _render_point_markdown_fallback(title: str, summary: str, chunks: list[EvidenceChunk]) -> str:
-    sections = _student_learning_sections(chunks)
-    lines = []
+    sections = _student_learning_sections(chunks, title=title)
     summary_text = _clean_student_text(summary)
-    if summary_text and not _looks_like_internal_review_text(summary_text) and not _looks_like_low_value_slide_text(summary_text):
-        lines.append(f"本节围绕“{title}”展开，重点理解：{summary_text}")
-        lines.append("")
+    if summary_text and (
+        _looks_like_internal_review_text(summary_text) or _looks_like_low_value_slide_text(summary_text)
+    ):
+        summary_text = ""
+    return _render_textbook_style_markdown(title, summary_text, sections, chunks)
 
-    if any(sections.values()):
-        if sections["concept"]:
-            lines.append("概念说明：")
-            for item in sections["concept"]:
-                lines.append(f"- {item}")
-            lines.append("")
-        if sections["steps"]:
-            lines.append("操作步骤：")
-            for index, item in enumerate(sections["steps"], start=1):
-                lines.append(f"{index}. {item}")
-            lines.append("")
-        if sections["notes"]:
-            lines.append("注意事项：")
-            for item in sections["notes"]:
-                lines.append(f"- {item}")
-            lines.append("")
-        if sections["mistakes"]:
-            lines.append("常见问题：")
-            for item in sections["mistakes"]:
-                lines.append(f"- {item}")
-    elif not lines:
-        lines.append(f"围绕“{title}”观察示范视频，理解关键概念、操作要求和常见注意事项。")
+
+def _render_textbook_style_markdown(
+    title: str,
+    summary_text: str,
+    sections: dict[str, list[str]],
+    chunks: list[EvidenceChunk],
+) -> str:
+    paragraphs = [
+        _compose_concept_paragraph(title, summary_text, sections.get("concept", [])),
+        _compose_operation_paragraph(sections.get("steps", [])),
+        _compose_quality_paragraph(sections.get("notes", []), sections.get("mistakes", [])),
+    ]
 
     video_count = sum(1 for chunk in chunks if chunk.source_type in {"video_segment", "video", "audio_segment"})
     if video_count:
-        lines.append("")
-        lines.append("请结合下方示范视频，重点观察操作动作、工件状态和教师提示。")
-    return "\n".join(lines).strip()
+        video_hint = _compose_video_observation_paragraph(title, sections, chunks)
+        if video_hint:
+            paragraphs.append(video_hint)
+
+    readable = [paragraph for paragraph in paragraphs if paragraph]
+    if not readable:
+        readable.append(f"本节围绕“{title}”展开学习，需要结合示范素材理解关键概念、操作要求和常见注意事项。")
+    return "\n\n".join(readable).strip()
 
 
-def _student_learning_sections(chunks: list[EvidenceChunk]) -> dict[str, list[str]]:
+def _compose_concept_paragraph(title: str, summary_text: str, concept_items: list[str]) -> str:
+    clauses = _paragraph_clauses([summary_text, *concept_items], limit=3)
+    if clauses:
+        body = "。".join(clauses)
+        return _finish_sentence(f"本节围绕“{title}”展开学习，核心是理解{body}")
+    return f"本节围绕“{title}”展开学习，需要先建立对相关概念、适用条件和学习重点的整体认识。"
+
+
+def _compose_operation_paragraph(step_items: list[str]) -> str:
+    steps = _paragraph_clauses(step_items, limit=4)
+    if not steps:
+        return ""
+    if _looks_like_continuous_operation(steps):
+        sequence = "；".join(f"{_chinese_ordinal(index)}，{item}" for index, item in enumerate(steps, start=1))
+        return _finish_sentence(f"实际操作时，可以按连续动作把握：{sequence}")
+    body = "；".join(steps)
+    return _finish_sentence(f"操作观察的重点在于{body}")
+
+
+def _compose_quality_paragraph(note_items: list[str], mistake_items: list[str]) -> str:
+    notes = _paragraph_clauses(note_items, limit=3)
+    mistakes = [_strip_problem_prefix(item) for item in _paragraph_clauses(mistake_items, limit=2)]
+    pieces = []
+    if notes:
+        pieces.append("质量控制和安全操作的重点在于" + "；".join(notes))
+    if mistakes:
+        pieces.append("若控制不当，容易出现" + "；".join(mistakes))
+    if not pieces:
+        return ""
+    return _finish_sentence("。".join(pieces))
+
+
+def _strip_problem_prefix(text: str) -> str:
+    return re.sub(r"^(?:如果|若)?控制不当[，,]?(?:容易|会)?出现", "", text).strip(" ：:-，。；;")
+
+
+def _compose_video_observation_paragraph(
+    title: str,
+    sections: dict[str, list[str]],
+    chunks: list[EvidenceChunk],
+) -> str:
+    if not _is_practice_title(title):
+        return ""
+    observations = _paragraph_clauses(sections.get("steps", []) + sections.get("notes", []), limit=2)
+    if observations:
+        return _finish_sentence(f"观看示范视频时，应把“{title}”的文字要点与画面对应起来，重点观察{'；'.join(observations)}")
+    video_sentences: list[str] = []
+    for chunk in chunks:
+        if chunk.source_type not in {"video_segment", "video", "audio_segment"}:
+            continue
+        video_sentences.extend(_student_sentences(chunk.content))
+    observations = _paragraph_clauses(video_sentences, limit=2)
+    if observations:
+        return _finish_sentence(f"观看示范视频时，应重点观察{'；'.join(observations)}，并记录动作变化与工件状态")
+    return "学习时可结合下方示范视频，重点观察操作动作、工件状态变化和教师提示，将文字要点与现场画面对应起来。"
+
+
+def _is_practice_title(title: str) -> bool:
+    return any(term in title for term in ("操作", "送丝", "引弧", "收弧", "焊接过程"))
+
+
+def _paragraph_clauses(items: list[str], *, limit: int) -> list[str]:
+    clauses = []
+    for item in items:
+        cleaned = _clean_student_text(item, max_chars=140)
+        if not cleaned or _contains_student_forbidden_trace(cleaned):
+            continue
+        cleaned = _compact_student_sentence(cleaned, max_chars=76)
+        cleaned = cleaned.strip("。；;，, ")
+        if cleaned and cleaned not in clauses:
+            clauses.append(cleaned)
+        if len(clauses) >= limit:
+            break
+    return clauses
+
+
+def _looks_like_continuous_operation(steps: list[str]) -> bool:
+    if len(steps) < 3:
+        return False
+    joined = " ".join(steps)
+    if any(term in joined for term in ("先", "再", "然后", "随后", "最后", "第一", "第二", "第三")):
+        return True
+    action_terms = ("操作", "观察", "送入", "送丝", "引弧", "收弧", "填丝", "填加", "摆动", "移动", "拉回", "打磨", "调整")
+    return sum(1 for step in steps if any(term in step for term in action_terms)) >= 3
+
+
+def _chinese_ordinal(index: int) -> str:
+    return {1: "第一", 2: "第二", 3: "第三", 4: "第四"}.get(index, f"第{index}")
+
+
+def _finish_sentence(text: str) -> str:
+    cleaned = text.strip(" ：:-，。；;")
+    if not cleaned:
+        return ""
+    if cleaned[-1] in "。！？":
+        return cleaned
+    return cleaned + "。"
+
+
+def _student_learning_sections(chunks: list[EvidenceChunk], *, title: str = "") -> dict[str, list[str]]:
     sections = {"concept": [], "steps": [], "notes": [], "mistakes": []}
     for chunk in chunks:
-        if _is_unapproved_video_transcript(chunk):
+        if (
+            chunk.source_type in {"video_segment", "video", "audio_segment"}
+            and "approved" not in chunk.review_status.lower()
+            and not _is_practice_title(title)
+        ):
             continue
         source_text = chunk.summary or chunk.content
         if _looks_like_internal_review_text(_clean_student_text(source_text)):
@@ -788,7 +822,22 @@ def _is_usable_student_markdown(markdown: str) -> bool:
         return False
     if _looks_like_internal_review_text(markdown) or _looks_like_low_quality_asr(markdown):
         return False
+    if _looks_like_outline_markdown(markdown):
+        return False
     return True
+
+
+def _looks_like_outline_markdown(markdown: str) -> bool:
+    old_section_labels = ("概念说明：", "操作步骤：", "注意事项：", "常见问题：")
+    if any(label in markdown for label in old_section_labels):
+        return True
+    list_lines = [
+        line
+        for line in markdown.splitlines()
+        if line.strip().startswith(("- ", "* ")) or re.match(r"^\s*\d+[.、]\s+", line)
+    ]
+    content_lines = [line for line in markdown.splitlines() if line.strip()]
+    return len(list_lines) >= 3 and len(list_lines) >= max(2, len(content_lines) // 2)
 
 
 def _contains_student_forbidden_trace(text: str) -> bool:
@@ -816,6 +865,7 @@ def _contains_student_forbidden_trace(text: str) -> bool:
 
 def _student_sentences(text: str) -> list[str]:
     cleaned = _clean_student_text(text, max_chars=420)
+    cleaned = _strip_student_trace_fragments(cleaned)
     if not cleaned or _looks_like_internal_review_text(cleaned) or _looks_like_low_value_slide_text(cleaned):
         return []
     parts = [
@@ -835,12 +885,39 @@ def _student_sentences(text: str) -> list[str]:
         if len(part) < 8:
             continue
         if len(part) > 90:
-            part = part[:87].rstrip() + "..."
+            part = _compact_student_sentence(part, max_chars=90)
+        if len(part) < 8:
+            continue
         sentences.append(part)
     return sentences
 
 
+def _compact_student_sentence(text: str, *, max_chars: int) -> str:
+    cleaned = str(text).strip(" ：:-，。；;")
+    if len(cleaned) <= max_chars:
+        return cleaned
+    boundary = max(
+        cleaned.rfind("。", 0, max_chars),
+        cleaned.rfind("；", 0, max_chars),
+        cleaned.rfind("，", 0, max_chars),
+        cleaned.rfind(",", 0, max_chars),
+    )
+    if boundary >= 24:
+        return cleaned[:boundary].strip(" ：:-，。；;")
+    return cleaned[:max_chars].rstrip(" ：:-，。；;") + "…"
+
+
+def _strip_student_trace_fragments(text: str) -> str:
+    cleaned = str(text)
+    cleaned = re.sub(r"(?:证据|来源|文件|路径|review_status|chunk_id)\s*[:：]\s*[^。；;\n]*[。；;]?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bPending_[A-Za-z0-9_-]*\b", "", cleaned)
+    cleaned = re.sub(r"\bC\d{3,}\b", "", cleaned)
+    return " ".join(cleaned.split()).strip(" ：:-，。；;")
+
+
 def _student_section_bucket(sentence: str) -> str:
+    if "烧损很少" in sentence:
+        return "concept"
     if any(term in sentence for term in ("缺陷", "气孔", "夹钨", "烧穿", "熔合不良", "裂纹", "过热", "烧损")):
         return "mistakes"
     if any(term in sentence for term in ("应", "必须", "不允许", "注意", "保持", "避免", "防止", "清除", "检查")):
@@ -858,16 +935,145 @@ def _section_limit(bucket: str) -> int:
 
 
 def _clean_student_text(text: str, max_chars: int = 120) -> str:
-    normalized = " ".join(str(text).split())
+    normalized = _normalize_asr_terms(str(text))
+    normalized = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", normalized)
+    normalized = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[，。；：、“”])", "", normalized)
+    normalized = re.sub(r"(?<=[，、。；：])\s+(?=[\u4e00-\u9fffA-Za-z0-9])", "", normalized)
+    normalized = re.sub(r"(?<=[“（(])\s+(?=[\u4e00-\u9fffA-Za-z0-9])", "", normalized)
+    normalized = re.sub(r"(?<=[\u4e00-\u9fffA-Za-z0-9])\s+(?=[”）)])", "", normalized)
+    normalized = re.sub(r"[①②③④⑤⑥⑦⑧⑨⑩]", "", normalized)
     normalized = re.sub(r"\bT\s*1\s*G\b", "TIG", normalized, flags=re.IGNORECASE)
     normalized = normalized.replace("高文刚", "高温钢")
-    normalized = re.sub(r"\[\d{1,2}:\d{2}:\d{2}(?:\.\d{1,3})?\s*-->\s*\d{1,2}:\d{2}:\d{2}(?:\.\d{1,3})?\]", "", normalized)
+    normalized = re.sub(r"\[\d{1,2}:\d{2}:\d{2}(?:\.\d{1,3})?\s*-->\s*\d{1,2}:\d{2}:\d{2}(?:\.\d{1,3})?\]", "。", normalized)
+    normalized = " ".join(normalized.split())
     normalized = re.sub(r"`?[A-Za-z]{1,5}[_-]?\d{3,}[A-Za-z0-9_-]*`?", "", normalized)
     normalized = re.sub(r"[\w\u4e00-\u9fff（）()、.-]+\s*\.\s*(?:mp4|flv|mp3|wav|pptx|ppt|jsonl|docx?)", "", normalized, flags=re.IGNORECASE)
     normalized = _strip_outline_prefix(normalized)
     normalized = normalized.strip(" ：:-，。")
     if len(normalized) > max_chars:
         normalized = normalized[: max_chars - 3].rstrip() + "..."
+    return normalized
+
+
+def _normalize_asr_terms(text: str) -> str:
+    normalized = str(text)
+    replacements = {
+        "Tick": "TIG",
+        "TIG漢": "TIG焊",
+        "採用": "采用",
+        "送司法": "送丝法",
+        "第二回饭，": "",
+        "第二回饭": "",
+        "焊接带由": "焊机带有",
+        "焊接没有": "焊机没有",
+        "焊接電燃": "焊接电缆",
+        "焊接电燃": "焊接电缆",
+        "保护效果好，焊缝质量高氩气": "保护效果好，焊缝质量高。氩气",
+        "漢阶": "焊接",
+        "漢階": "焊接",
+        "汉阶": "焊接",
+        "汉階": "焊接",
+        "汗階": "焊接",
+        "看階": "焊接",
+        "汗機": "焊接",
+        "漢機": "焊接",
+        "漢後": "焊后",
+        "汉后": "焊后",
+        "漢丝": "焊丝",
+        "漢師": "焊丝",
+        "漢师": "焊丝",
+        "漢絲": "焊丝",
+        "含思": "焊丝",
+        "龙磁": "熔池",
+        "龍磁": "熔池",
+        "龍池": "熔池",
+        "融持": "熔池",
+        "融池": "熔池",
+        "電湖": "电弧",
+        "电湖": "电弧",
+        "電火": "电弧",
+        "电火": "电弧",
+        "電骨": "电弧",
+        "电骨": "电弧",
+        "隱糊": "引弧",
+        "隐糊": "引弧",
+        "隱燃": "引燃",
+        "隐燃": "引燃",
+        "漢": "焊",
+        "為": "为",
+        "與": "与",
+        "餘": "与",
+        "這": "这",
+        "來": "来",
+        "過": "过",
+        "會": "会",
+        "時": "时",
+        "後": "后",
+        "應": "应",
+        "長": "长",
+        "開": "开",
+        "準": "准",
+        "確": "确",
+        "種": "种",
+        "質": "质",
+        "態": "态",
+        "處": "处",
+        "觸": "触",
+        "氣": "气",
+        "電": "电",
+        "壓": "压",
+        "縮": "缩",
+        "卻": "却",
+        "收骨": "收弧",
+        "骨坑": "弧坑",
+        "弧坑练纹": "弧坑裂纹",
+        "练纹": "裂纹",
+        "确线": "缺陷",
+        "電流衰竭": "电流衰减",
+        "电流衰竭": "电流衰减",
+        "框框制": "控制",
+        "新疆熔池铁碼": "填满熔池铁水",
+        "铁碼": "铁水",
+        "緊小": "减小",
+        "紧小": "减小",
+        "細滅": "熄灭",
+        "细灭": "熄灭",
+        "乳急": "钨极",
+        "估計": "钨极",
+        "碰水": "喷嘴",
+        "朵性氣勤": "惰性气体",
+        "朵性氣": "惰性气体",
+        "壓氣": "氩气",
+        "亞氣": "氩气",
+        "壓湖": "氩弧",
+        "亞湖": "氩弧",
+        "高頻": "高频",
+        "長度為": "长度为",
+        "電流為": "电流为",
+        "處於": "处于",
+        "狀態": "状态",
+        "開關": "开关",
+        "起伏": "起弧",
+        "電燃": "电源",
+        "电燃": "电缆",
+        "式板": "试板",
+        "漢腔": "焊枪",
+        "焊腔": "焊枪",
+        "空嘴": "喷嘴",
+        "隔止": "搁置",
+        "夾角": "夹角",
+        "大母指": "拇指",
+        "十指": "食指",
+        "吴明指": "无名指",
+        "送开": "松开",
+        "一座": "夹住",
+        "善用": "采用",
+        "替个汉的": "",
+        "替个汉": "",
+    }
+    for source, target in replacements.items():
+        normalized = normalized.replace(source, target)
+    normalized = normalized.replace("，", "，").replace(",", "，")
     return normalized
 
 
@@ -998,10 +1204,281 @@ def _teacher_evidence_refs(chunks: list[EvidenceChunk]) -> list[dict[str, str]]:
     return refs
 
 
+def _build_chapter_tasks(
+    *,
+    plan: ChapterPlan,
+    chapter_plan: BookChapterPlan | None,
+    chapter_no: int,
+    project_index: int,
+    chunk_map: dict[str, EvidenceChunk],
+    output_dir: Path,
+    assets: dict[str, list[dict]],
+    copy_media_assets: bool,
+    llm_provider: LLMProvider | None,
+    use_llm: bool,
+) -> list[DigitalBookTask]:
+    section_groups = _section_groups_for_plan(plan, chapter_plan)
+    tasks: list[DigitalBookTask] = []
+    used_case_ids: set[str] = set()
+
+    for task_index, (section, points) in enumerate(section_groups, start=1):
+        task_title = _section_task_title(chapter_no, task_index, section, plan)
+        task_evidence_ids = _task_evidence_ids(section, points, plan)
+        task_blocks: list[DigitalBookBlock] = [
+            DigitalBookBlock(
+                block_id=f"p{project_index:02d}_t{task_index:02d}_scenario",
+                type="scenario",
+                title="情境导入",
+                markdown=f"本节围绕“{_section_display_title(section, plan)}”展开学习，结合教材正文、示范视频和课堂任务理解关键知识。",
+                evidence_chunk_ids=task_evidence_ids,
+            )
+        ]
+
+        key_terms: list[str] = []
+        for point_index, point in enumerate(points, start=1):
+            point_chunks = [chunk_map[chunk_id] for chunk_id in point.chunk_ids if chunk_id in chunk_map]
+            key_terms.extend(point.title for _chunk in point_chunks[:1])
+            implementation_text, polish_metadata = _render_point_markdown(
+                point.title,
+                point.summary,
+                point_chunks,
+                llm_provider=llm_provider,
+                use_llm=use_llm,
+            )
+            task_blocks.append(
+                DigitalBookBlock(
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_kp{point_index:02d}_text",
+                    type="implementation",
+                    title=point.title,
+                    markdown=implementation_text,
+                    evidence_chunk_ids=[chunk.chunk_id for chunk in point_chunks],
+                    metadata={"teacher_evidence": _teacher_evidence_refs(point_chunks), **polish_metadata},
+                )
+            )
+            for media_index, chunk in enumerate(_select_video_chunks(point_chunks), start=1):
+                media_block = _build_video_block(
+                    chunk=chunk,
+                    output_dir=output_dir,
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_kp{point_index:02d}_media{media_index:02d}",
+                    assets=assets,
+                    copy_media_assets=copy_media_assets,
+                )
+                if media_block:
+                    task_blocks.append(media_block)
+
+        section_cases = _cases_for_points(plan.case_examples, points, used_case_ids)
+        for case_index, case in enumerate(section_cases, start=1):
+            used_case_ids.add(case.case_id)
+            task_blocks.append(
+                DigitalBookBlock(
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_case{case_index:02d}",
+                    type="case_example",
+                    title=case.title,
+                    markdown=f"**例题**：{case.prompt}\n\n**参考分析**：{case.reference_answer}",
+                    evidence_chunk_ids=case.evidence_chunk_ids,
+                )
+            )
+
+        task_blocks.extend(
+            [
+                DigitalBookBlock(
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_assessment",
+                    type="assessment",
+                    title="学习评价",
+                    items=_assessment_items_for_points(points),
+                    evidence_chunk_ids=task_evidence_ids,
+                ),
+                DigitalBookBlock(
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_exercises",
+                    type="exercises",
+                    title="思考与练习",
+                    items=_exercise_items_for_points(points),
+                    evidence_chunk_ids=task_evidence_ids,
+                ),
+            ]
+        )
+
+        tasks.append(
+            DigitalBookTask(
+                task_id=f"{plan.chapter_id}_task_{task_index:02d}",
+                title=task_title,
+                blocks=task_blocks,
+                knowledge_points=[point.title for point in points],
+                key_terms=_dedupe(key_terms),
+                evidence_chunk_ids=task_evidence_ids,
+            )
+        )
+
+    unused_cases = [case for case in plan.case_examples if case.case_id not in used_case_ids]
+    if unused_cases and tasks:
+        for case_index, case in enumerate(unused_cases, start=1):
+            tasks[-1].blocks.append(
+                DigitalBookBlock(
+                    block_id=f"p{project_index:02d}_t{len(tasks):02d}_extra_case{case_index:02d}",
+                    type="case_example",
+                    title=case.title,
+                    markdown=f"**例题**：{case.prompt}\n\n**参考分析**：{case.reference_answer}",
+                    evidence_chunk_ids=case.evidence_chunk_ids,
+                )
+            )
+    return tasks
+
+
+def _section_groups_for_plan(
+    plan: ChapterPlan,
+    chapter_plan: BookChapterPlan | None,
+) -> list[tuple[BookSectionPlan | None, list[KnowledgePoint]]]:
+    if not chapter_plan or not chapter_plan.sections:
+        return [(None, plan.knowledge_points)]
+
+    remaining = list(plan.knowledge_points)
+    groups: list[tuple[BookSectionPlan | None, list[KnowledgePoint]]] = []
+    for section in chapter_plan.sections:
+        points = _points_for_section(section, remaining)
+        if not points:
+            continue
+        used_ids = {id(point) for point in points}
+        remaining = [point for point in remaining if id(point) not in used_ids]
+        groups.append((section, points))
+    if remaining:
+        groups.append((None, remaining))
+    return groups or [(None, plan.knowledge_points)]
+
+
+def _points_for_section(section: BookSectionPlan, points: list[KnowledgePoint]) -> list[KnowledgePoint]:
+    keys = {_match_key(value) for value in section.knowledge_point_ids + [section.title] if value}
+    result = [point for point in points if _match_key(point.title) in keys]
+    if result:
+        return result
+    return [
+        point
+        for point in points
+        if any(key and (key in _match_key(point.title) or _match_key(point.title) in key) for key in keys)
+    ]
+
+
+def _task_evidence_ids(section: BookSectionPlan | None, points: list[KnowledgePoint], plan: ChapterPlan) -> list[str]:
+    ids: list[str] = []
+    if section:
+        ids.extend(section.primary_material_ids)
+    for point in points:
+        ids.extend(point.chunk_ids)
+    if section:
+        ids.extend(section.reference_material_ids)
+    return _dedupe(ids) or plan.evidence_chunk_ids
+
+
+def _cases_for_points(
+    cases: list[CaseExample],
+    points: list[KnowledgePoint],
+    used_case_ids: set[str],
+) -> list[CaseExample]:
+    point_ids = {point.knowledge_point_id for point in points}
+    point_titles = {_match_key(point.title) for point in points}
+    result: list[CaseExample] = []
+    for case in cases:
+        if case.case_id in used_case_ids:
+            continue
+        target_ids = set(case.target_knowledge_point_ids)
+        title_key = _match_key(case.title)
+        if target_ids & point_ids or any(key and key in title_key for key in point_titles):
+            result.append(case)
+    return result
+
+
+def _section_task_title(chapter_no: int, task_index: int, section: BookSectionPlan | None, plan: ChapterPlan) -> str:
+    title = _section_display_title(section, plan)
+    section_no = section.section_no if section and section.section_no else f"{chapter_no}.{task_index}"
+    return f"{section_no} {title}"
+
+
+def _section_display_title(section: BookSectionPlan | None, plan: ChapterPlan) -> str:
+    if section and section.title:
+        title = _strip_outline_prefix(section.title)
+        if len(plan.knowledge_points) == 1 and not _titles_overlap(title, plan.title):
+            return plan.title
+        return title
+    return plan.title
+
+
+def _assessment_items_for_points(points: list[KnowledgePoint]) -> list[str]:
+    if not points:
+        return _assessment_items(ChapterPlan("", "", [], [], []))
+    lead = points[0].title
+    return [
+        f"能说出“{lead}”相关的核心概念或关键操作。",
+        "能结合教材资源说明关键动作、工件状态或质量要求。",
+        "能用自己的话概括本节至少一个注意事项或判断依据。",
+    ]
+
+
+def _exercise_items_for_points(points: list[KnowledgePoint]) -> list[str]:
+    return [
+        f"结合示范视频和学习要点，说明“{point.title}”的关键内容。"
+        for point in points[:5]
+    ] or ["结合示范视频和学习要点，总结本节的关键学习收获。"]
+
+
+def _match_key(value: str) -> str:
+    return re.sub(r"[\s\-_/：:，,。、《》()（）.0-9]+", "", str(value or "").strip().lower())
+
+
+def _titles_overlap(left: str, right: str) -> bool:
+    left_key = _match_key(left)
+    right_key = _match_key(right)
+    if not left_key or not right_key:
+        return False
+    return left_key in right_key or right_key in left_key or any(term in left_key and term in right_key for term in ("焊接", "安全", "焊条", "钨极", "气焊"))
+
+
+def _book_chapter_plan(book_plan: BookPlan | None, chapter_id: str) -> BookChapterPlan | None:
+    if not book_plan:
+        return None
+    for chapter in book_plan.chapters:
+        if chapter.chapter_id == chapter_id:
+            return chapter
+    return None
+
+
+def _book_chapter_no(book_plan: BookPlan | None, chapter_id: str) -> int:
+    if not book_plan:
+        return 0
+    for chapter in book_plan.chapters:
+        if chapter.chapter_id == chapter_id:
+            return chapter.chapter_no
+    return 0
+
+
+def _book_plan_metadata(book_plan: BookPlan | None) -> dict:
+    if not book_plan:
+        return {}
+    return {
+        "book_id": book_plan.book_id,
+        "title": book_plan.title,
+        "planning_strategy": book_plan.planning_strategy,
+        "chapters": [
+            {
+                "chapter_id": chapter.chapter_id,
+                "chapter_no": chapter.chapter_no,
+                "title": chapter.title,
+                "sections": [
+                    {
+                        "section_id": section.section_id,
+                        "section_no": section.section_no,
+                        "title": section.title,
+                        "knowledge_points": section.knowledge_point_ids,
+                    }
+                    for section in chapter.sections
+                ],
+            }
+            for chapter in book_plan.chapters
+        ],
+    }
+
+
 def _format_learning_path_item(point: KnowledgePoint, all_points: list[KnowledgePoint] | None = None) -> str:
-    title_by_id = {item.knowledge_point_id: item.title for item in all_points or []}
-    prerequisites = ", ".join(title_by_id.get(point_id, point_id) for point_id in point.prerequisite_ids) if point.prerequisite_ids else "无"
-    return f"{point.order_index}. {point.title}（层级：{_difficulty_label(point.difficulty_level)}；先修：{prerequisites}）"
+    order_index = point.order_index if point.order_index > 0 else 1
+    return f"{order_index}. {point.title}"
 
 
 def _assessment_items(plan: ChapterPlan) -> list[str]:
@@ -1089,6 +1566,7 @@ def _build_video_block(
         block_id=block_id,
         type="video",
         title=f"{chunk.title} 视频片段",
+        markdown=_render_video_observation_markdown(chunk),
         src=video_rel,
         poster=poster_rel,
         start_time=str(chunk.metadata.get("start_time", "")),
@@ -1099,6 +1577,14 @@ def _build_video_block(
             "original_path": chunk.locator.original_path,
         },
     )
+
+
+def _render_video_observation_markdown(chunk: EvidenceChunk) -> str:
+    sentences = _student_sentences(chunk.content)
+    observations = _paragraph_clauses(sentences, limit=2)
+    if observations:
+        return _finish_sentence(f"观看本视频时，重点观察{'；'.join(observations)}")
+    return "观看本视频时，注意教师示范的动作顺序、工件状态变化和操作安全要求。"
 
 
 def _resolve_source_path(path_value: str, asset_id: str = "") -> Path | None:
@@ -1160,7 +1646,7 @@ VIEWER_HTML = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>数字教材</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=__ASSET_VERSION__">
 </head>
 <body>
   <aside class="sidebar">
@@ -1205,8 +1691,8 @@ VIEWER_HTML = """<!doctype html>
     </header>
     <div id="content" class="content"></div>
   </main>
-  <script src="ask_config.js?v=20260616"></script>
-  <script src="app.js?v=20260616"></script>
+  <script src="ask_config.js?v=__ASSET_VERSION__"></script>
+  <script src="app.js?v=__ASSET_VERSION__"></script>
 </body>
 </html>
 """
@@ -1265,6 +1751,42 @@ body {
 .toc a:hover { background: #edf2f7; }
 .toc a.active { background: #e6f0fb; color: #0f4f8a; font-weight: 700; }
 .toc .task { padding-left: 20px; font-size: 14px; }
+.toc-chapter {
+  margin-bottom: 4px;
+}
+.toc-chapter-toggle {
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  background: transparent;
+  color: #2d3748;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 4px;
+  align-items: center;
+  text-align: left;
+  padding: 7px 8px;
+  border-radius: 6px;
+  font: inherit;
+  line-height: 1.35;
+}
+.toc-chapter-toggle:hover { background: #edf2f7; }
+.toc-chapter-toggle.active { background: #e6f0fb; color: #0f4f8a; font-weight: 700; }
+.toc-chapter-icon {
+  color: #667085;
+  font-size: 12px;
+}
+.toc-section-list {
+  margin: 2px 0 6px 18px;
+}
+.toc-chapter.collapsed .toc-section-list {
+  display: none;
+}
+.toc-section-list a {
+  font-size: 14px;
+  padding-left: 8px;
+}
 .study-panel {
   border-top: 1px solid #dfe3e8;
   margin-top: 18px;
@@ -1426,6 +1948,18 @@ body {
   font-size: var(--reader-font-size, 17px);
   line-height: 1.75;
 }
+.book-outline {
+  background: #fff;
+  border: 1px solid #dfe3e8;
+  border-radius: 8px;
+  margin-bottom: 18px;
+  padding: 20px;
+}
+.book-outline ol {
+  margin: 8px 0 0;
+  padding-left: 22px;
+}
+.book-outline li { margin: 4px 0; }
 .project, .task, .block {
   background: #fff;
   border: 1px solid #dfe3e8;
@@ -1459,16 +1993,559 @@ video {
   border-radius: 8px;
   margin-top: 10px;
 }
-pre.markdown {
-  white-space: pre-wrap;
+.video-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0 0;
+}
+.video-toggle {
+  min-height: 34px;
+  border: 1px solid #cfd6df;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
   font: inherit;
+  font-size: 13px;
+}
+.video-status {
+  color: #667085;
+  font-size: 13px;
+}
+.markdown {
   margin: 0;
+}
+.markdown p { margin: 0 0 12px; }
+.markdown p:last-child { margin-bottom: 0; }
+.markdown strong { font-weight: 700; }
+
+/* Gemini-inspired immersive reader theme. Kept as an override layer so the
+   existing generated HTML and learning-state behavior stay compatible. */
+:root {
+  --bg-main: #f8fafc;
+  --bg-sidebar: #ffffff;
+  --bg-card: #ffffff;
+  --bg-hover: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --brand-color: #2563eb;
+  --brand-color-hover: #1d4ed8;
+  --brand-light: #eff6ff;
+  --border-color: #e2e8f0;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 8px;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 8px 20px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 14px 34px rgba(15, 23, 42, 0.12);
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  grid-template-columns: 320px 1fr;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  color: var(--text-primary);
+  background: var(--bg-main);
+}
+
+.sidebar {
+  overflow-y: auto;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-color);
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.sidebar::-webkit-scrollbar { width: 5px; }
+.sidebar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.brand {
+  font-size: 20px;
+  line-height: 1.25;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+}
+.brand::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 8px;
+  height: 18px;
+  border-radius: 2px;
+  background: var(--brand-color);
+}
+
+.search {
+  height: 40px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0 14px;
+  margin-bottom: 0;
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: 14px;
+  transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
+}
+.search:focus,
+.note:focus,
+.ask-input:focus {
+  outline: none;
+  border-color: var(--brand-color);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .14);
+}
+
+.toc {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.toc a,
+.toc-chapter-toggle {
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  transition: background .15s ease, color .15s ease, padding-left .15s ease;
+}
+.toc a {
+  padding: 8px 12px;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toc a:hover,
+.toc-chapter-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.toc a:hover { padding-left: 16px; }
+.toc a.active,
+.toc-chapter-toggle.active {
+  background: var(--brand-light);
+  color: var(--brand-color);
+  font-weight: 700;
+}
+.toc-chapter {
+  margin-bottom: 4px;
+}
+.toc-chapter-toggle {
+  min-height: 38px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
+  padding: 8px 12px;
+}
+.toc-chapter-icon {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.toc-section-list {
+  margin: 3px 0 8px 18px;
+  border-left: 1px solid var(--border-color);
+  padding-left: 6px;
+}
+.toc-section-list a {
+  font-size: 13px;
+}
+
+.study-panel {
+  margin-top: auto;
+  border-top: 1px solid var(--border-color);
+  padding-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.progress-row {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.progress-row strong {
+  color: var(--brand-color);
+  font-weight: 700;
+}
+.progress-track {
+  height: 6px;
+  margin: -6px 0 0;
+  background: var(--border-color);
+}
+.progress-bar {
+  background: linear-gradient(90deg, var(--brand-color), #60a5fa);
+}
+.icon-action {
+  width: auto;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  background: var(--brand-light);
+  color: var(--brand-color);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+}
+.icon-action:hover {
+  background: var(--brand-color);
+  color: #fff;
+}
+.bookmarks {
+  margin: 0;
+  max-height: 90px;
+  overflow-y: auto;
+}
+.bookmark-item a {
+  color: var(--text-secondary);
+}
+.bookmark-item button,
+.sync-actions button,
+.tools button,
+.video-toggle {
+  border: 1px solid var(--border-color);
+  background: #fff;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.bookmark-item button:hover,
+.sync-actions button:hover,
+.tools button:hover,
+.video-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: #cbd5e1;
+}
+.note-label {
+  display: block;
+  margin-bottom: -8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+.note {
+  border: 1px solid var(--border-color);
+  background: var(--bg-main);
+  color: var(--text-primary);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.sync-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.sync-actions button {
+  height: 34px;
+  font-size: 12px;
+  font-weight: 600;
+}
+#syncStudyData {
+  grid-column: span 2;
+  background: var(--brand-color);
+  border-color: var(--brand-color);
+  color: #fff;
+}
+#syncStudyData:hover {
+  background: var(--brand-color-hover);
+}
+.sync-status {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.ask-box {
+  display: flex;
+  gap: 6px;
+}
+.ask-input {
+  height: 38px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.ask-button {
+  width: 44px;
+  height: 38px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--text-primary);
+  color: #fff;
+  font-weight: 700;
+}
+.ask-button:hover {
+  background: #1e293b;
+}
+.ask-answer {
+  max-height: 220px;
+  overflow-y: auto;
+  border-radius: var(--radius-md);
+  background: var(--bg-main);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.ask-answer:not(:empty) {
+  padding: 12px;
+  border: 1px solid var(--border-color);
+}
+.ask-result {
+  border-color: var(--border-color);
+  border-radius: var(--radius-md);
+  background: #fff;
+}
+.ask-result a {
+  color: var(--brand-color);
+}
+
+.reader {
+  min-width: 0;
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--bg-main);
+}
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 16px 40px;
+  background: rgba(255, 255, 255, .86);
+  border-bottom: 1px solid var(--border-color);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.toolbar h1 {
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 700;
+}
+.toolbar p {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.tools {
+  display: flex;
+  gap: 6px;
+}
+.tools button {
+  height: 32px;
+  min-width: 40px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.content {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+  color: #334155;
+  font-size: var(--reader-font-size, 17px);
+  line-height: var(--reader-line-height, 1.78);
+}
+.book-outline,
+.project,
+.task,
+.block {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.book-outline,
+.project,
+.task,
+.block {
+  margin-bottom: 24px;
+  padding: 28px;
+}
+.book-outline {
+  border-top: 3px solid var(--brand-color);
+}
+.book-outline h2,
+.project h2,
+.task h3,
+.block h4 {
+  color: var(--text-primary);
+  letter-spacing: 0;
+}
+.project h2 {
+  padding-bottom: 10px;
+  border-bottom: 2px solid var(--brand-light);
+  color: var(--brand-color);
+  font-size: 24px;
+}
+.task h3 {
+  font-size: 20px;
+}
+.block h4 {
+  color: var(--text-secondary);
+  font-size: 16px;
+}
+.tag-row {
+  gap: 6px;
+  margin: 14px 0;
+}
+.tag {
+  min-height: 26px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-main);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.evidence {
+  color: var(--text-muted);
+}
+.block[data-type="scenario"] {
+  border-left: 4px solid #f59e0b;
+}
+.block[data-type="case_example"] {
+  border-left: 4px solid #10b981;
+}
+.media-box {
+  margin-top: 16px;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: #000;
+  box-shadow: var(--shadow-md);
+}
+video {
+  margin-top: 0;
+  max-height: 480px;
+  border-radius: 0;
+  background: #000;
+}
+.video-actions {
+  margin-top: 8px;
+}
+.video-toggle {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.video-status {
+  color: var(--text-muted);
+}
+.markdown {
+  color: #334155;
+}
+.markdown p {
+  margin: 0 0 14px;
+}
+.markdown strong {
+  color: var(--text-primary);
+}
+.toast {
+  right: 24px;
+  bottom: 24px;
+  border-radius: var(--radius-md);
+  background: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Compact collapsible table of contents. */
+.toc {
+  gap: 1px;
+}
+.toc-chapter {
+  margin-bottom: 1px;
+}
+.toc-chapter-toggle {
+  min-height: 28px;
+  padding: 4px 8px;
+  gap: 4px;
+}
+.toc-section-list {
+  margin: 0 0 2px 12px;
+  padding-left: 4px;
+}
+.toc-section-list a {
+  padding: 3px 8px;
+  font-size: 13px;
+  line-height: 1.22;
+}
+.toc-section-list a:hover {
+  padding-left: 10px;
+}
+.toc a.task,
+.toc-section-list a.task {
+  display: block;
+  margin: 0;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.22;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toc a.task:hover,
+.toc-section-list a.task:hover {
+  padding-left: 10px;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.toc a.task.active,
+.toc-section-list a.task.active {
+  background: var(--brand-light);
+  color: var(--brand-color);
+  font-weight: 700;
+}
+.section-anchor {
+  display: block;
+  height: 0;
+  overflow: hidden;
+  scroll-margin-top: 92px;
 }
 @media (max-width: 820px) {
   body { grid-template-columns: 1fr; }
-  .sidebar { position: relative; height: auto; border-right: 0; border-bottom: 1px solid #dfe3e8; }
-  .toolbar { position: relative; padding: 16px; }
-  .content { padding: 16px; }
+  .sidebar {
+    position: relative;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-color);
+    padding: 18px 16px;
+  }
+  .study-panel { margin-top: 0; }
+  .toolbar {
+    position: relative;
+    padding: 16px;
+    align-items: flex-start;
+  }
+  .tools { flex-wrap: wrap; justify-content: flex-end; }
+  .content {
+    padding: 18px 14px 56px;
+    font-size: 16px;
+  }
+  .book-outline,
+  .project,
+  .task,
+  .block {
+    padding: 18px;
+    margin-bottom: 16px;
+  }
 }
 """
 
@@ -1482,7 +2559,8 @@ VIEWER_JS = """const state = {
 };
 
 async function loadBook() {
-  const response = await fetch('digital_book.json');
+  const version = new URLSearchParams(window.location.search).get('v') || Date.now().toString();
+  const response = await fetch(`digital_book.json?v=${version}`);
   state.book = await response.json();
   renderBook(state.book);
 }
@@ -1503,12 +2581,48 @@ function renderBook(book) {
 function renderToc(book) {
   const toc = document.getElementById('toc');
   toc.innerHTML = '';
+  const plan = book.metadata?.book_plan;
+  if (plan?.chapters?.length) {
+    for (const chapter of plan.chapters) {
+      toc.appendChild(tocChapter(chapter, false));
+    }
+    return;
+  }
   for (const project of book.projects || []) {
     toc.appendChild(tocLink(project.title, project.project_id, 'project'));
     for (const task of project.tasks || []) {
       toc.appendChild(tocLink(task.title, task.task_id, 'task'));
     }
   }
+}
+
+function tocChapter(chapter, expanded) {
+  const wrap = el('div', `toc-chapter${expanded ? '' : ' collapsed'}`);
+  const button = el('button', 'toc-chapter-toggle');
+  button.type = 'button';
+  button.dataset.target = chapter.chapter_id;
+  const icon = el('span', 'toc-chapter-icon');
+  const label = el('span', '');
+  label.textContent = `第${chapter.chapter_no}章 ${chapter.title}`;
+  button.appendChild(icon);
+  button.appendChild(label);
+  const sectionList = el('div', 'toc-section-list');
+  for (const section of chapter.sections || []) {
+    sectionList.appendChild(tocLink(`${section.section_no} ${section.title}`, section.section_id || chapter.chapter_id, 'task'));
+  }
+  const syncIcon = () => {
+    icon.textContent = wrap.classList.contains('collapsed') ? '▶' : '▼';
+  };
+  button.addEventListener('click', () => {
+    wrap.classList.toggle('collapsed');
+    syncIcon();
+    setActiveSection(chapter.chapter_id);
+    document.getElementById(chapter.chapter_id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  syncIcon();
+  wrap.appendChild(button);
+  wrap.appendChild(sectionList);
+  return wrap;
 }
 
 function tocLink(text, id, className) {
@@ -1523,7 +2637,12 @@ function tocLink(text, id, className) {
 function renderContent(book) {
   const root = document.getElementById('content');
   root.innerHTML = '';
+  const outline = renderBookOutline(book);
+  if (outline) root.appendChild(outline);
+  const bookChapters = book.metadata?.book_plan?.chapters || [];
   for (const project of book.projects || []) {
+    const chapterPlan = bookChapters.find((chapter) => chapter.chapter_id === project.project_id);
+    const anchoredSections = new Set();
     const section = el('section', 'project');
     section.id = project.project_id;
     section.appendChild(heading('h2', project.title));
@@ -1537,8 +2656,11 @@ function renderContent(book) {
       taskEl.id = task.task_id;
       taskEl.appendChild(heading('h3', task.title));
       taskEl.appendChild(tagRow('知识点', task.knowledge_points || []));
-      taskEl.appendChild(tagRow('重点词', task.key_terms || []));
       for (const block of task.blocks || []) {
+        for (const sectionPlan of matchingChapterSections(chapterPlan, block, anchoredSections)) {
+          taskEl.appendChild(sectionAnchor(sectionPlan.section_id));
+          anchoredSections.add(sectionPlan.section_id);
+        }
         taskEl.appendChild(renderBlock(block));
       }
       root.appendChild(taskEl);
@@ -1553,6 +2675,8 @@ function renderBlock(block) {
   if (block.type === 'video') {
     const video = document.createElement('video');
     video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
     video.src = block.src;
     if (block.poster) video.poster = block.poster;
     if (block.start_time) video.dataset.startTime = block.start_time;
@@ -1561,16 +2685,69 @@ function renderBlock(block) {
       if (seconds > 0) video.currentTime = seconds;
     }, { once: true });
     node.appendChild(video);
+    node.appendChild(videoActions(video));
     node.appendChild(paragraph(`${block.start_time || ''} - ${block.end_time || ''}`));
   } else if (block.items && block.items.length) {
     node.appendChild(list(block.items));
   }
   if (block.markdown) {
-    const pre = el('pre', 'markdown');
-    pre.textContent = block.markdown;
-    node.appendChild(pre);
+    const markdown = el('div', 'markdown');
+    markdown.innerHTML = renderMarkdown(block.markdown);
+    node.appendChild(markdown);
   }
   return node;
+}
+
+function videoActions(video) {
+  const wrap = el('div', 'video-actions');
+  const toggle = el('button', 'video-toggle');
+  const status = el('span', 'video-status');
+  toggle.type = 'button';
+  const syncLabel = () => {
+    toggle.textContent = video.paused ? '播放' : '暂停';
+    if (!video.paused) status.textContent = '';
+  };
+  toggle.addEventListener('click', async () => {
+    if (video.paused) {
+      try {
+        status.textContent = '';
+        await video.play();
+      } catch (error) {
+        status.textContent = '浏览器阻止了自动播放，请直接点击视频控件播放。';
+      }
+    } else {
+      video.pause();
+    }
+    syncLabel();
+  });
+  video.addEventListener('play', syncLabel);
+  video.addEventListener('pause', syncLabel);
+  video.addEventListener('ended', syncLabel);
+  syncLabel();
+  wrap.appendChild(toggle);
+  wrap.appendChild(status);
+  return wrap;
+}
+
+function renderMarkdown(value) {
+  const blocks = String(value || '')
+    .split(/\\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  return blocks.map((block) => `<p>${renderInlineMarkdown(block).replace(/\\n/g, '<br>')}</p>`).join('');
+}
+
+function renderInlineMarkdown(value) {
+  return escapeHtml(value).replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function buildAskIndex(book) {
@@ -1623,6 +2800,62 @@ async function answerQuestion(rawQuestion) {
   if (!remoteAnswered) {
     renderLocalAskResults(focusedResults, terms, answer);
   }
+}
+
+function matchingChapterSections(chapterPlan, block, anchoredSections) {
+  if (!chapterPlan?.sections?.length || !block) return [];
+  const title = normalizeText(block.title || '');
+  const blockId = normalizeText(block.block_id || '');
+  if (!title && !blockId) return [];
+  const result = [];
+  for (const section of chapterPlan.sections) {
+    if (!section.section_id || anchoredSections.has(section.section_id)) continue;
+    const candidates = [section.title, ...(section.knowledge_points || [])].map(normalizeText).filter(Boolean);
+    if (candidates.some((item) => title.includes(item) || item.includes(title) || blockId.includes(item))) {
+      result.push(section);
+    }
+  }
+  return result;
+}
+
+function normalizeText(value) {
+  return String(value || '').replace(/[\\s\\-_/：:，,。、《》()（）]/g, '').toLowerCase();
+}
+
+function sectionAnchor(id) {
+  const anchor = el('span', 'section-anchor');
+  anchor.id = id;
+  return anchor;
+}
+
+function renderBookOutline(book) {
+  const plan = book.metadata?.book_plan;
+  if (!plan?.chapters?.length) return null;
+  const section = el('section', 'book-outline');
+  section.id = 'book_outline';
+  section.appendChild(heading('h2', '教材大纲'));
+  const chapterList = document.createElement('ol');
+  for (const chapter of plan.chapters) {
+    const chapterItem = document.createElement('li');
+    chapterItem.appendChild(document.createTextNode(`第${chapter.chapter_no}章 ${chapter.title}`));
+    const sectionList = document.createElement('ol');
+    for (const item of chapter.sections || []) {
+      const sectionItem = document.createElement('li');
+      sectionItem.appendChild(document.createTextNode(`${item.section_no} ${item.title}`));
+      const pointList = document.createElement('ol');
+      for (const point of item.knowledge_points || []) {
+        const pointItem = document.createElement('li');
+        pointItem.textContent = point;
+        pointList.appendChild(pointItem);
+      }
+      if (pointList.children.length) sectionItem.appendChild(pointList);
+      sectionList.appendChild(sectionItem);
+    }
+    if (sectionList.children.length) chapterItem.appendChild(sectionList);
+    chapterList.appendChild(chapterItem);
+  }
+  section.appendChild(chapterList);
+  return section;
 }
 
 function renderLocalAskResults(results, terms, answer) {
@@ -1825,7 +3058,7 @@ function restoreReaderState() {
 }
 
 function bindScrollTracking() {
-  const sections = [...document.querySelectorAll('.project, .task')];
+  const sections = [...document.querySelectorAll('.project, .task, .section-anchor')];
   let ticking = false;
   window.addEventListener('scroll', () => {
     if (ticking) return;
@@ -1853,6 +3086,9 @@ function setActiveSection(id) {
   localStorage.setItem(`${state.storageKey}.activeId`, id);
   for (const link of document.querySelectorAll('.toc a')) {
     link.classList.toggle('active', link.getAttribute('href') === `#${id}`);
+  }
+  for (const button of document.querySelectorAll('.toc-chapter-toggle')) {
+    button.classList.toggle('active', button.dataset.target === id);
   }
 }
 

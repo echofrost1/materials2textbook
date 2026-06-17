@@ -13,7 +13,17 @@ from materials2textbook.exporters.digital_book import (
     validate_student_digital_book_package,
     write_student_digital_book_package,
 )
-from materials2textbook.schemas import CaseExample, ChapterPlan, EvidenceChunk, EvidenceLocator, EvidenceScore, KnowledgePoint
+from materials2textbook.schemas import (
+    BookChapterPlan,
+    BookPlan,
+    BookSectionPlan,
+    CaseExample,
+    ChapterPlan,
+    EvidenceChunk,
+    EvidenceLocator,
+    EvidenceScore,
+    KnowledgePoint,
+)
 
 
 class FakeLLMProvider:
@@ -92,6 +102,16 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert "sanitizeStudentAnswer" in app_js
     assert "preferAskResults" in app_js
     assert "focusAskTerms" in app_js
+    assert "renderMarkdown" in app_js
+    assert "renderInlineMarkdown" in app_js
+    assert "videoActions" in app_js
+    assert "video.pause()" in app_js
+    assert "video.preload = 'metadata'" in app_js
+    assert "video.playsInline = true" in app_js
+    assert "浏览器阻止了自动播放" in app_js
+    assert "document.createElement('pre')" not in app_js
+    assert ".split(/\\n{2,}/)" in app_js
+    assert ".replace(/\\n/g, '<br>')" in app_js
     assert "block.type || block.block_type" in app_js
     assert "[2, 3, 4]" in app_js
     assert "chunkId.toLowerCase() === term" not in app_js
@@ -116,10 +136,168 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert any(block.type == "case_example" for block in book.projects[0].tasks[0].blocks)
     assert "证据定位" not in " ".join(book.projects[0].ability_map)
     assert "人工复核" not in " ".join(book.projects[0].ability_map)
-    learning_nav = next(block for block in book.projects[0].tasks[0].blocks if block.type == "learning_nav")
-    assert "层级：基础" in " ".join(learning_nav.items)
-    assert "basic" not in " ".join(learning_nav.items)
+    assert not any(block.type == "learning_nav" for block in book.projects[0].tasks[0].blocks)
     assert "数字教材" in index_html
+
+
+def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path: Path) -> None:
+    chunk = EvidenceChunk(
+        chunk_id="C1",
+        asset_id="C1",
+        title="送丝操作",
+        content="送丝操作时应观察熔池形态。",
+        summary="送丝操作摘要",
+        keywords=["送丝"],
+        subject="焊接技术",
+        material_block="钨极氩弧焊",
+        material_block_code="tig_welding",
+        recommended_chapter="基本操作",
+        locator=EvidenceLocator(),
+        score=EvidenceScore(teaching_value=0.8),
+        review_status="approved",
+    )
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="基本操作",
+        learning_goals=["理解基本操作"],
+        knowledge_points=[KnowledgePoint("kp_01", "送丝操作", ["C1"], order_index=1)],
+        evidence_chunk_ids=["C1"],
+    )
+    book_plan = BookPlan(
+        book_id="sample",
+        title="样书",
+        planning_strategy="manifest_xlsx_first",
+        chapters=[
+            BookChapterPlan(
+                chapter_id="chapter_01",
+                chapter_no=1,
+                title="基本操作",
+                learning_goals=["理解基本操作"],
+                sections=[
+                    BookSectionPlan(
+                        section_id="chapter_01_section_01",
+                        section_no="1.1",
+                        title="送丝",
+                        knowledge_point_ids=["送丝操作"],
+                        primary_material_ids=["C1"],
+                    )
+                ],
+                primary_material_ids=["C1"],
+            )
+        ],
+    )
+
+    book, json_path, _ = export_digital_book(
+        title="样书",
+        plans=[plan],
+        chunks=[chunk],
+        output_dir=tmp_path / "digital_book",
+        book_plan=book_plan,
+    )
+
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    app_js = (tmp_path / "digital_book" / "app.js").read_text(encoding="utf-8")
+    assert payload["metadata"]["book_plan"]["chapters"][0]["sections"][0]["section_no"] == "1.1"
+    assert book.projects[0].title == "第1章 基本操作"
+    assert book.projects[0].project_id == "chapter_01"
+    assert "renderBookOutline" in app_js
+    assert "教材大纲" in app_js
+    assert "tocChapter" in app_js
+    assert "toc-chapter-toggle" in app_js
+    assert "toc-section-list" in app_js
+    assert "collapsed" in app_js
+    assert "button.dataset.target === id" in app_js
+    assert "层级：" not in json_path.read_text(encoding="utf-8")
+    assert "先修：" not in json_path.read_text(encoding="utf-8")
+
+
+def test_export_digital_book_splits_chapter_into_section_tasks(tmp_path: Path) -> None:
+    chunks = [
+        EvidenceChunk(
+            chunk_id="C1",
+            asset_id="C1",
+            title="基本原理",
+            content="基本原理内容",
+            summary="基本原理摘要",
+            keywords=["基本原理"],
+            subject="焊接技术",
+            material_block="钨极氩弧焊",
+            material_block_code="tig_welding",
+            recommended_chapter="钨极氩弧焊",
+            locator=EvidenceLocator(),
+            score=EvidenceScore(teaching_value=0.8),
+            review_status="approved",
+        ),
+        EvidenceChunk(
+            chunk_id="C2",
+            asset_id="C2",
+            title="送丝操作",
+            content="送丝操作内容",
+            summary="送丝操作摘要",
+            keywords=["送丝"],
+            subject="焊接技术",
+            material_block="钨极氩弧焊",
+            material_block_code="tig_welding",
+            recommended_chapter="钨极氩弧焊",
+            locator=EvidenceLocator(),
+            score=EvidenceScore(teaching_value=0.8),
+            review_status="approved",
+        ),
+    ]
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="钨极氩弧焊",
+        learning_goals=["理解钨极氩弧焊"],
+        knowledge_points=[
+            KnowledgePoint("kp_01", "基本原理", ["C1"], order_index=1),
+            KnowledgePoint("kp_02", "送丝操作", ["C2"], order_index=2),
+        ],
+        evidence_chunk_ids=["C1", "C2"],
+    )
+    book_plan = BookPlan(
+        book_id="sample",
+        title="样书",
+        planning_strategy="manifest_xlsx_first",
+        chapters=[
+            BookChapterPlan(
+                chapter_id="chapter_01",
+                chapter_no=1,
+                title="钨极氩弧焊",
+                learning_goals=["理解钨极氩弧焊"],
+                sections=[
+                    BookSectionPlan(
+                        section_id="chapter_01_section_01",
+                        section_no="1.1",
+                        title="基本原理",
+                        knowledge_point_ids=["基本原理"],
+                        primary_material_ids=["C1"],
+                    ),
+                    BookSectionPlan(
+                        section_id="chapter_01_section_02",
+                        section_no="1.2",
+                        title="送丝操作",
+                        knowledge_point_ids=["送丝操作"],
+                        primary_material_ids=["C2"],
+                    ),
+                ],
+                primary_material_ids=["C1", "C2"],
+            )
+        ],
+    )
+
+    book, _, _ = export_digital_book(
+        title="样书",
+        plans=[plan],
+        chunks=chunks,
+        output_dir=tmp_path / "digital_book",
+        book_plan=book_plan,
+    )
+
+    tasks = book.projects[0].tasks
+    assert [task.title for task in tasks] == ["1.1 基本原理", "1.2 送丝操作"]
+    assert [task.knowledge_points for task in tasks] == [["基本原理"], ["送丝操作"]]
+    assert tasks[0].evidence_chunk_ids == ["C1"]
+    assert tasks[1].evidence_chunk_ids == ["C2"]
 
 
 def test_export_digital_book_default_student_copy_is_readable_utf8(tmp_path: Path) -> None:
@@ -150,9 +328,10 @@ def test_export_digital_book_default_student_copy_is_readable_utf8(tmp_path: Pat
             *[block.markdown for block in task.blocks],
         ]
     )
-    assert "项目1 钨极氩弧焊基本操作" in visible_text
+    assert "第1章 钨极氩弧焊基本操作" in visible_text
+    assert "本章围绕“钨极氩弧焊基本操作”展开学习" in visible_text
     assert "情境导入" in visible_text
-    assert "学习路径" in visible_text
+    assert "学习路径" not in visible_text
     assert "示范观察与要点提取" in visible_text
     assert "数字教材" in index_path.read_text(encoding="utf-8")
     assert not any(token in visible_text for token in ["鎯", "瀛", "璇", "閽", "鏁", "鈥"])
@@ -883,7 +1062,7 @@ def test_student_markdown_skips_obvious_low_quality_asr(tmp_path: Path) -> None:
         if block.type == "implementation"
     )
     assert "夫妻娘不怕" not in implementation.markdown
-    assert "围绕“基本原理”观察示范视频" in implementation.markdown
+    assert "本节围绕“基本原理”展开学习" in implementation.markdown
 
 
 def test_student_markdown_skips_internal_review_phrasing(tmp_path: Path) -> None:
@@ -1185,10 +1364,16 @@ def test_student_markdown_uses_textbook_sections_instead_of_raw_long_notes(tmp_p
         for block in book.projects[0].tasks[0].blocks
         if block.type == "implementation"
     )
-    assert "操作步骤：" in implementation.markdown
-    assert "注意事项：" in implementation.markdown
-    assert "常见问题：" in implementation.markdown
-    assert all(len(line) <= 110 for line in implementation.markdown.splitlines() if line.strip())
+    assert "操作步骤：" not in implementation.markdown
+    assert "注意事项：" not in implementation.markdown
+    assert "常见问题：" not in implementation.markdown
+    assert not any(line.startswith("- ") for line in implementation.markdown.splitlines())
+    assert "本节围绕“送丝”展开学习" in implementation.markdown
+    assert "送丝速度应与焊接电流、焊接速度和接头间隙相匹配" in implementation.markdown
+    assert "操作观察的重点在于" in implementation.markdown
+    assert "质量控制和安全操作的重点在于" in implementation.markdown
+    assert "气孔、夹钨或熔合不良" in implementation.markdown
+    assert all(len(line) <= 240 for line in implementation.markdown.splitlines() if line.strip())
 
 
 def test_student_markdown_strips_slide_outline_labels(tmp_path: Path) -> None:
@@ -1285,7 +1470,7 @@ def test_student_markdown_filters_course_labels_and_diagram_captions(tmp_path: P
     assert "原理图" not in implementation.markdown
     assert "包括焊接电源" in implementation.markdown
     assert "1. 包括焊接电源" not in implementation.markdown
-    assert "1. 操作时观察熔池形态" in implementation.markdown
+    assert "操作观察的重点在于操作时观察熔池形态" in implementation.markdown
 
 
 def test_student_markdown_filters_short_slide_headings_and_ocr_typos(tmp_path: Path) -> None:
@@ -1338,14 +1523,113 @@ def test_student_markdown_filters_short_slide_headings_and_ocr_typos(tmp_path: P
     assert "高温钢" in implementation.markdown
 
 
+def test_student_markdown_renders_textbook_paragraphs_without_internal_traces(tmp_path: Path) -> None:
+    chunk = EvidenceChunk(
+        chunk_id="C000321",
+        asset_id="C000321",
+        title="送丝操作",
+        content=(
+            "证据：C000321 来源：PPT_demo.pptx Pending_review。"
+            "送丝操作需要与焊接电流、焊接速度和接头间隙相匹配。"
+            "操作时应观察熔池形态，使焊丝端部稳定送入熔池。"
+            "焊丝应保持在气体保护区内，防止端部氧化。"
+            "如果控制不当，容易出现气孔、夹钨或熔合不良。"
+        ),
+        summary="chunk_id C000321 待人工复核",
+        keywords=["送丝操作"],
+        subject="焊接技术",
+        material_block="钨极氩弧焊",
+        material_block_code="tig_welding",
+        recommended_chapter="基本操作",
+        locator=EvidenceLocator(),
+        score=EvidenceScore(teaching_value=0.8),
+        source_type="video_segment",
+        review_status="approved",
+    )
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="基本操作",
+        learning_goals=["理解送丝操作"],
+        knowledge_points=[KnowledgePoint("kp_01", "送丝操作", ["C000321"])],
+        evidence_chunk_ids=["C000321"],
+    )
+
+    book, _, _ = export_digital_book(
+        title="样章",
+        plans=[plan],
+        chunks=[chunk],
+        output_dir=tmp_path / "digital_book",
+    )
+
+    implementation = next(
+        block
+        for block in book.projects[0].tasks[0].blocks
+        if block.type == "implementation"
+    )
+    assert "送丝操作需要与焊接电流、焊接速度和接头间隙相匹配" in implementation.markdown
+    assert "操作时应观察熔池形态" in implementation.markdown
+    assert "观看示范视频时" in implementation.markdown
+    assert "如果控制不当，容易出现如果控制不当" not in implementation.markdown
+    assert "概念说明：" not in implementation.markdown
+    assert not any(line.startswith("- ") for line in implementation.markdown.splitlines())
+    for forbidden in ["chunk_id", "C000321", "证据：", "来源：", "PPT_", "Pending_", ".pptx"]:
+        assert forbidden not in implementation.markdown
+
+
+def test_student_markdown_uses_cleaned_pending_practice_transcript(tmp_path: Path) -> None:
+    chunk = EvidenceChunk(
+        chunk_id="C1",
+        asset_id="C1",
+        title="收弧操作",
+        content=(
+            "[00:00:12 --> 00:00:22] 漢阶结束时,由于收骨的方法不正确,在汉后结尾处容易产生骨坑和骨坑练纹、气孔、烧穿等确线。"
+            "[00:00:30 --> 00:00:38] 如果漢阶带由电流衰竭框框制,收骨时,新疆融持铁碼,然后按动电流衰竭按钮。"
+            "[00:00:38 --> 00:00:42] 使汉阶电流逐渐紧小,最后细灭电骨。"
+        ),
+        summary="收弧操作候选片段 1，待人工根据画面和字幕确认边界。",
+        keywords=["收弧操作"],
+        subject="焊接技术",
+        material_block="钨极氩弧焊",
+        material_block_code="tig_welding",
+        recommended_chapter="基本操作",
+        locator=EvidenceLocator(),
+        score=EvidenceScore(teaching_value=0.8),
+        source_type="video_segment",
+        review_status="Pending_Manual_Timecode",
+    )
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="基本操作",
+        learning_goals=["理解收弧操作"],
+        knowledge_points=[KnowledgePoint("kp_01", "收弧操作", ["C1"], difficulty_level="practice")],
+        evidence_chunk_ids=["C1"],
+    )
+
+    book, _, _ = export_digital_book(
+        title="样章",
+        plans=[plan],
+        chunks=[chunk],
+        output_dir=tmp_path / "digital_book",
+    )
+
+    implementation = next(
+        block
+        for block in book.projects[0].tasks[0].blocks
+        if block.type == "implementation"
+    )
+    assert "收弧" in implementation.markdown
+    assert "弧坑裂纹" in implementation.markdown
+    assert "电流衰减" in implementation.markdown
+    assert "电弧" in implementation.markdown
+    assert "收骨" not in implementation.markdown
+    assert "骨坑" not in implementation.markdown
+    assert "框框制" not in implementation.markdown
+
+
 def test_student_markdown_can_use_llm_polished_text(tmp_path: Path) -> None:
     provider = FakeLLMProvider(
-        "概念说明：\n"
-        "- 钨极氩弧焊利用钨极与工件之间的电弧加热母材，并由氩气保护熔池。\n\n"
-        "操作步骤：\n"
-        "1. 操作时观察熔池形态，保持焊枪角度稳定。\n\n"
-        "注意事项：\n"
-        "- 钨极伸出长度应结合接头形式和观察范围进行调整。"
+        "钨极氩弧焊利用钨极与工件之间的电弧加热母材，并由氩气保护熔池。学习时需要理解电极材料、保护气体和熔池状态之间的关系。\n\n"
+        "操作时应观察熔池形态，保持焊枪角度稳定。钨极伸出长度应结合接头形式和观察范围进行调整。"
     )
     chunk = EvidenceChunk(
         chunk_id="D1",
@@ -1389,6 +1673,7 @@ def test_student_markdown_can_use_llm_polished_text(tmp_path: Path) -> None:
     assert implementation.metadata["student_text_method"] == "llm_polished"
     assert provider.messages
     assert "禁止输出证据编号" in provider.messages[0][0]["content"]
+    assert "正式教材自然段" in provider.messages[0][1]["content"]
 
 
 def test_student_markdown_rejects_llm_internal_traces(tmp_path: Path) -> None:

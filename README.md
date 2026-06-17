@@ -4,8 +4,8 @@
 
 当前仓库分成两条协作线：
 
-- 数据处理线：按照 `docs/material_pipeline_forward_plan.md` 建台账、去重、分类、切片和人工复核。
-- 多智能体编排线：读取上游 `video_segments.jsonl`，生成三级教材目录、教材草稿、审核报告、Word/Markdown 交付物，以及可被前端阅读器渲染的电子教材包。
+- 数据处理线：按照 `docs/material_pipeline_forward_plan.md` 建台账、去重、分类、切片和自动质量标记。
+- 多智能体编排线：读取上游 XLSX/JSONL，生成全书规划、教材草稿、审核报告、Word/Markdown 交付物，以及可被前端阅读器渲染的电子教材包。
 
 ## 快速开始
 
@@ -15,10 +15,18 @@
 pip install -r requirements.txt
 ```
 
-同伴电脑上已经有完整素材目录时，一键生成可被前端阅读的整本电子教材：
+同伴电脑上已经有完整素材目录时，一键生成可被前端阅读的整本电子教材。推荐使用整本教材模式，并优先读取 `asset_block_map.xlsx` 自动规划章、节和知识点：
 
 ```powershell
-python scripts/run_full_digital_textbook.py --material-root work_materials/work_material1 --title "钨极氩弧焊数字教材"
+python scripts/run_full_digital_textbook.py `
+  --book-mode `
+  --manifest-xlsx work_materials/work_material1/01_manifest_inventory/asset_block_map.xlsx `
+  --material-root work_materials/work_material1 `
+  --title "焊接技术数字教材" `
+  --max-video-records 40 `
+  --max-document-records 500 `
+  --output-dir work_materials/work_material1/05_final_deliverables/agent_workflow `
+  --student-package-output work_materials/work_material1/05_final_deliverables/digital_book.zip
 ```
 
 默认采用媒体引用模式，不重复复制 `converted_mp4/` 中的视频；大素材目录推荐这样运行。需要打包小样例时再追加 `--copy-media-assets`。
@@ -37,6 +45,18 @@ work_materials/work_material1/05_final_deliverables/agent_workflow/
 work_materials/work_material1/05_final_deliverables/digital_book/index.html
 ```
 
+打开最新生成的数字教材：
+
+```powershell
+python scripts/open_digital_book.py
+```
+
+Windows 下也可以直接双击仓库根目录的：
+
+```text
+open_digital_book.bat
+```
+
 同伴电脑上的完整运行说明见 [docs/同伴素材一键生成电子教材.md](./docs/同伴素材一键生成电子教材.md)。
 
 如果要继续处理新的素材大块或新章节，先按 [docs/material_preprocessing_scripts.md](./docs/material_preprocessing_scripts.md) 生成 batch、校验 batch，再合并进主 `video_segments.jsonl` / `ppt_assets.jsonl`。
@@ -53,7 +73,7 @@ python scripts/run_pipeline.py
 python scripts/validate_video_segments.py
 ```
 
-只使用人工审核通过的片段生成正式版草稿：
+如需进入更严格的演示模式，可以只使用已标记通过的片段生成草稿：
 
 ```powershell
 python scripts/run_agent_workflow.py --approved-only
@@ -164,7 +184,7 @@ textbook_draft.md/docx     教材草稿
 textbook_final.md/docx     带审核修订提示的教材
 review_report.md/json      审核报告
 review_history.json        多轮审核-修订历史
-revision_diff.md           草稿到最终稿的差异和人工确认清单
+revision_diff.md           草稿到最终稿的差异和变更清单
 workflow_summary.json      工作流统计
 artifact_manifest.json     本次运行的输入、输出和摘要
 ```
@@ -219,6 +239,7 @@ materials2textbook/
 - [多智能体编排生成论文精读](./docs/多智能体编排生成论文精读.md)
 - [教材素材处理精简前瞻版](./docs/material_pipeline_forward_plan.md)
 - [数据组织可行性复核](./docs/data_organization_feasibility_review.md)
+- [同伴素材一键生成电子教材](./docs/同伴素材一键生成电子教材.md)
 
 ## 当前能力
 
@@ -227,7 +248,7 @@ materials2textbook/
 - 转换为统一 `EvidenceChunk`。
 - 严格基于素材片段生成三级教材目录。
 - 保守润色章节、目录和知识点标题，让泛标题结合素材大块形成更适合教材阅读的标题，同时不改变证据范围。
-- 生成带知识点顺序、难度标记、聚类标记和先修关系的学习路径；可优先承接上游或 LLM 输出的语义聚类元数据。
+- 生成内部知识点顺序、难度标记、聚类标记和先修关系；这些字段用于规划和审核，不作为学生端主阅读内容展示。
 - 生成观察定位、复述解释、分析迁移三层结构化学习活动，并绑定知识点、证据片段和评价量规。
 - 生成基于证据片段的案例示例，包含学生实训情境、迁移判断、例题、参考分析和 `evidence_chunk_ids`，待复核片段会保留谨慎表述。
 - 生成 Markdown 教材草稿和 Word 文档。
@@ -238,12 +259,17 @@ materials2textbook/
 - `--use-llm` 模式下可追加事实支撑、引用覆盖、教学目标和难度梯度深审。
 - `--use-llm` 默认启用持久化 LLM 调用缓存和失败重试，资源分析、正文生成、事实核验、教学深审和修订共用同一调用保护层。
 - 支持 `--review-rounds` 执行多轮审核-修订，并输出 `review_history.json`。
-- 输出 `revision_diff.md`，保留草稿到最终稿的 Markdown 差异和教师人工确认清单。
+- 输出 `revision_diff.md`，保留草稿到最终稿的 Markdown 差异和变更清单。
 - 输出证据覆盖率、引用覆盖率、段落事实支撑率、断言事实支撑率、可正式使用证据率、教学结构完整度和综合质量评分。
 - 输出活动质量评分，检查练习难度梯度、证据绑定、知识点覆盖和评价量规。
 - 输出案例质量评分，检查案例示例的证据绑定、知识点覆盖、学生画像/学习情境和迁移应用要求。
 - 生成按章节/知识点组织的人工可读证据索引。
-- 生成 `digital_book.json` 和本地前端阅读器，支持目录、项目任务、正文、视频、关键帧、案例示例、练习、全文搜索、阅读进度、书签、笔记、字号缩放、本地检索式 AI 问书、可选服务端 LLM 问书、学习数据 JSON 包导出/导入和可选服务端同步。
+- 支持 `--book-mode` 整本教材规划：优先读取 XLSX/manifest，生成 `book_plan.json`、`book_outline.md`、`book_plan_review.md` 和 `curriculum_order.generated.yml`。
+- 可从 `asset_block_map.xlsx` 自动生成课程排序和章-节结构：`material_block_cn` 作为章，`knowledge_point_cn` 作为节/知识点，并按内置焊接课程顺序稳定排序。
+- 生成 `digital_book.json` 和本地前端阅读器，支持章-节目录、正文、视频、关键帧、案例示例、练习、全文搜索、阅读进度、书签、笔记、字号缩放、本地检索式 AI 问书、可选服务端 LLM 问书、学习数据 JSON 包导出/导入和可选服务端同步。
+- 数字教材正文会按全书规划拆成多个小节任务；学生端不再显示系统化的“学习路径”和“重点词”块。
+- 案例生成会过滤课程标准/目录型表格文本，避免把“模块、课程、教学要求、授课方法”等内部素材长串直接展示给学生。
+- 提供 `scripts/open_digital_book.py` 和 `open_digital_book.bat` 一键启动本地预览服务器并打开最新正式数字教材。
 - 支持对 `digital_book.json` 执行命令行问书：默认检索教材片段并列证据来源，`--use-llm` 时可基于检索片段生成回答且保留 `evidence_chunk_ids`。
 - 支持聚合多个学习数据 JSON 包，生成班级学习报告，统计平均进度、当前位置分布、热门书签、笔记提交数和异常数据包。
 - 班级学习报告同时输出 JSON、Markdown 和可直接打开的 HTML 页面。

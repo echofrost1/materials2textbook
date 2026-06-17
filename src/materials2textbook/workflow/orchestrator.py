@@ -8,6 +8,14 @@ from materials2textbook.agents.digital_book_reviewer import (
     render_digital_book_review_markdown,
 )
 from materials2textbook.agents.activity_designer import ActivityDesignerAgent
+from materials2textbook.agents.book_planner import (
+    BookPlannerAgent,
+    book_plan_to_chapter_plans,
+    render_curriculum_order_yaml,
+    render_book_outline_markdown,
+    render_book_plan_review_markdown,
+    review_book_plan,
+)
 from materials2textbook.agents.case_designer import CaseDesignerAgent
 from materials2textbook.agents.knowledge_organizer import KnowledgeOrganizerAgent
 from materials2textbook.agents.outline_planner import OutlinePlannerAgent, render_outline_markdown
@@ -31,6 +39,7 @@ class TextbookWorkflow:
 
     def __init__(self, llm_provider: LLMProvider | None = None, use_llm: bool = False) -> None:
         self.resource_analyst = ResourceAnalystAgent(llm_provider=llm_provider, use_llm=use_llm)
+        self.book_planner = BookPlannerAgent()
         self.outline_planner = OutlinePlannerAgent()
         self.organizer = KnowledgeOrganizerAgent()
         self.activity_designer = ActivityDesignerAgent()
@@ -50,6 +59,11 @@ class TextbookWorkflow:
         title: str,
         config: WorkflowConfig | None = None,
         document_segments_path: Path | None = None,
+        book_mode: bool = False,
+        manifest_xlsx: Path | None = None,
+        book_plan_output: Path | None = None,
+        max_chapters: int = 0,
+        max_chapter_input_tokens: int = 12000,
     ) -> WorkflowOutputs:
         config = config or WorkflowConfig()
         records = read_jsonl(video_segments_path)
@@ -74,10 +88,23 @@ class TextbookWorkflow:
             llm_provider=self.resource_analyst.llm_provider,
             use_llm=self.resource_analyst.use_llm,
         )
-        plans = self.organizer.run(
-            chunks,
-            max_chunks_per_knowledge_point=config.max_chunks_per_knowledge_point,
-        )
+        book_plan = None
+        book_plan_review = []
+        if book_mode:
+            book_plan = self.book_planner.run(
+                title=title,
+                chunks=chunks,
+                manifest_xlsx=manifest_xlsx,
+                max_chapters=max_chapters,
+                chapter_token_budget=max_chapter_input_tokens,
+            )
+            book_plan_review = review_book_plan(book_plan, chunks)
+            plans = book_plan_to_chapter_plans(book_plan, chunks)
+        else:
+            plans = self.organizer.run(
+                chunks,
+                max_chunks_per_knowledge_point=config.max_chunks_per_knowledge_point,
+            )
         plans = self.title_polisher.run(plans, chunks)
         plans = self.activity_designer.run(plans)
         plans = self.case_designer.run(plans, chunks)
@@ -127,6 +154,11 @@ class TextbookWorkflow:
 
         outline_path = output_dir / "textbook_outline.json"
         outline_markdown_path = output_dir / "textbook_outline.md"
+        book_plan_path = book_plan_output or output_dir / "book_plan.json"
+        book_outline_path = output_dir / "book_outline.md"
+        curriculum_order_path = output_dir / "curriculum_order.generated.yml"
+        book_plan_review_path = output_dir / "book_plan_review.json"
+        book_plan_review_markdown_path = output_dir / "book_plan_review.md"
         evidence_chunks_path = output_dir / "evidence_chunks.jsonl"
         evidence_markdown_path = output_dir / "evidence_index.md"
         chapter_plan_path = output_dir / "chapter_plan.json"
@@ -144,6 +176,12 @@ class TextbookWorkflow:
 
         write_json(outline_path, outlines)
         write_text(outline_markdown_path, outline_markdown)
+        if book_plan:
+            write_json(book_plan_path, book_plan)
+            write_text(book_outline_path, render_book_outline_markdown(book_plan))
+            write_text(curriculum_order_path, render_curriculum_order_yaml(book_plan))
+            write_json(book_plan_review_path, book_plan_review)
+            write_text(book_plan_review_markdown_path, render_book_plan_review_markdown(title, book_plan_review))
         write_jsonl(evidence_chunks_path, chunks)
         write_text(evidence_markdown_path, evidence_markdown)
         write_json(chapter_plan_path, plans)
@@ -164,6 +202,7 @@ class TextbookWorkflow:
             copy_media_assets=config.copy_media_assets,
             llm_provider=self.writer.llm_provider,
             use_llm=self.writer.use_llm,
+            book_plan=book_plan,
         )
         digital_book_review = self.digital_book_reviewer.run(
             _digital_book,
@@ -184,6 +223,7 @@ class TextbookWorkflow:
             "input": {
                 "video_segments_path": _portable_path(video_segments_path),
                 "document_segments_path": _portable_path(document_segments_path) if document_segments_path else "",
+                "manifest_xlsx": _portable_path(manifest_xlsx) if manifest_xlsx else "",
                 "source_records": len(records) + len(document_records),
                 "video_source_records": len(records),
                 "document_source_records": len(document_records),
@@ -238,6 +278,11 @@ class TextbookWorkflow:
                 "digital_book_index": _portable_path(digital_book_index_path),
                 "digital_book_review_json": _portable_path(digital_book_review_path),
                 "digital_book_review_markdown": _portable_path(digital_book_review_markdown_path),
+                "book_plan": _portable_path(book_plan_path) if book_plan else "",
+                "book_outline": _portable_path(book_outline_path) if book_plan else "",
+                "curriculum_order": _portable_path(curriculum_order_path) if book_plan else "",
+                "book_plan_review_json": _portable_path(book_plan_review_path) if book_plan else "",
+                "book_plan_review_markdown": _portable_path(book_plan_review_markdown_path) if book_plan else "",
             },
         }
         write_json(manifest_path, manifest)
