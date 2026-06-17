@@ -39,6 +39,8 @@ work_materials/work_material1/05_final_deliverables/digital_book/index.html
 
 同伴电脑上的完整运行说明见 [docs/同伴素材一键生成电子教材.md](./docs/同伴素材一键生成电子教材.md)。
 
+如果要继续处理新的素材大块或新章节，先按 [docs/material_preprocessing_scripts.md](./docs/material_preprocessing_scripts.md) 生成 batch、校验 batch，再合并进主 `video_segments.jsonl` / `ppt_assets.jsonl`。
+
 运行当前 TIG 样例的多智能体编排：
 
 ```powershell

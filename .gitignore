@@ -5,6 +5,13 @@ work_materials/work_material1/00_raw_client_materials/
 work_materials/work_material1/02_working_processing/audio/
 work_materials/work_material1/02_working_processing/converted_mp4/
 work_materials/work_material1/02_working_processing/keyframes/
+work_materials/work_material1/02_working_processing/json/backups/
+
+# Loose raw/reference files accidentally placed at material root
+work_materials/work_material1/*.pdf
+
+# Local recovery scratch area
+recovered_old_code/
 
 # Environment
 .env
