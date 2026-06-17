@@ -103,6 +103,7 @@ def write_json(path: Path, obj: dict[str, Any]) -> None:
 
 def write_excel_with_fallback(df: pd.DataFrame, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
+    df = df.applymap(lambda value: re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]", "", value) if isinstance(value, str) else value)
     try:
         df.to_excel(path, index=False, engine="openpyxl")
         return path
@@ -123,6 +124,8 @@ def infer_type(path: Path) -> str:
         return "audio"
     if "structured_assets" in name:
         return "structured"
+    if "reference_text_assets" in name:
+        return "reference"
     raise ValueError(f"Cannot infer batch type from {path}")
 
 
@@ -441,6 +444,40 @@ def review_structured(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, An
     return reviewed, report
 
 
+def review_reference(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    reference_text_id = clean_text(row.get("reference_text_id"))
+    evidence = clean_text(row.get("evidence_text") or row.get("extracted_text"))
+    hits = term_hits(evidence)
+    score = 0.35
+    score += clamp(len(evidence) / 900) * 0.40
+    score += min(len(hits), 4) * 0.05
+    if clean_text(row.get("text_extract_method")):
+        score += 0.08
+    decision = decision_from_score(score)
+    reviewed = dict(row)
+    reviewed.update(
+        {
+            "quality_score": round(score, 3),
+            "auto_review_decision": decision,
+            "review_status": "Agent_Keep" if decision == "keep" else ("Agent_Reject" if decision == "reject" else "Needs_Review"),
+            "review_comment": "auto reference-text review",
+            "review_basis": "rule_score: text_length + domain_terms + extraction_method",
+            "domain_term_hits": ";".join(hits),
+            "reviewed_time": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    report = {
+        "asset_unit_id": reference_text_id,
+        "source_asset_id": clean_text(row.get("source_asset_id")),
+        "asset_type": "reference",
+        "decision": decision,
+        "quality_score": round(score, 3),
+        "evidence_length": len(evidence),
+        "domain_term_hits": ";".join(hits),
+    }
+    return reviewed, report
+
+
 def output_paths(batch_path: Path, output_prefix: str, keep_only: bool) -> tuple[Path, Path, Path, Path]:
     prefix = output_prefix or batch_path.stem
     suffix = "keep_reviewed" if keep_only else "reviewed"
@@ -455,7 +492,7 @@ def output_paths(batch_path: Path, output_prefix: str, keep_only: bool) -> tuple
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-jsonl", required=True, type=Path)
-    parser.add_argument("--batch-type", choices=["video", "ppt", "audio", "structured", "auto"], default="auto")
+    parser.add_argument("--batch-type", choices=["video", "ppt", "audio", "structured", "reference", "auto"], default="auto")
     parser.add_argument("--output-prefix", default="")
     parser.add_argument("--keep-only", action="store_true", help="Write only keep rows to reviewed JSONL/XLSX.")
     args = parser.parse_args()
@@ -472,8 +509,10 @@ def main() -> int:
             reviewed, report = review_ppt(row)
         elif batch_type == "audio":
             reviewed, report = review_audio(row)
-        else:
+        elif batch_type == "structured":
             reviewed, report = review_structured(row)
+        else:
+            reviewed, report = review_reference(row)
         reviewed_rows.append(reviewed)
         report_rows.append(report)
 

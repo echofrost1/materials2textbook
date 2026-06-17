@@ -219,6 +219,7 @@ welding_equipment_safety_ppt_assets_20260616_210424_keep_reviewed.jsonl
 gas_welding_and_cutting_audio_segments_20260616_211435_keep_reviewed.jsonl
 welding_equipment_safety_structured_assets_20260616_211522_keep_reviewed.jsonl
 welding_basic_operation_structured_assets_20260616_211736_keep_reviewed.jsonl
+textbook_reference_reference_text_assets_20260617_112722_keep_reviewed.jsonl
 ```
 
 结果：
@@ -276,6 +277,10 @@ batch 20260616_211522:
 batch 20260616_211736:
   target block: welding_basic_operation
   structured keep: 6 / 6
+
+batch 20260617_112722:
+  target block: textbook_reference
+  reference text keep: 153 / 153
 ```
 
 当前主结果：
@@ -299,6 +304,9 @@ audio_segments.jsonl: 1 row
 structured_assets.jsonl: 12 rows
   welding_equipment_safety: 6
   welding_basic_operation: 6
+
+reference_text_assets.jsonl: 153 rows
+  textbook_reference: 153
 ```
 
-当前 `next_processing_queue.xlsx` 已无 `Queued` 项。两条音频没有达到 keep 门槛，保留在批次审核记录中，后续可人工或更强 ASR/术语纠错后再决定是否合入主库。
+当前 `next_processing_queue.xlsx` 已无 `Queued` 项；另有 9 个 `Needs_Confirmation` 的 `textbook_reference` 候选，均为低置信 fallback 视频/音频，不会自动深处理。两条音频没有达到 keep 门槛，保留在批次审核记录中，后续可人工或更强 ASR/术语纠错后再决定是否合入主库。

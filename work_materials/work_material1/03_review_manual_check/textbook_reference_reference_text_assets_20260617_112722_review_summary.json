@@ -1,0 +1,13 @@
+{
+  "batch_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\textbook_reference_reference_text_assets_20260617_112722.jsonl",
+  "batch_type": "reference",
+  "input_rows": 153,
+  "reviewed_rows_written": 153,
+  "keep_only": false,
+  "decision_counts": {
+    "keep": 153
+  },
+  "reviewed_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\textbook_reference_reference_text_assets_20260617_112722_reviewed.jsonl",
+  "reviewed_xlsx": "work_materials\\work_material1\\01_manifest_inventory\\batches\\textbook_reference_reference_text_assets_20260617_112722_reviewed.xlsx",
+  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\textbook_reference_reference_text_assets_20260617_112722_review.xlsx"
+}

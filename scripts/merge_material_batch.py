@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -23,10 +24,12 @@ VIDEO_MAIN_JSONL = JSON_DIR / "video_segments.jsonl"
 PPT_MAIN_JSONL = JSON_DIR / "ppt_assets.jsonl"
 AUDIO_MAIN_JSONL = JSON_DIR / "audio_segments.jsonl"
 STRUCTURED_MAIN_JSONL = JSON_DIR / "structured_assets.jsonl"
+REFERENCE_MAIN_JSONL = JSON_DIR / "reference_text_assets.jsonl"
 VIDEO_MAIN_XLSX = MANIFEST_DIR / "video_segments.xlsx"
 PPT_MAIN_XLSX = MANIFEST_DIR / "ppt_assets.xlsx"
 AUDIO_MAIN_XLSX = MANIFEST_DIR / "audio_segments.xlsx"
 STRUCTURED_MAIN_XLSX = MANIFEST_DIR / "structured_assets.xlsx"
+REFERENCE_MAIN_XLSX = MANIFEST_DIR / "reference_text_assets.xlsx"
 
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -49,6 +52,7 @@ def write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
 
 def write_excel_with_fallback(df: pd.DataFrame, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
+    df = df.applymap(lambda value: re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]", "", value) if isinstance(value, str) else value)
     try:
         df.to_excel(path, index=False, engine="openpyxl")
         return path
@@ -69,6 +73,8 @@ def infer_type(path: Path) -> str:
         return "audio"
     if "structured_assets" in name:
         return "structured"
+    if "reference_text_assets" in name:
+        return "reference"
     raise ValueError(f"Cannot infer batch type from {path}")
 
 
@@ -99,6 +105,7 @@ def id_field_for(batch_type: str) -> str:
         "ppt": "ppt_asset_id",
         "audio": "audio_segment_id",
         "structured": "structured_asset_id",
+        "reference": "reference_text_id",
     }[batch_type]
 
 
@@ -109,13 +116,15 @@ def main_paths_for(batch_type: str) -> tuple[Path, Path]:
         return PPT_MAIN_JSONL, PPT_MAIN_XLSX
     if batch_type == "audio":
         return AUDIO_MAIN_JSONL, AUDIO_MAIN_XLSX
-    return STRUCTURED_MAIN_JSONL, STRUCTURED_MAIN_XLSX
+    if batch_type == "structured":
+        return STRUCTURED_MAIN_JSONL, STRUCTURED_MAIN_XLSX
+    return REFERENCE_MAIN_JSONL, REFERENCE_MAIN_XLSX
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-jsonl", required=True, type=Path)
-    parser.add_argument("--batch-type", choices=["video", "ppt", "audio", "structured", "auto"], default="auto")
+    parser.add_argument("--batch-type", choices=["video", "ppt", "audio", "structured", "reference", "auto"], default="auto")
     parser.add_argument("--allow-warnings", action="store_true")
     parser.add_argument("--skip-validation-check", action="store_true")
     args = parser.parse_args()
