@@ -177,23 +177,21 @@ models/
 
 ## Git 当前状态
 
-以下分支已经同步到同一个提交：
+以下分支已经同步。查看当前提交号用：
 
-```text
-main           71fc7af
-data-pipeline  71fc7af
-manuscript     71fc7af
+```bash
+git rev-parse --short HEAD
 ```
 
 云端本地 worktree：
 
 ```text
-/root/materials2textbook   main           71fc7af
-/root/work-data            data-pipeline  71fc7af
-/root/work-manuscript      manuscript     71fc7af
+/root/materials2textbook   main
+/root/work-data            data-pipeline
+/root/work-manuscript      manuscript
 ```
 
-GitHub 也已经推送到以上提交。
+GitHub 上 `main`、`data-pipeline`、`manuscript` 也应保持同步。同步后再开始各自分支的日常工作。
 
 ## 日常工作流程
 

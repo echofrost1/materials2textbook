@@ -141,9 +141,9 @@ Do not remove it unless the repository is first migrated to a bare Git layout.
 Human handoff documentation lives in:
 
 ```text
-docs/cloud_handoff_for_collaborator.md
-docs/cloud_collaboration_layout.md
+COLLABORATOR_HANDOFF.md
+docs/COLLABORATOR_HANDOFF.md
 ```
 
-Keep these documents aligned when changing data paths, branch workflow, or cloud
-platform directory conventions.
+Keep these documents aligned when changing data paths, branch workflow, cleanup
+rules, or cloud platform directory conventions.
