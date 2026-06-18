@@ -15,6 +15,80 @@
 
 ## 目录现状
 
+### 云平台总览
+
+当前云平台主要目录如下：
+
+```text
+/root/
+├── materials2textbook/      # 主 worktree，当前 main 分支，只建议做管理入口
+├── work-data/               # 数据处理 worktree，当前 data-pipeline 分支
+├── work-manuscript/         # 教材写作 worktree，当前 manuscript 分支
+├── anaconda3/               # Python/conda 环境，不要删除
+├── .ssh/                    # SSH 与 GitHub/远程访问密钥，不要删除
+├── .vscode-server/          # VS Code Remote Server，不建议删除
+├── .cache/                  # 普通缓存，已清理过，后续可按需清
+├── .config/                 # 工具配置
+├── .codex/                  # Codex 配置和缓存
+└── 其它隐藏目录              # shell、Python、编辑器等工具配置
+
+/ai/data/
+├── materials2textbook/      # 项目持久化数据，最重要
+├── models/                  # 预留模型权重目录
+├── model-cache/             # 预留模型缓存目录
+└── services/                # 预留本地服务脚本目录
+```
+
+当前大致大小：
+
+```text
+/root/materials2textbook       9.2G
+/root/work-data                1.6M
+/root/work-manuscript          1.6M
+/root/anaconda3                18G
+/root/.cache                   15M
+/ai/data/materials2textbook    119G
+/ai/data/models                0
+/ai/data/model-cache           0
+/ai/data/services              512B
+```
+
+目录使用原则：
+
+```text
+/root                         放代码、环境、工具配置
+/ai/data                      放需要持久化的大文件和项目数据
+/tmp                          只放临时文件，可随时清理
+/root/materials2textbook       不做日常开发
+/root/work-data                数据处理同伴日常开发
+/root/work-manuscript          教材写作同伴日常开发
+```
+
+不要直接删除：
+
+```text
+/root/materials2textbook
+/root/work-data
+/root/work-manuscript
+/root/anaconda3
+/root/.ssh
+/ai/data/materials2textbook
+```
+
+可以按需清理：
+
+```text
+/tmp/*
+/root/.cache/*
+Python __pycache__
+.pytest_cache
+运行日志 *.log / *.out / *.err
+```
+
+但清理前最好先确认路径，不要对 `/ai/data/materials2textbook` 使用 `rm -rf`。
+
+### Git worktree 目录
+
 ```text
 /root/materials2textbook
 ```
@@ -268,4 +342,3 @@ work_material1：主要子目录源/目标文件数和字节数一致
 4. 提交前先 `git status`，确认没有大文件。
 5. 如果看到 `work_materials/` 出现在 `git status` 里，先停下来检查。
 6. 如果要改提交作者，先确认自己在哪个 worktree。
-
