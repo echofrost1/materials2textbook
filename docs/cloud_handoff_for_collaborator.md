@@ -193,37 +193,6 @@ manuscript                            36510f5
 
 GitHub 也已经推送到以上提交。
 
-## 账号和提交作者
-
-`/root/work-data` 当前提交作者配置为：
-
-```text
-user.name  = Sisyphus
-user.email = echofrost1@users.noreply.github.com
-```
-
-`/root/work-manuscript` 和 `/root/materials2textbook` 当前提交作者配置为：
-
-```text
-user.name  = H2Ozer0
-user.email = 1870820712@qq.com
-```
-
-如果你主要做数据处理，请在：
-
-```bash
-cd /root/work-data
-```
-
-里面提交。
-
-如果需要检查当前提交作者：
-
-```bash
-git config user.name
-git config user.email
-```
-
 ## 日常工作流程
 
 数据处理同伴建议使用：
