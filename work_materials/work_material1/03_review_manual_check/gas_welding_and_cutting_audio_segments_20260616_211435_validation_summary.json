@@ -1,9 +1,0 @@
-{
-  "batch_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\gas_welding_and_cutting_audio_segments_20260616_211435.jsonl",
-  "batch_type": "audio",
-  "row_count": 2,
-  "pass_validation": true,
-  "error_count": 0,
-  "warning_count": 0,
-  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\gas_welding_and_cutting_audio_segments_20260616_211435_validation.xlsx"
-}

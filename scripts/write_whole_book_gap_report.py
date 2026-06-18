@@ -8,6 +8,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from material_paths import default_raw_root, default_work_root
+
 import pandas as pd
 
 
@@ -26,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chapter-work-root",
         type=Path,
-        default=Path("work_materials") / "work_material1" / "05_final_deliverables" / "chapter_work",
+        default=default_work_root() / "05_final_deliverables" / "chapter_work",
     )
     parser.add_argument("--output", type=Path, default=Path("docs") / "whole_book_next_gap_report.md")
     return parser.parse_args()

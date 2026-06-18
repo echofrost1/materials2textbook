@@ -4,7 +4,7 @@
 
 ## 1. 盘点结论
 
-`00_raw_client_materials` 当前登记 154 个文件。按主素材库是否已有可用产物统计：
+`/ai/data/materials2textbook/raw/谢志怡工作整理` 当前登记 154 个文件。按主素材库是否已有可用产物统计：
 
 ```text
 main_kept:

@@ -117,9 +117,9 @@ not_ready 知识点：打底焊、填充焊、盖面焊、常见缺陷与纠正
 目标文件：
 
 ```text
-work_materials/work_material1/05_final_deliverables/chapter_work/tig_welding/chapter_evidence_pack.jsonl
-work_materials/work_material1/05_final_deliverables/chapter_work/tig_welding/chapter_evidence_pack.xlsx
-work_materials/work_material1/05_final_deliverables/chapter_work/tig_welding/chapter_readiness_report.xlsx
+/ai/data/materials2textbook/work_material1/05_final_deliverables/chapter_work/tig_welding/chapter_evidence_pack.jsonl
+/ai/data/materials2textbook/work_material1/05_final_deliverables/chapter_work/tig_welding/chapter_evidence_pack.xlsx
+/ai/data/materials2textbook/work_material1/05_final_deliverables/chapter_work/tig_welding/chapter_readiness_report.xlsx
 ```
 
 优先级 2：补齐“钨极氩弧焊”的知识点粒度。
@@ -302,7 +302,7 @@ paragraph_support_rate 不再为 0
 ## 6. 两个人之间的交接协议
 
 角色 A 不直接交“原始素材文件”给角色 B。  
-角色 B 不直接从 `00_raw_client_materials/` 里挑文件写教材。
+角色 B 不直接从 `/ai/data/materials2textbook/raw/谢志怡工作整理/` 里挑文件写教材。
 
 统一交接物是：
 

@@ -20,9 +20,9 @@
 本次产物位置：
 
 ```text
-work_materials/work_material1/05_final_deliverables/agent_workflow/
-work_materials/work_material1/05_final_deliverables/digital_book/
-work_materials/work_material1/05_final_deliverables/digital_book.zip
+/ai/data/materials2textbook/work_material1/05_final_deliverables/agent_workflow/
+/ai/data/materials2textbook/work_material1/05_final_deliverables/digital_book/
+/ai/data/materials2textbook/work_material1/05_final_deliverables/digital_book.zip
 ```
 
 本次关键指标：

@@ -17,7 +17,7 @@
 
 ```powershell
 conda run -n textbook_asr python scripts\build_material_inventory.py `
-  --material-root work_materials\work_material1
+  --material-root /ai/data/materials2textbook/work_material1
 ```
 
 主要输出：
@@ -80,14 +80,14 @@ conda run -n textbook_asr python scripts\process_material_block_mvp.py `
 
 ```powershell
 python scripts\validate_material_batch.py `
-  --batch-jsonl work_materials\work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_video_segments_20260616_175526.jsonl
+  --batch-jsonl /ai/data/materials2textbook/work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_video_segments_20260616_175526.jsonl
 ```
 
 校验 PPT batch：
 
 ```powershell
 python scripts\validate_material_batch.py `
-  --batch-jsonl work_materials\work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_ppt_assets_20260616_175526.jsonl
+  --batch-jsonl /ai/data/materials2textbook/work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_ppt_assets_20260616_175526.jsonl
 ```
 
 输出：
@@ -105,14 +105,14 @@ python scripts\validate_material_batch.py `
 
 ```powershell
 python scripts\review_material_batch.py `
-  --batch-jsonl work_materials\work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_video_segments_20260616_175526.jsonl
+  --batch-jsonl /ai/data/materials2textbook/work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_video_segments_20260616_175526.jsonl
 ```
 
 审核 PPT batch：
 
 ```powershell
 python scripts\review_material_batch.py `
-  --batch-jsonl work_materials\work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_ppt_assets_20260616_175526.jsonl
+  --batch-jsonl /ai/data/materials2textbook/work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_ppt_assets_20260616_175526.jsonl
 ```
 
 输出：
@@ -141,14 +141,14 @@ domain_term_hits
 
 ```powershell
 python scripts\review_material_batch.py `
-  --batch-jsonl work_materials\work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_video_segments_20260616_175526.jsonl `
+  --batch-jsonl /ai/data/materials2textbook/work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_video_segments_20260616_175526.jsonl `
   --output-prefix shielded_metal_arc_welding_video_segments_20260616_175526_keep `
   --keep-only
 ```
 
 ```powershell
 python scripts\review_material_batch.py `
-  --batch-jsonl work_materials\work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_ppt_assets_20260616_175526.jsonl `
+  --batch-jsonl /ai/data/materials2textbook/work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_ppt_assets_20260616_175526.jsonl `
   --output-prefix shielded_metal_arc_welding_ppt_assets_20260616_175526_keep `
   --keep-only
 ```
@@ -164,24 +164,24 @@ python scripts\review_material_batch.py `
 
 ```powershell
 python scripts\validate_material_batch.py `
-  --batch-jsonl work_materials\work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_video_segments_20260616_175526_keep_reviewed.jsonl
+  --batch-jsonl /ai/data/materials2textbook/work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_video_segments_20260616_175526_keep_reviewed.jsonl
 ```
 
 ```powershell
 python scripts\validate_material_batch.py `
-  --batch-jsonl work_materials\work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_ppt_assets_20260616_175526_keep_reviewed.jsonl
+  --batch-jsonl /ai/data/materials2textbook/work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_ppt_assets_20260616_175526_keep_reviewed.jsonl
 ```
 
 ## 6. 合并 keep-only reviewed batch
 
 ```powershell
 python scripts\merge_material_batch.py `
-  --batch-jsonl work_materials\work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_video_segments_20260616_175526_keep_reviewed.jsonl
+  --batch-jsonl /ai/data/materials2textbook/work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_video_segments_20260616_175526_keep_reviewed.jsonl
 ```
 
 ```powershell
 python scripts\merge_material_batch.py `
-  --batch-jsonl work_materials\work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_ppt_assets_20260616_175526_keep_reviewed.jsonl
+  --batch-jsonl /ai/data/materials2textbook/work_material1\02_working_processing\json\batches\shielded_metal_arc_welding_ppt_assets_20260616_175526_keep_reviewed.jsonl
 ```
 
 合并时会先备份主文件：

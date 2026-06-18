@@ -20,13 +20,13 @@ pip install -r requirements.txt
 ```powershell
 python scripts/run_full_digital_textbook.py `
   --book-mode `
-  --manifest-xlsx work_materials/work_material1/01_manifest_inventory/asset_block_map.xlsx `
-  --material-root work_materials/work_material1 `
+  --manifest-xlsx /ai/data/materials2textbook/work_material1/01_manifest_inventory/asset_block_map.xlsx `
+  --material-root /ai/data/materials2textbook/work_material1 `
   --title "焊接技术数字教材" `
   --max-video-records 40 `
   --max-document-records 500 `
-  --output-dir work_materials/work_material1/05_final_deliverables/agent_workflow `
-  --student-package-output work_materials/work_material1/05_final_deliverables/digital_book.zip
+  --output-dir /ai/data/materials2textbook/work_material1/05_final_deliverables/agent_workflow `
+  --student-package-output /ai/data/materials2textbook/work_material1/05_final_deliverables/digital_book.zip
 ```
 
 默认采用媒体引用模式，不重复复制 `converted_mp4/` 中的视频；大素材目录推荐这样运行。需要打包小样例时再追加 `--copy-media-assets`。
@@ -34,15 +34,15 @@ python scripts/run_full_digital_textbook.py `
 默认会读取：
 
 ```text
-work_materials/work_material1/02_working_processing/json/video_segments.jsonl
-work_materials/work_material1/02_working_processing/json/ppt_assets.jsonl
+/ai/data/materials2textbook/work_material1/02_working_processing/json/video_segments.jsonl
+/ai/data/materials2textbook/work_material1/02_working_processing/json/ppt_assets.jsonl
 ```
 
 并输出：
 
 ```text
-work_materials/work_material1/05_final_deliverables/agent_workflow/
-work_materials/work_material1/05_final_deliverables/digital_book/index.html
+/ai/data/materials2textbook/work_material1/05_final_deliverables/agent_workflow/
+/ai/data/materials2textbook/work_material1/05_final_deliverables/digital_book/index.html
 ```
 
 打开最新生成的数字教材：
@@ -96,15 +96,15 @@ python scripts/run_agent_workflow.py --document-segments examples/document_segme
 ```powershell
 python scripts/build_class_learning_report.py `
   --input-dir examples/study_data `
-  --output-dir work_material1/05_final_deliverables/class_learning_report
+  --output-dir /ai/data/materials2textbook/work_material1/05_final_deliverables/class_learning_report
 ```
 
 对生成的 `digital_book.json` 执行问书，默认使用本地检索并列出证据来源：
 
 ```powershell
 python scripts/ask_digital_book.py "送丝操作要注意什么" `
-  --book work_material1/05_final_deliverables/digital_book/digital_book.json `
-  --output work_material1/05_final_deliverables/digital_book/ask_book_answer.md
+  --book /ai/data/materials2textbook/work_material1/05_final_deliverables/digital_book/digital_book.json `
+  --output /ai/data/materials2textbook/work_material1/05_final_deliverables/digital_book/ask_book_answer.md
 ```
 
 如需生成式回答，可在配置 OpenAI-compatible LLM 后追加 `--use-llm`。
@@ -127,7 +127,7 @@ window.DIGITAL_BOOK_ASK_ENDPOINT = 'http://127.0.0.1:8120/ask';
 
 ```powershell
 python scripts/serve_study_data_sync.py --host 127.0.0.1 --port 8121 `
-  --output-dir work_material1/05_final_deliverables/study_data_submissions
+  --output-dir /ai/data/materials2textbook/work_material1/05_final_deliverables/study_data_submissions
 ```
 
 然后把 `digital_book/ask_config.js` 中的学习数据端点改为：
@@ -172,7 +172,7 @@ work_material1/02_working_processing/json/video_segments.jsonl
 脚本默认输出到：
 
 ```text
-work_material1/05_final_deliverables/agent_workflow/
+/ai/data/materials2textbook/work_material1/05_final_deliverables/agent_workflow/
 ```
 
 主要产物：
@@ -192,7 +192,7 @@ artifact_manifest.json     本次运行的输入、输出和摘要
 电子教材包输出：
 
 ```text
-work_material1/05_final_deliverables/digital_book/
+/ai/data/materials2textbook/work_material1/05_final_deliverables/digital_book/
 ├── digital_book.json       项目、任务、正文、视频、练习和证据引用
 ├── index.html              本地电子教材阅读器入口
 ├── styles.css
@@ -207,7 +207,7 @@ work_material1/05_final_deliverables/digital_book/
 校验脚本默认输出到：
 
 ```text
-work_material1/05_final_deliverables/validation/
+/ai/data/materials2textbook/work_material1/05_final_deliverables/validation/
 ```
 
 仓库中保留了一份已生成的样例输出：

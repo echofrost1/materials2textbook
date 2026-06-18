@@ -5,7 +5,7 @@ The forward plan requires deep-processing outputs to be reviewable and
 traceable before they enter the main textbook-generation inputs. This validator
 checks batch JSONL files under:
 
-  work_materials/work_material1/02_working_processing/json/batches/
+  /ai/data/materials2textbook/work_material1/02_working_processing/json/batches/
 
 It writes a human-readable xlsx report plus a JSON summary.
 """
@@ -18,12 +18,14 @@ import re
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+
+from material_paths import default_raw_root, default_work_root
 from typing import Any, Dict, Iterable, List
 
 import pandas as pd
 
 
-PROJECT_ROOT = Path("work_materials") / "work_material1"
+PROJECT_ROOT = default_work_root()
 MANIFEST_DIR = PROJECT_ROOT / "01_manifest_inventory"
 WORK_DIR = PROJECT_ROOT / "02_working_processing"
 JSON_DIR = WORK_DIR / "json"

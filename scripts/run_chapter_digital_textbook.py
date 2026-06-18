@@ -17,13 +17,15 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+from material_paths import default_raw_root, default_work_root
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MATERIAL_ROOT = ROOT / "work_materials" / "work_material1"
+DEFAULT_MATERIAL_ROOT = default_work_root()
 
 CHAPTERS: dict[str, str] = {
     "tig_welding": "钨极氩弧焊",

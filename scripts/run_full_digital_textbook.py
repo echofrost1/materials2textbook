@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 
+from material_paths import default_raw_root, default_work_root
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -51,10 +53,7 @@ class ProgressLLMProvider:
 
 
 def default_material_root() -> Path:
-    full_root = ROOT / "work_materials" / "work_material1"
-    if full_root.exists():
-        return full_root
-    return ROOT / "work_material1"
+    return default_work_root()
 
 
 def build_llm_provider(args: argparse.Namespace, output_dir: Path):
@@ -94,7 +93,7 @@ def main() -> None:
         "--material-root",
         type=Path,
         default=default_material_root(),
-        help="Material workspace root, e.g. work_materials/work_material1 on the teammate machine.",
+        help="Material workspace root. Default: /ai/data/materials2textbook/work_material1.",
     )
     parser.add_argument("--title", default="钨极氩弧焊数字教材")
     parser.add_argument("--segments", type=Path, default=None, help="Override video_segments.jsonl path.")

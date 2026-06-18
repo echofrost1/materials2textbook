@@ -31,7 +31,7 @@
 
 ```text
 Textbook_Project/
-├─ 00_raw_client_materials/      原始资料，只读保存，不改名、不移动
+├─ /ai/data/materials2textbook/raw/谢志怡工作整理/      原始资料，只读保存，不改名、不移动
 ├─ 01_manifest_inventory/        台账、分类表、去重表、素材大块映射表
 ├─ 02_working_processing/        深处理中间产物，如转写、关键帧、片段 JSONL
 ├─ 03_review_manual_check/       人工/审查记录区，可暂时为空
@@ -45,7 +45,7 @@ Textbook_Project/
 
 ### 阶段 1：全量登记
 
-输入：`00_raw_client_materials/`
+输入：`/ai/data/materials2textbook/raw/谢志怡工作整理/`
 
 处理：
 

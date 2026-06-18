@@ -10,11 +10,13 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from material_paths import default_raw_root, default_work_root
+
 import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MATERIAL_ROOT = ROOT / "work_materials" / "work_material1"
+MATERIAL_ROOT = default_work_root()
 MANIFEST_DIR = MATERIAL_ROOT / "01_manifest_inventory"
 
 

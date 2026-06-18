@@ -94,7 +94,7 @@ work_material1/
 - `02_working_processing/`：转码、音频、转写、关键帧、JSONL 等中间产物。
 - `05_final_deliverables/`：多智能体编排线生成的目录、教材、审核报告。
 
-`work_material1/00_raw_client_materials/` 和默认编排输出目录不进入 Git。
+`work_material1//ai/data/materials2textbook/raw/谢志怡工作整理/` 和默认编排输出目录不进入 Git。
 
 ---
 
@@ -132,7 +132,7 @@ review_status
 多智能体编排线默认输出：
 
 ```text
-work_material1/05_final_deliverables/agent_workflow/
+/ai/data/materials2textbook/work_material1/05_final_deliverables/agent_workflow/
 ```
 
 输出目录默认不提交到 Git；如需保存一份示例，应复制或移动到 `examples/outputs/`。
@@ -140,7 +140,7 @@ work_material1/05_final_deliverables/agent_workflow/
 上游片段校验默认输出：
 
 ```text
-work_material1/05_final_deliverables/validation/
+/ai/data/materials2textbook/work_material1/05_final_deliverables/validation/
 ```
 
 该目录也不提交到 Git，校验报告用于你和同伴对齐字段质量、时间码质量和人工复核状态。

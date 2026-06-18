@@ -16,9 +16,11 @@ import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from material_paths import default_raw_root, default_work_root
+
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MATERIAL_ROOT = ROOT / "work_materials" / "work_material1"
+DEFAULT_MATERIAL_ROOT = default_work_root()
 DEFAULT_BOOK_RELATIVE = Path("05_final_deliverables") / "digital_book" / "index.html"
 FALLBACK_BOOK_RELATIVES = (
     DEFAULT_BOOK_RELATIVE,
@@ -40,7 +42,7 @@ def parse_args() -> argparse.Namespace:
         "--material-root",
         type=Path,
         default=DEFAULT_MATERIAL_ROOT,
-        help="Material root to serve. Default: work_materials/work_material1",
+        help="Material root to serve. Default: /ai/data/materials2textbook/work_material1",
     )
     parser.add_argument(
         "--book-index",

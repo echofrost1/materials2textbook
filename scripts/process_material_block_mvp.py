@@ -6,10 +6,10 @@ after the TIG pilot. It reads the existing manifest/block mapping, selects a
 limited batch for one material block, and writes processed evidence to batch
 files by default:
 
-  work_materials/work_material1/01_manifest_inventory/video_segments.xlsx
-  work_materials/work_material1/02_working_processing/json/video_segments.jsonl
-  work_materials/work_material1/01_manifest_inventory/ppt_assets.xlsx
-  work_materials/work_material1/02_working_processing/json/ppt_assets.jsonl
+  /ai/data/materials2textbook/work_material1/01_manifest_inventory/video_segments.xlsx
+  /ai/data/materials2textbook/work_material1/02_working_processing/json/video_segments.jsonl
+  /ai/data/materials2textbook/work_material1/01_manifest_inventory/ppt_assets.xlsx
+  /ai/data/materials2textbook/work_material1/02_working_processing/json/ppt_assets.jsonl
 
 Use --merge-main only after validation if you want to append batch rows to the
 main textbook-generation inputs. It is intentionally conservative: process a
@@ -29,6 +29,8 @@ import subprocess
 import zipfile
 from datetime import datetime
 from pathlib import Path
+
+from material_paths import default_raw_root, default_work_root
 from typing import Any, Dict, Iterable, List
 from xml.etree import ElementTree as ET
 
@@ -38,8 +40,8 @@ import pandas as pd
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
-PROJECT_ROOT = Path("work_materials") / "work_material1"
-RAW_DIR = PROJECT_ROOT / "00_raw_client_materials"
+PROJECT_ROOT = default_work_root()
+RAW_DIR = default_raw_root() / "谢志怡工作整理"
 MANIFEST_DIR = PROJECT_ROOT / "01_manifest_inventory"
 WORK_DIR = PROJECT_ROOT / "02_working_processing"
 JSON_DIR = WORK_DIR / "json"

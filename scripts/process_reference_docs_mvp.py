@@ -14,12 +14,14 @@ import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
+
+from material_paths import default_raw_root, default_work_root
 from typing import Any
 
 import pandas as pd
 
 
-PROJECT_ROOT = Path("work_materials") / "work_material1"
+PROJECT_ROOT = default_work_root()
 MANIFEST_DIR = PROJECT_ROOT / "01_manifest_inventory"
 WORK_DIR = PROJECT_ROOT / "02_working_processing"
 JSON_DIR = WORK_DIR / "json"
@@ -77,7 +79,7 @@ def source_path_for(row: pd.Series) -> Path:
         path = Path(absolute)
         if path.exists():
             return path
-    return PROJECT_ROOT / clean_text(row.get("original_path"))
+    return default_raw_root() / "谢志怡工作整理" / clean_text(row.get("original_path"))
 
 
 def next_number(rows: list[dict[str, Any]]) -> int:

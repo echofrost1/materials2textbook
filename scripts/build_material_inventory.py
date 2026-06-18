@@ -26,13 +26,14 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from material_paths import default_raw_root, default_work_root
 from typing import Any, Iterable
 from xml.etree import ElementTree as ET
 
 import pandas as pd
 
 
-RAW_SUBDIR = "00_raw_client_materials"
 MANIFEST_SUBDIR = "01_manifest_inventory"
 WORK_JSON_SUBDIR = "02_working_processing/json"
 INDEX_SUBDIR = "04_assets_by_course"
@@ -273,40 +274,17 @@ def read_document_preview(path: Path, limit: int = 1200) -> tuple[str, str]:
     return "", ""
 
 
-def candidate_source_files(material_root: Path) -> list[tuple[Path, str]]:
-    """Return source files and their manifest original_path values.
+def candidate_source_files(raw_root: Path) -> list[tuple[Path, str]]:
+    """Return source files and their manifest original_path values."""
 
-    The plan says raw files should live under 00_raw_client_materials. In the
-    current workspace one reference PDF is still placed directly under the
-    material root, so we include top-level loose source files as a compatibility
-    path without scanning generated working directories.
-    """
-
-    raw_dir = material_root / RAW_SUBDIR
     files: list[tuple[Path, str]] = []
-    files.extend((path, path.relative_to(raw_dir).as_posix()) for path in raw_dir.rglob("*") if path.is_file())
-    generated_dirs = {
-        RAW_SUBDIR,
-        MANIFEST_SUBDIR,
-        "02_working_processing",
-        "03_review_manual_check",
-        INDEX_SUBDIR,
-        "05_final_deliverables",
-    }
-    for path in material_root.iterdir():
-        if path.is_file() and path.suffix.lower() in VIDEO_EXTS | AUDIO_EXTS | PPT_EXTS | DOC_EXTS | SHEET_EXTS | {".swf"}:
-            files.append((path, path.name))
-        elif path.is_dir() and path.name not in generated_dirs:
-            # Do not recurse arbitrary directories here; raw subdirectories
-            # belong under 00_raw_client_materials by convention.
-            continue
+    files.extend((path, path.relative_to(raw_root).as_posix()) for path in raw_root.rglob("*") if path.is_file())
     return sorted(files, key=lambda item: item[1].lower())
 
 
-def scan_raw(material_root: Path, compute_hash: bool = True) -> pd.DataFrame:
-    raw_dir = material_root / RAW_SUBDIR
+def scan_raw(raw_root: Path, compute_hash: bool = True) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
-    files = candidate_source_files(material_root)
+    files = candidate_source_files(raw_root)
     for index, (path, rel) in enumerate(files, start=1):
         parts = Path(rel).parts
         directory_path = "/".join(parts[:-1])
@@ -719,16 +697,18 @@ def build_processing_queue(material_root: Path, asset_block_map: pd.DataFrame, m
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--material-root", type=Path, default=Path("work_materials") / "work_material1")
+    parser.add_argument("--material-root", type=Path, default=default_work_root())
+    parser.add_argument("--raw-root", type=Path, default=default_raw_root() / "谢志怡工作整理")
     parser.add_argument("--skip-hash", action="store_true", help="Skip file hashing for a faster dry inventory.")
     parser.add_argument("--no-index-layer", action="store_true", help="Do not rebuild 04_assets_by_course.")
     args = parser.parse_args()
 
     material_root = args.material_root
+    raw_root = args.raw_root
     manifest_dir = material_root / MANIFEST_SUBDIR
     json_dir = material_root / WORK_JSON_SUBDIR
 
-    manifest = scan_raw(material_root, compute_hash=not args.skip_hash)
+    manifest = scan_raw(raw_root, compute_hash=not args.skip_hash)
     active_assets, duplicates = build_active_assets(manifest)
     classifications = pd.DataFrame([classify_asset(row) for _, row in manifest.iterrows()])
     active_lookup = active_assets.set_index("asset_id")["active_for_index"].to_dict()

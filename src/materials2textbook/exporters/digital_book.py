@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -1593,13 +1594,17 @@ def _resolve_source_path(path_value: str, asset_id: str = "") -> Path | None:
     path = Path(path_value)
     candidates = [path]
     if not path.is_absolute():
+        work_root = Path(os.environ.get("MATERIALS2TEXTBOOK_WORK", "/ai/data/materials2textbook/work_material1"))
         candidates.append(Path.cwd() / path)
+        candidates.append(work_root / path)
+        candidates.append(work_root / "02_working_processing" / "converted_mp4" / path.name)
         candidates.append(Path.cwd() / "work_materials" / "work_material1" / path)
         candidates.append(Path.cwd() / "work_materials" / "work_material1" / "02_working_processing" / "converted_mp4" / path.name)
         candidates.append(Path.cwd() / "work_material1" / path)
         candidates.append(Path.cwd() / "work_material1" / "02_working_processing" / "converted_mp4" / path.name)
         if asset_id:
             converted_dirs = [
+                work_root / "02_working_processing" / "converted_mp4",
                 Path.cwd() / "work_materials" / "work_material1" / "02_working_processing" / "converted_mp4",
                 Path.cwd() / "work_material1" / "02_working_processing" / "converted_mp4",
             ]

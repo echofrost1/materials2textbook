@@ -11,6 +11,8 @@ import argparse
 import json
 from collections import defaultdict
 from pathlib import Path
+
+from material_paths import default_work_root
 from typing import Any
 
 import pandas as pd
@@ -61,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chapter-work-root",
         type=Path,
-        default=Path("work_materials") / "work_material1" / "05_final_deliverables" / "chapter_work",
+        default=default_work_root() / "05_final_deliverables" / "chapter_work",
     )
     parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--include-thin-chapters", action="store_true")

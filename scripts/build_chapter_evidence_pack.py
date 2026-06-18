@@ -17,6 +17,8 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
+
+from material_paths import default_raw_root, default_work_root
 from typing import Any
 
 from openpyxl import Workbook
@@ -70,7 +72,7 @@ MANUAL_KNOWLEDGE_OVERRIDES = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a chapter evidence pack and readiness report.")
-    parser.add_argument("--material-root", type=Path, default=ROOT / "work_materials" / "work_material1")
+    parser.add_argument("--material-root", type=Path, default=default_work_root())
     parser.add_argument("--chapter", default="钨极氩弧焊", help="Chapter/material block to package.")
     parser.add_argument(
         "--knowledge-points",

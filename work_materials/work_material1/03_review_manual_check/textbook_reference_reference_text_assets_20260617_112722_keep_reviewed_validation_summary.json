@@ -1,9 +1,0 @@
-{
-  "batch_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\textbook_reference_reference_text_assets_20260617_112722_keep_reviewed.jsonl",
-  "batch_type": "reference",
-  "row_count": 153,
-  "pass_validation": true,
-  "error_count": 0,
-  "warning_count": 0,
-  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\textbook_reference_reference_text_assets_20260617_112722_keep_reviewed_validation.xlsx"
-}

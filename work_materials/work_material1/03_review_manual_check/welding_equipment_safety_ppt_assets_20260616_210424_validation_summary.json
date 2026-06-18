@@ -1,9 +1,0 @@
-{
-  "batch_jsonl": "work_materials\\work_material1\\02_working_processing\\json\\batches\\welding_equipment_safety_ppt_assets_20260616_210424.jsonl",
-  "batch_type": "ppt",
-  "row_count": 80,
-  "pass_validation": true,
-  "error_count": 0,
-  "warning_count": 2,
-  "report_xlsx": "work_materials\\work_material1\\03_review_manual_check\\welding_equipment_safety_ppt_assets_20260616_210424_validation.xlsx"
-}

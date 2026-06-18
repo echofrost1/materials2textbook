@@ -22,6 +22,8 @@ import subprocess
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
+
+from material_paths import default_raw_root, default_work_root
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -30,8 +32,8 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import pandas as pd
 
 
-PROJECT_ROOT = Path("work_material1")
-RAW_DIR = PROJECT_ROOT / "00_raw_client_materials"
+PROJECT_ROOT = default_work_root()
+RAW_DIR = default_raw_root() / "谢志怡工作整理"
 MANIFEST_DIR = PROJECT_ROOT / "01_manifest_inventory"
 WORK_DIR = PROJECT_ROOT / "02_working_processing"
 JSON_DIR = WORK_DIR / "json"

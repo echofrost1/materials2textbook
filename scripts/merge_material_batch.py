@@ -9,12 +9,14 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
+
+from material_paths import default_raw_root, default_work_root
 from typing import Any, Dict, List
 
 import pandas as pd
 
 
-PROJECT_ROOT = Path("work_materials") / "work_material1"
+PROJECT_ROOT = default_work_root()
 MANIFEST_DIR = PROJECT_ROOT / "01_manifest_inventory"
 JSON_DIR = PROJECT_ROOT / "02_working_processing" / "json"
 BACKUP_DIR = PROJECT_ROOT / "02_working_processing" / "json" / "backups"

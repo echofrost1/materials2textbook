@@ -20,7 +20,7 @@
 
 ```text
 Textbook_Project/
-├─ 00_raw_client_materials/
+├─ /ai/data/materials2textbook/raw/谢志怡工作整理/
 ├─ 01_manifest_inventory/
 ├─ 02_working_processing/
 ├─ 04_assets_by_course/
@@ -31,7 +31,7 @@ Textbook_Project/
 
 | 目录 | 用途 | 是否必须 |
 |---|---|---|
-| `00_raw_client_materials/` | 保存甲方原始资料 | 必须 |
+| `/ai/data/materials2textbook/raw/谢志怡工作整理/` | 保存甲方原始资料 | 必须 |
 | `01_manifest_inventory/` | 保存台账、分类表、去重表、素材大块表 | 必须 |
 | `02_working_processing/` | 保存转写、抽帧、切片、OCR 等深处理中间产物 | 必须存在，但不是所有素材都立刻进入 |
 | `04_assets_by_course/` | 保存按科目 / 素材大块 / 知识点组织的索引 | 必须 |
@@ -41,7 +41,7 @@ Textbook_Project/
 
 ### 1.2 原始资料处理原则
 
-`00_raw_client_materials/` 只读保存：
+`/ai/data/materials2textbook/raw/谢志怡工作整理/` 只读保存：
 
 - 不改名。
 - 不移动。
@@ -117,13 +117,13 @@ Textbook_Project/
 把资料放入：
 
 ```text
-00_raw_client_materials/
+/ai/data/materials2textbook/raw/谢志怡工作整理/
 ```
 
 保留原始目录，例如：
 
 ```text
-00_raw_client_materials/
+/ai/data/materials2textbook/raw/谢志怡工作整理/
 ├─ 第一周/
 ├─ 第二周/
 ├─ 第三周/
@@ -149,7 +149,7 @@ Textbook_Project/
 ### 5.1 输入
 
 ```text
-00_raw_client_materials/
+/ai/data/materials2textbook/raw/谢志怡工作整理/
 ```
 
 ### 5.2 操作
@@ -410,7 +410,7 @@ assets_manifest.xlsx
 ### 9.4 验收
 
 - 每个素材都能从索引目录找到。
-- 索引能指回 `00_raw_client_materials/` 原始文件。
+- 索引能指回 `/ai/data/materials2textbook/raw/谢志怡工作整理/` 原始文件。
 - 后续教材检索优先从 `04_assets_by_course/` 进入，而不是直接扫全量原始目录。
 
 ---
