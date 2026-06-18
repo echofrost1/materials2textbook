@@ -166,7 +166,7 @@ python -m pytest
 脚本默认读取：
 
 ```text
-work_material1/02_working_processing/json/video_segments.jsonl
+/ai/data/materials2textbook/work_material1/02_working_processing/json/video_segments.jsonl
 ```
 
 脚本默认输出到：
@@ -223,17 +223,18 @@ materials2textbook/
 ├── scripts/                 可直接运行的脚本入口
 ├── src/materials2textbook/  多智能体编排代码
 ├── tests/                   单元测试
-└── work_material1/          当前数据处理工作区和中间产物
+└── pyproject.toml
 ```
 
-更详细的文件结构说明见：
+真实工作区和中间产物不在仓库内，默认位于：
 
-[docs/file_structure.md](./docs/file_structure.md)
+```text
+/ai/data/materials2textbook/work_material1
+```
 
 ## 文档
 
 - [项目架构安排](./docs/项目架构安排.md)
-- [文件结构说明](./docs/file_structure.md)
 - [多智能体编排开发计划](./docs/多智能体编排开发计划.md)
 - [切片工具说明](./docs/切片工具说明.md)
 - [多智能体编排生成论文精读](./docs/多智能体编排生成论文精读.md)

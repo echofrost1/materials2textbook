@@ -25,7 +25,7 @@ textbook_final.md/docx
 真实运行时，脚本默认写入：
 
 ```text
-work_material1/05_final_deliverables/agent_workflow/
+/ai/data/materials2textbook/work_material1/05_final_deliverables/agent_workflow/
 ```
 
 该目录属于本地工作区，不默认进入 Git。
