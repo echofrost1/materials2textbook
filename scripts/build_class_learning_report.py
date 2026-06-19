@@ -17,6 +17,7 @@ from materials2textbook.learning_analytics import (
     render_class_learning_report_html,
     render_class_learning_report_markdown,
 )
+from material_paths import default_work_root
 
 
 def main() -> None:
@@ -30,7 +31,7 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("work_material1/05_final_deliverables/class_learning_report"),
+        default=default_work_root() / "05_final_deliverables" / "class_learning_report",
         help="Directory for class_learning_report.json and class_learning_report.md.",
     )
     parser.add_argument(

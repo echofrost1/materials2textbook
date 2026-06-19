@@ -5,24 +5,30 @@ project.
 
 ## Project Layout
 
-- Main repository and management worktree: `/root/materials2textbook`
-- Data processing worktree: `/root/work-data`
-- Manuscript and textbook writing worktree: `/root/work-manuscript`
+- Main repository and management worktree: `/ai/data/repos/materials2textbook`
+- Data processing worktree: `/ai/data/repos/work-data`
+- Manuscript and textbook writing worktree: `/ai/data/repos/work-manuscript`
 - Persistent project data: `/ai/data/materials2textbook`
 - Model weights: `/ai/data/models`
 - Model caches: `/ai/data/model-cache`
 - Service scripts and runtime config: `/ai/data/services`
 
-Use `/root` for code, tools, environments, and editor state. Use `/ai/data` for
-anything large or persistent.
+Use `/ai/data` for code, tools, environments, configuration, large files,
+and anything persistent. Treat `/root` as rebuildable system-disk state for
+editor sessions and disposable caches. After recycle, load the persistent
+environment with:
+
+```bash
+source /ai/data/use_ai_env.sh
+```
 
 ## Collaboration Rules
 
-- Do not use `/root/materials2textbook` for daily feature work. Treat it as the
-  `main` branch and management entry point.
-- Use `/root/work-data` for data ingestion, material inventory, cleaning,
+- Do not use `/ai/data/repos/materials2textbook` for daily feature work. Treat
+  it as the `main` branch and management entry point.
+- Use `/ai/data/repos/work-data` for data ingestion, material inventory, cleaning,
   processing, and resource-bank work.
-- Use `/root/work-manuscript` for manuscript, textbook generation, chapter
+- Use `/ai/data/repos/work-manuscript` for manuscript, textbook generation, chapter
   writing, figures, and deliverable work.
 - Before editing, run `git branch --show-current` and `git status`.
 - Do not have two people edit the same worktree at the same time.
@@ -125,16 +131,16 @@ Safe cleanup candidates:
 Do not delete these without explicit confirmation:
 
 ```text
-/root/materials2textbook
-/root/work-data
-/root/work-manuscript
-/root/anaconda3
 /root/.ssh
 /ai/data/materials2textbook
+/ai/data/repos/materials2textbook
+/ai/data/repos/work-data
+/ai/data/repos/work-manuscript
 ```
 
-`/root/materials2textbook` still owns the Git metadata used by the worktrees.
-Do not remove it unless the repository is first migrated to a bare Git layout.
+`/ai/data/repos/materials2textbook` owns the Git metadata used by the persistent
+worktrees. Do not remove it unless the repository is first migrated to a bare
+Git layout.
 
 ## Documentation
 
