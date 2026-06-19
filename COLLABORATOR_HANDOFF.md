@@ -27,6 +27,55 @@ Codex/自动化编码助手的项目规则写在仓库根目录：
 source /ai/data/use_ai_env.sh
 ```
 
+## 本机 Codex 通过 SSH 操控云端
+
+Codex 可以不安装在云端，而是在本机运行，通过 SSH 远程操控云端环境。前提是本机已经能用 SSH 免密或密钥登录云端。
+
+本机 SSH 配置建议使用别名，例如 Windows 本机 `~/.ssh/config`：
+
+```sshconfig
+Host digital_book
+  HostName 172.23.166.144
+  Port 34855
+  User root
+  IdentityFile D:/Project/ssh/private_key_digital_book.pem
+  IdentitiesOnly yes
+```
+
+本机先确认能连：
+
+```bash
+ssh digital_book "hostname && pwd && ls -la /ai/data"
+```
+
+之后在本机 Codex 里，可以让 Codex 直接执行类似命令：
+
+```bash
+ssh digital_book "source /ai/data/use_ai_env.sh && cd /ai/data/repos/materials2textbook && git status"
+```
+
+常用远程入口：
+
+```bash
+ssh digital_book "source /ai/data/use_ai_env.sh && cd /ai/data/repos/work-data && git status"
+ssh digital_book "source /ai/data/use_ai_env.sh && cd /ai/data/repos/work-manuscript && git status"
+ssh digital_book "source /ai/data/use_ai_env.sh && /ai/data/tools/anaconda3/bin/python -m pytest"
+```
+
+如果要传文件，用 `scp`：
+
+```bash
+scp local_file.md digital_book:/ai/data/repos/materials2textbook/docs/local_file.md
+scp digital_book:/ai/data/repos/materials2textbook/COLLABORATOR_HANDOFF.md ./COLLABORATOR_HANDOFF.md
+```
+
+注意：
+
+- 每个远程命令前建议先 `source /ai/data/use_ai_env.sh`，这样 Python、gh、项目环境变量都会指向持久盘。
+- 让 Codex 做修改前，先指定 worktree：数据处理用 `/ai/data/repos/work-data`，教材写作用 `/ai/data/repos/work-manuscript`，管理和文档用 `/ai/data/repos/materials2textbook`。
+- 不要让 Codex 对 `/ai/data/materials2textbook`、`/ai/data/repos`、`/ai/data/tools` 做递归删除。
+- 如果 SSH 连接失效，优先检查本机私钥权限、`~/.ssh/config`、云平台端口是否变化。
+
 ## 云平台目录
 
 ```text
