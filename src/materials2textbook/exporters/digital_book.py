@@ -2495,6 +2495,73 @@ body {
   font-size: 12px;
   font-weight: 600;
 }
+.ability-map-panel {
+  margin: 18px 0 8px;
+}
+.ability-map-panel h4 {
+  margin: 0 0 12px;
+}
+.ability-map-graph {
+  overflow-x: auto;
+  padding: 8px 0 4px;
+}
+.ability-map-canvas {
+  position: relative;
+  min-width: 980px;
+  padding: 10px 0;
+}
+.ability-map-grid {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 130px 170px 210px 210px 230px;
+  gap: 22px;
+  align-items: center;
+}
+.ability-map-column {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  min-height: 64px;
+}
+.ability-map-node {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 10px;
+  border: 1px solid #2274a5;
+  border-radius: 0;
+  background: #fff;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: center;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.ability-map-node.project-node,
+.ability-map-node.task-node {
+  border-color: #344054;
+}
+.ability-map-node.content-node {
+  border-color: #e4a83a;
+}
+.ability-map-svg {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: visible;
+}
+.ability-map-link {
+  fill: none;
+  stroke: #2274a5;
+  stroke-width: 1.1;
+}
+.ability-map-link.content-link {
+  stroke: #e4a83a;
+}
 .evidence {
   color: var(--text-muted);
 }
@@ -2651,6 +2718,13 @@ video {
     padding: 18px 14px 56px;
     font-size: 16px;
   }
+  .ability-map-canvas {
+    min-width: 900px;
+  }
+  .ability-map-grid {
+    grid-template-columns: 120px 150px 190px 190px 210px;
+    gap: 18px;
+  }
   .book-outline,
   .project,
   .task,
@@ -2688,6 +2762,7 @@ function renderBook(book) {
   state.askIndex = buildAskIndex(book);
   restoreReaderState();
   bindScrollTracking();
+  requestAnimationFrame(drawAbilityMapConnectors);
 }
 
 function renderToc(book) {
@@ -2791,7 +2866,7 @@ function renderContent(book) {
     section.appendChild(heading('h2', project.title));
     section.appendChild(paragraph(project.project_intro));
     section.appendChild(listBlock('学习目标', project.learning_goals || []));
-    section.appendChild(listBlock('能力图谱', project.ability_map || []));
+    section.appendChild(renderAbilityMap(project));
     root.appendChild(section);
 
     for (const task of project.tasks || []) {
@@ -2809,6 +2884,134 @@ function renderContent(book) {
       root.appendChild(taskEl);
     }
   }
+}
+
+function renderAbilityMap(project) {
+  const panel = el('section', 'ability-map-panel');
+  panel.appendChild(heading('h4', '能力图谱'));
+  const graph = el('div', 'ability-map-graph');
+  const canvas = el('div', 'ability-map-canvas');
+  const svg = createSvg('svg', 'ability-map-svg');
+  const grid = el('div', 'ability-map-grid');
+  const columns = [0, 1, 2, 3, 4].map(() => el('div', 'ability-map-column'));
+  const projectId = abilityNodeId('project', 0, 0);
+  const taskIds = (project.tasks || []).map((_task, index) => abilityNodeId('task', index, 0));
+  columns[0].appendChild(abilityNode(project.title || '项目', projectId, taskIds, 'project-node'));
+
+  for (const [taskIndex, task] of (project.tasks || []).entries()) {
+    const taskId = taskIds[taskIndex];
+    const abilityIds = abilityTargetsForTask(project, taskIndex);
+    columns[1].appendChild(abilityNode(task.title || `任务 ${taskIndex + 1}`, taskId, abilityIds, 'task-node'));
+
+    for (const [abilityIndex, ability] of abilityLabels(project).entries()) {
+      const abilityId = abilityNodeId('ability', taskIndex, abilityIndex);
+      const knowledgeIds = knowledgeTargetsForTask(task, taskIndex);
+      columns[2].appendChild(abilityNode(ability, abilityId, knowledgeIds, 'ability-node'));
+    }
+
+    const contentIds = contentTargetsForTask(task, taskIndex);
+    for (const [pointIndex, point] of knowledgeLabels(task).entries()) {
+      const pointId = abilityNodeId('knowledge', taskIndex, pointIndex);
+      columns[3].appendChild(abilityNode(point, pointId, contentIds, 'knowledge-node'));
+    }
+
+    for (const [contentIndex, content] of contentLabels(task).entries()) {
+      const contentId = abilityNodeId('content', taskIndex, contentIndex);
+      columns[4].appendChild(abilityNode(content, contentId, [], 'content-node'));
+    }
+  }
+
+  for (const column of columns) grid.appendChild(column);
+  canvas.appendChild(svg);
+  canvas.appendChild(grid);
+  graph.appendChild(canvas);
+  panel.appendChild(graph);
+  return panel;
+}
+
+function abilityLabels(project) {
+  const labels = project.ability_map?.length ? project.ability_map : ['知识理解', '示范观察', '操作分析'];
+  return labels.slice(0, 4);
+}
+
+function knowledgeLabels(task) {
+  const labels = task.knowledge_points?.length ? task.knowledge_points : task.key_terms || [];
+  return labels.length ? labels.slice(0, 6) : [task.title || '学习要点'];
+}
+
+function contentLabels(task) {
+  const blockedTypes = new Set(['assessment', 'exercises']);
+  const labels = [];
+  for (const block of task.blocks || []) {
+    if (!block?.title || blockedTypes.has(block.type || block.block_type || '')) continue;
+    if (!labels.includes(block.title)) labels.push(block.title);
+    if (labels.length >= 6) break;
+  }
+  return labels.length ? labels : ['教材正文与课堂活动'];
+}
+
+function abilityTargetsForTask(project, taskIndex) {
+  return abilityLabels(project).map((_label, abilityIndex) => abilityNodeId('ability', taskIndex, abilityIndex));
+}
+
+function knowledgeTargetsForTask(task, taskIndex) {
+  return knowledgeLabels(task).map((_label, pointIndex) => abilityNodeId('knowledge', taskIndex, pointIndex));
+}
+
+function contentTargetsForTask(task, taskIndex) {
+  return contentLabels(task).map((_label, contentIndex) => abilityNodeId('content', taskIndex, contentIndex));
+}
+
+function abilityNode(label, id, targets, className) {
+  const node = el('div', `ability-map-node ${className || ''}`.trim());
+  node.dataset.nodeId = id;
+  node.dataset.connectTo = targets.join(',');
+  node.textContent = label;
+  return node;
+}
+
+function abilityNodeId(kind, first, second) {
+  return `${kind}_${first}_${second}`;
+}
+
+function drawAbilityMapConnectors() {
+  for (const canvas of document.querySelectorAll('.ability-map-canvas')) {
+    const svg = canvas.querySelector('.ability-map-svg');
+    if (!svg) continue;
+    svg.innerHTML = '';
+    const rect = canvas.getBoundingClientRect();
+    svg.setAttribute('width', String(canvas.scrollWidth));
+    svg.setAttribute('height', String(canvas.scrollHeight));
+    svg.setAttribute('viewBox', `0 0 ${canvas.scrollWidth} ${canvas.scrollHeight}`);
+    for (const source of canvas.querySelectorAll('.ability-map-node[data-connect-to]')) {
+      const targets = source.dataset.connectTo.split(',').filter(Boolean);
+      for (const targetId of targets) {
+        const target = canvas.querySelector(`[data-node-id="${targetId}"]`);
+        if (!target) continue;
+        svg.appendChild(abilityConnectorPath(source, target, rect));
+      }
+    }
+  }
+}
+
+function abilityConnectorPath(source, target, rootRect) {
+  const sourceRect = source.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  const x1 = sourceRect.right - rootRect.left;
+  const y1 = sourceRect.top + sourceRect.height / 2 - rootRect.top;
+  const x2 = targetRect.left - rootRect.left;
+  const y2 = targetRect.top + targetRect.height / 2 - rootRect.top;
+  const gap = Math.max(1, x2 - x1);
+  const control = Math.max(6, Math.min(42, gap * 0.5));
+  const path = createSvg('path', `ability-map-link ${target.classList.contains('content-node') ? 'content-link' : ''}`);
+  path.setAttribute('d', `M ${x1} ${y1} C ${x1 + control} ${y1}, ${x2 - control} ${y2}, ${x2} ${y2}`);
+  return path;
+}
+
+function createSvg(tag, className) {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  if (className) node.setAttribute('class', className);
+  return node;
 }
 
 function renderBlock(block) {
@@ -3593,6 +3796,7 @@ document.getElementById('askButton').addEventListener('click', () => {
 document.getElementById('askInput').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') answerQuestion(event.target.value);
 });
+window.addEventListener('resize', () => requestAnimationFrame(drawAbilityMapConnectors));
 
 window.studyDataApi = {
   collect: collectStudyData,

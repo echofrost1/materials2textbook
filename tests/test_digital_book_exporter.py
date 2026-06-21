@@ -109,6 +109,10 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert "<blockquote>" in app_js
     assert "<pre><code" in app_js
     assert "<table><thead>" in app_js
+    assert "renderAbilityMap(project)" in app_js
+    assert "ability-map-canvas" in app_js
+    assert "drawAbilityMapConnectors" in app_js
+    assert "createElementNS('http://www.w3.org/2000/svg'" in app_js
     assert "https?:|mailto:" in app_js
     assert "videoActions" in app_js
     assert "video.pause()" in app_js
@@ -132,8 +136,11 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert "materials2textbook.study_data.v1" in app_js
     assert "ask_config.js" in index_path.read_text(encoding="utf-8")
     ask_config = (tmp_path / "digital_book" / "ask_config.js").read_text(encoding="utf-8")
+    styles_css = (tmp_path / "digital_book" / "styles.css").read_text(encoding="utf-8")
     assert "DIGITAL_BOOK_ASK_ENDPOINT" in ask_config
     assert "DIGITAL_BOOK_STUDY_ENDPOINT" in ask_config
+    assert ".ability-map-grid" in styles_css
+    assert ".ability-map-link" in styles_css
     assert "syncStudyData" in index_html
     assert "syncStatus" in index_html
     assert (tmp_path / "digital_book" / "assets" / "videos" / "demo.mp4").exists()
