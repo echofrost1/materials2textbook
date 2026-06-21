@@ -229,6 +229,7 @@ class DigitalBookProject:
     ability_map: list[str]
     learning_goals: list[str]
     tasks: list[DigitalBookTask]
+    ability_graph: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

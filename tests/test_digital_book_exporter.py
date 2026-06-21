@@ -110,6 +110,8 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert "<pre><code" in app_js
     assert "<table><thead>" in app_js
     assert "renderAbilityMap(project)" in app_js
+    assert "project.ability_graph?.nodes?.length" in app_js
+    assert "renderGeneratedAbilityMap" in app_js
     assert "ability-map-canvas" in app_js
     assert "drawAbilityMapConnectors" in app_js
     assert "createElementNS('http://www.w3.org/2000/svg'" in app_js
@@ -143,6 +145,13 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert ".ability-map-link" in styles_css
     assert "syncStudyData" in index_html
     assert "syncStatus" in index_html
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    ability_graph = payload["projects"][0]["ability_graph"]
+    assert ability_graph["schema"] == "materials2textbook.ability_graph.v1"
+    assert [column["id"] for column in ability_graph["columns"]] == ["project", "task", "ability", "knowledge", "content"]
+    assert any(node["column"] == "knowledge" and node["label"] == "送丝" for node in ability_graph["nodes"])
+    assert any(node["column"] == "content" and node["label"] == "送丝" for node in ability_graph["nodes"])
+    assert ability_graph["edges"]
     assert (tmp_path / "digital_book" / "assets" / "videos" / "demo.mp4").exists()
     assert (tmp_path / "digital_book" / "assets" / "keyframes" / "frame.jpg").exists()
     assert "assets/videos/demo.mp4" in json_path.read_text(encoding="utf-8")
@@ -213,6 +222,8 @@ def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path:
     assert payload["metadata"]["book_plan"]["chapters"][0]["sections"][0]["section_no"] == "1.1"
     assert book.projects[0].title == "第1章 基本操作"
     assert book.projects[0].project_id == "chapter_01"
+    assert book.projects[0].ability_graph["nodes"]
+    assert any(edge["from"].endswith("_knowledge_01") for edge in book.projects[0].ability_graph["edges"])
     assert "renderBookOutline" in app_js
     assert "教材大纲" in app_js
     assert "tocChapter" in app_js

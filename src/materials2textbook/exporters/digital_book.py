@@ -86,6 +86,16 @@ def build_digital_book(
                 ],
                 learning_goals=plan.learning_goals,
                 tasks=tasks,
+                ability_graph=_build_ability_graph(
+                    project_id=plan.chapter_id,
+                    project_title=f"第{chapter_no}章 {plan.title}",
+                    ability_map=[
+                        "示范观察与要点提取",
+                        "知识点理解与复述",
+                        "操作过程分析与质量判断",
+                    ],
+                    tasks=tasks,
+                ),
             )
         )
 
@@ -1323,6 +1333,117 @@ def _build_chapter_tasks(
                 )
             )
     return tasks
+
+
+def _build_ability_graph(
+    *,
+    project_id: str,
+    project_title: str,
+    ability_map: list[str],
+    tasks: list[DigitalBookTask],
+) -> dict:
+    columns = [
+        {"id": "project", "title": "项目"},
+        {"id": "task", "title": "任务"},
+        {"id": "ability", "title": "能力目标"},
+        {"id": "knowledge", "title": "知识点"},
+        {"id": "content", "title": "学习内容"},
+    ]
+    nodes: list[dict[str, str]] = []
+    edges: list[dict[str, str]] = []
+
+    project_node_id = f"{project_id}_project"
+    nodes.append({"id": project_node_id, "column": "project", "label": project_title})
+    ability_labels = (ability_map or ["知识理解", "示范观察", "操作分析"])[:4]
+
+    for task_index, task in enumerate(tasks, start=1):
+        task_node_id = f"{task.task_id}_task"
+        nodes.append({"id": task_node_id, "column": "task", "label": task.title})
+        edges.append({"from": project_node_id, "to": task_node_id})
+
+        knowledge_node_ids: list[str] = []
+        for point_index, point_title in enumerate(_ability_graph_knowledge_labels(task), start=1):
+            point_node_id = f"{task.task_id}_knowledge_{point_index:02d}"
+            knowledge_node_ids.append(point_node_id)
+            nodes.append({"id": point_node_id, "column": "knowledge", "label": point_title})
+
+        for ability_index, ability in enumerate(ability_labels, start=1):
+            ability_node_id = f"{task.task_id}_ability_{ability_index:02d}"
+            nodes.append({"id": ability_node_id, "column": "ability", "label": ability})
+            edges.append({"from": task_node_id, "to": ability_node_id})
+            for point_node_id in knowledge_node_ids:
+                edges.append({"from": ability_node_id, "to": point_node_id})
+
+        content_nodes = _ability_graph_content_nodes(task)
+        if not content_nodes:
+            content_nodes = [{"label": "教材正文与课堂活动", "knowledge_titles": []}]
+        for content_index, content in enumerate(content_nodes, start=1):
+            content_node_id = f"{task.task_id}_content_{content_index:02d}"
+            nodes.append({"id": content_node_id, "column": "content", "label": content["label"]})
+            source_points = _matching_knowledge_node_ids(
+                knowledge_node_ids,
+                _ability_graph_knowledge_labels(task),
+                content["knowledge_titles"],
+            )
+            for point_node_id in source_points or knowledge_node_ids:
+                edges.append({"from": point_node_id, "to": content_node_id})
+
+    return {
+        "schema": "materials2textbook.ability_graph.v1",
+        "columns": columns,
+        "nodes": nodes,
+        "edges": _dedupe_edges(edges),
+    }
+
+
+def _ability_graph_knowledge_labels(task: DigitalBookTask) -> list[str]:
+    labels = task.knowledge_points or task.key_terms
+    return _dedupe(labels)[:6] or [task.title]
+
+
+def _ability_graph_content_nodes(task: DigitalBookTask) -> list[dict[str, list[str] | str]]:
+    blocked_types = {"assessment", "exercises"}
+    nodes: list[dict[str, list[str] | str]] = []
+    for block in task.blocks:
+        block_type = block.type or block.metadata.get("block_type", "")
+        if block_type in blocked_types or not block.title:
+            continue
+        matched_titles = [
+            point_title
+            for point_title in _ability_graph_knowledge_labels(task)
+            if _titles_overlap(point_title, block.title)
+        ]
+        nodes.append({"label": block.title, "knowledge_titles": matched_titles})
+        if len(nodes) >= 6:
+            break
+    return nodes
+
+
+def _matching_knowledge_node_ids(
+    knowledge_node_ids: list[str],
+    knowledge_titles: list[str],
+    matched_titles: list[str] | str,
+) -> list[str]:
+    if isinstance(matched_titles, str):
+        matched_titles = [matched_titles]
+    matched_keys = {_match_key(title) for title in matched_titles}
+    return [
+        node_id
+        for node_id, title in zip(knowledge_node_ids, knowledge_titles)
+        if _match_key(title) in matched_keys
+    ]
+
+
+def _dedupe_edges(edges: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str]] = set()
+    result: list[dict[str, str]] = []
+    for edge in edges:
+        key = (edge["from"], edge["to"])
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(edge)
+    return result
 
 
 def _section_groups_for_plan(
@@ -2887,6 +3008,7 @@ function renderContent(book) {
 }
 
 function renderAbilityMap(project) {
+  if (project.ability_graph?.nodes?.length) return renderGeneratedAbilityMap(project.ability_graph);
   const panel = el('section', 'ability-map-panel');
   panel.appendChild(heading('h4', '能力图谱'));
   const graph = el('div', 'ability-map-graph');
@@ -2927,6 +3049,43 @@ function renderAbilityMap(project) {
   graph.appendChild(canvas);
   panel.appendChild(graph);
   return panel;
+}
+
+function renderGeneratedAbilityMap(graphData) {
+  const panel = el('section', 'ability-map-panel');
+  panel.appendChild(heading('h4', '能力图谱'));
+  const graph = el('div', 'ability-map-graph');
+  const canvas = el('div', 'ability-map-canvas');
+  const svg = createSvg('svg', 'ability-map-svg');
+  const grid = el('div', 'ability-map-grid');
+  const columnIds = graphData.columns?.map((column) => column.id) || ['project', 'task', 'ability', 'knowledge', 'content'];
+  const edgeTargets = new Map();
+  for (const edge of graphData.edges || []) {
+    if (!edge?.from || !edge?.to) continue;
+    if (!edgeTargets.has(edge.from)) edgeTargets.set(edge.from, []);
+    edgeTargets.get(edge.from).push(edge.to);
+  }
+  for (const columnId of columnIds) {
+    const column = el('div', 'ability-map-column');
+    const nodes = (graphData.nodes || []).filter((node) => node.column === columnId);
+    for (const node of nodes) {
+      column.appendChild(abilityNode(node.label || '', node.id, edgeTargets.get(node.id) || [], abilityNodeClass(columnId)));
+    }
+    grid.appendChild(column);
+  }
+  canvas.appendChild(svg);
+  canvas.appendChild(grid);
+  graph.appendChild(canvas);
+  panel.appendChild(graph);
+  return panel;
+}
+
+function abilityNodeClass(columnId) {
+  if (columnId === 'project') return 'project-node';
+  if (columnId === 'task') return 'task-node';
+  if (columnId === 'content') return 'content-node';
+  if (columnId === 'knowledge') return 'knowledge-node';
+  return 'ability-node';
 }
 
 function abilityLabels(project) {
