@@ -148,6 +148,7 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     ability_graph = payload["projects"][0]["ability_graph"]
     assert ability_graph["schema"] == "materials2textbook.ability_graph.v1"
+    assert ability_graph["generation_method"] == "rule"
     assert [column["id"] for column in ability_graph["columns"]] == ["project", "task", "ability", "knowledge", "content"]
     assert any(node["column"] == "knowledge" and node["label"] == "送丝" for node in ability_graph["nodes"])
     assert any(node["column"] == "content" and node["label"] == "送丝" for node in ability_graph["nodes"])
@@ -160,6 +161,84 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert "人工复核" not in " ".join(book.projects[0].ability_map)
     assert not any(block.type == "learning_nav" for block in book.projects[0].tasks[0].blocks)
     assert "数字教材" in index_html
+
+
+def test_export_digital_book_can_use_llm_generated_ability_graph(tmp_path: Path) -> None:
+    response = json.dumps(
+        {
+            "schema": "materials2textbook.ability_graph.v1",
+            "columns": [
+                {"id": "project", "title": "项目"},
+                {"id": "task", "title": "任务"},
+                {"id": "ability", "title": "能力目标"},
+                {"id": "knowledge", "title": "知识点"},
+                {"id": "content", "title": "学习内容"},
+            ],
+            "nodes": [
+                {"id": "project_01", "column": "project", "label": "数字化装备学习项目"},
+                {"id": "task_01", "column": "task", "label": "认识数字化装备"},
+                {"id": "ability_01", "column": "ability", "label": "识读设备组成与工艺关系"},
+                {"id": "knowledge_01", "column": "knowledge", "label": "数字化测量设备"},
+                {"id": "content_01", "column": "content", "label": "设备组成观察任务"},
+            ],
+            "edges": [
+                {"from": "project_01", "to": "task_01"},
+                {"from": "task_01", "to": "ability_01"},
+                {"from": "ability_01", "to": "knowledge_01"},
+                {"from": "knowledge_01", "to": "content_01"},
+            ],
+        },
+        ensure_ascii=False,
+    )
+    provider = FakeLLMProvider(response)
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="数字化装备",
+        learning_goals=["理解数字化装备体系"],
+        knowledge_points=[],
+        evidence_chunk_ids=[],
+    )
+
+    book, json_path, _ = export_digital_book(
+        title="样书",
+        plans=[plan],
+        chunks=[],
+        output_dir=tmp_path / "digital_book",
+        llm_provider=provider,
+        use_llm=True,
+    )
+
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    ability_graph = payload["projects"][0]["ability_graph"]
+    assert ability_graph["generation_method"] == "llm"
+    assert any(node["label"] == "识读设备组成与工艺关系" for node in ability_graph["nodes"])
+    assert ability_graph == book.projects[0].ability_graph
+    assert provider.messages
+    assert "能力图谱" in provider.messages[-1][0]["content"]
+
+
+def test_export_digital_book_falls_back_when_llm_ability_graph_is_invalid(tmp_path: Path) -> None:
+    provider = FakeLLMProvider('{"nodes": [], "edges": []}')
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="数字化装备",
+        learning_goals=["理解数字化装备体系"],
+        knowledge_points=[],
+        evidence_chunk_ids=[],
+    )
+
+    book, json_path, _ = export_digital_book(
+        title="样书",
+        plans=[plan],
+        chunks=[],
+        output_dir=tmp_path / "digital_book",
+        llm_provider=provider,
+        use_llm=True,
+    )
+
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["projects"][0]["ability_graph"]["generation_method"] == "rule_fallback"
+    assert book.projects[0].ability_graph["nodes"]
 
 
 def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path: Path) -> None:

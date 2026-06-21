@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 
 from materials2textbook.io_utils import write_json, write_text
 from materials2textbook.llm.provider import LLMProvider
+from materials2textbook.prompts.ability_graph import build_ability_graph_messages
 from materials2textbook.prompts.digital_book_polisher import build_digital_book_polisher_messages
 from materials2textbook.schemas import (
     BookChapterPlan,
@@ -89,12 +90,15 @@ def build_digital_book(
                 ability_graph=_build_ability_graph(
                     project_id=plan.chapter_id,
                     project_title=f"第{chapter_no}章 {plan.title}",
+                    learning_goals=plan.learning_goals,
                     ability_map=[
                         "示范观察与要点提取",
                         "知识点理解与复述",
                         "操作过程分析与质量判断",
                     ],
                     tasks=tasks,
+                    llm_provider=llm_provider,
+                    use_llm=use_llm,
                 ),
             )
         )
@@ -1339,6 +1343,42 @@ def _build_ability_graph(
     *,
     project_id: str,
     project_title: str,
+    learning_goals: list[str],
+    ability_map: list[str],
+    tasks: list[DigitalBookTask],
+    llm_provider: LLMProvider | None = None,
+    use_llm: bool = False,
+) -> dict:
+    fallback = _build_rule_ability_graph(
+        project_id=project_id,
+        project_title=project_title,
+        ability_map=ability_map,
+        tasks=tasks,
+    )
+    if not use_llm or llm_provider is None:
+        fallback["generation_method"] = "rule"
+        return fallback
+    try:
+        raw_graph = llm_provider.generate(
+            build_ability_graph_messages(
+                project_title=project_title,
+                learning_goals=learning_goals,
+                tasks=_ability_graph_prompt_tasks(tasks),
+                fallback_graph=fallback,
+            )
+        )
+        graph = _normalize_llm_ability_graph(_parse_json_object(raw_graph), fallback)
+        graph["generation_method"] = "llm"
+        return graph
+    except Exception:
+        fallback["generation_method"] = "rule_fallback"
+        return fallback
+
+
+def _build_rule_ability_graph(
+    *,
+    project_id: str,
+    project_title: str,
     ability_map: list[str],
     tasks: list[DigitalBookTask],
 ) -> dict:
@@ -1394,6 +1434,93 @@ def _build_ability_graph(
         "nodes": nodes,
         "edges": _dedupe_edges(edges),
     }
+
+
+def _ability_graph_prompt_tasks(tasks: list[DigitalBookTask]) -> list[dict]:
+    prompt_tasks = []
+    for task in tasks:
+        prompt_tasks.append(
+            {
+                "task_id": task.task_id,
+                "title": task.title,
+                "knowledge_points": _ability_graph_knowledge_labels(task),
+                "contents": [node["label"] for node in _ability_graph_content_nodes(task)],
+            }
+        )
+    return prompt_tasks
+
+
+def _parse_json_object(raw_text: str) -> dict:
+    text = str(raw_text or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"\s*```$", "", text).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("LLM ability graph did not contain a JSON object")
+    data = json.loads(text[start : end + 1])
+    if not isinstance(data, dict):
+        raise ValueError("LLM ability graph must be a JSON object")
+    return data
+
+
+def _normalize_llm_ability_graph(graph: dict, fallback: dict) -> dict:
+    allowed_columns = [column["id"] for column in fallback["columns"]]
+    fallback_columns = fallback["columns"]
+    raw_nodes = graph.get("nodes", [])
+    raw_edges = graph.get("edges", [])
+    if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
+        raise ValueError("LLM ability graph nodes and edges must be lists")
+
+    nodes: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    column_counts: dict[str, int] = {column_id: 0 for column_id in allowed_columns}
+    for index, raw_node in enumerate(raw_nodes, start=1):
+        if not isinstance(raw_node, dict):
+            continue
+        column = str(raw_node.get("column", "")).strip()
+        label = _clean_student_text(str(raw_node.get("label", "")), max_chars=50)
+        if column not in allowed_columns or not label or _contains_student_forbidden_trace(label):
+            continue
+        raw_id = str(raw_node.get("id", "")).strip()
+        node_id = _safe_graph_id(raw_id or f"{column}_{index:02d}", column, index)
+        while node_id in seen_ids:
+            node_id = f"{node_id}_{index:02d}"
+        seen_ids.add(node_id)
+        column_counts[column] += 1
+        nodes.append({"id": node_id, "column": column, "label": label})
+
+    node_ids = {node["id"] for node in nodes}
+    edges: list[dict[str, str]] = []
+    for raw_edge in raw_edges:
+        if not isinstance(raw_edge, dict):
+            continue
+        source = str(raw_edge.get("from", "")).strip()
+        target = str(raw_edge.get("to", "")).strip()
+        if source in node_ids and target in node_ids and source != target:
+            edges.append({"from": source, "to": target})
+
+    if len(nodes) < 5 or not edges:
+        raise ValueError("LLM ability graph is too sparse")
+    missing_columns = [column_id for column_id in allowed_columns if column_counts.get(column_id, 0) == 0]
+    if missing_columns:
+        raise ValueError(f"LLM ability graph missing columns: {', '.join(missing_columns)}")
+    return {
+        "schema": "materials2textbook.ability_graph.v1",
+        "columns": fallback_columns,
+        "nodes": nodes,
+        "edges": _dedupe_edges(edges),
+    }
+
+
+def _safe_graph_id(value: str, column: str, index: int) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", value).strip("_")
+    if not cleaned:
+        cleaned = f"{column}_{index:02d}"
+    if not re.match(r"^[A-Za-z]", cleaned):
+        cleaned = f"{column}_{cleaned}"
+    return cleaned[:64]
 
 
 def _ability_graph_knowledge_labels(task: DigitalBookTask) -> list[str]:
