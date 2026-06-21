@@ -209,6 +209,11 @@ def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path:
     assert "renderBookOutline" in app_js
     assert "教材大纲" in app_js
     assert "tocChapter" in app_js
+    assert "displayChapterTitle(chapter)" in app_js
+    assert "displaySectionTitle(section)" in app_js
+    assert "displaySectionTitle(item)" in app_js
+    assert "`第${chapter.chapter_no}章 ${chapter.title}`" not in app_js
+    assert "`${section.section_no} ${section.title}`" not in app_js
     assert "toc-chapter-toggle" in app_js
     assert "toc-section-list" in app_js
     assert "blockHeading" in app_js

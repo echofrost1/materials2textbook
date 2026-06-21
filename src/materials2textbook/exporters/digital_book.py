@@ -2715,12 +2715,12 @@ function tocChapter(chapter, expanded) {
   button.dataset.target = chapter.chapter_id;
   const icon = el('span', 'toc-chapter-icon');
   const label = el('span', '');
-  label.textContent = `第${chapter.chapter_no}章 ${chapter.title}`;
+  label.textContent = displayChapterTitle(chapter);
   button.appendChild(icon);
   button.appendChild(label);
   const sectionList = el('div', 'toc-section-list');
   for (const section of chapter.sections || []) {
-    sectionList.appendChild(tocLink(`${section.section_no} ${section.title}`, section.section_id || chapter.chapter_id, 'task toc-section-link'));
+    sectionList.appendChild(tocLink(displaySectionTitle(section), section.section_id || chapter.chapter_id, 'task toc-section-link'));
   }
   const syncIcon = () => {
     icon.textContent = wrap.classList.contains('collapsed') ? '▶' : '▼';
@@ -2735,6 +2735,37 @@ function tocChapter(chapter, expanded) {
   wrap.appendChild(button);
   wrap.appendChild(sectionList);
   return wrap;
+}
+
+function displayChapterTitle(chapter) {
+  const title = cleanTitle(chapter?.title);
+  const chapterNo = chapter?.chapter_no;
+  if (!title) return chapterNo ? `第${chapterNo}章` : '';
+  if (/^第\\s*[0-9一二三四五六七八九十百千万]+\\s*章(?:\\s|[：:、.-]|$)/.test(title)) return title;
+  return chapterNo ? `第${chapterNo}章 ${title}` : title;
+}
+
+function displaySectionTitle(section) {
+  const title = cleanTitle(section?.title);
+  const sectionNo = cleanTitle(section?.section_no);
+  if (!title) return sectionNo;
+  if (sectionNo && titleStartsWithSectionNo(title, sectionNo)) return title;
+  return sectionNo ? `${sectionNo} ${title}` : title;
+}
+
+function titleStartsWithSectionNo(title, sectionNo) {
+  const normalizedTitle = title.replace(/．/g, '.');
+  const escaped = escapeRegExp(sectionNo.replace(/．/g, '.'));
+  return new RegExp(`^${escaped}(?:\\s|[：:、.-]|$)`).test(normalizedTitle);
+}
+
+function cleanTitle(value) {
+  return String(value || '').trim();
+}
+
+function escapeRegExp(value) {
+  const specials = new Set(['\\\\', '.', '*', '+', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']']);
+  return [...String(value)].map((char) => specials.has(char) ? `\\\\${char}` : char).join('');
 }
 
 function tocLink(text, id, className) {
@@ -3121,11 +3152,11 @@ function renderBookOutline(book) {
   const chapterList = document.createElement('ol');
   for (const chapter of plan.chapters) {
     const chapterItem = document.createElement('li');
-    chapterItem.appendChild(document.createTextNode(`第${chapter.chapter_no}章 ${chapter.title}`));
+    chapterItem.appendChild(document.createTextNode(displayChapterTitle(chapter)));
     const sectionList = document.createElement('ol');
     for (const item of chapter.sections || []) {
       const sectionItem = document.createElement('li');
-      sectionItem.appendChild(document.createTextNode(`${item.section_no} ${item.title}`));
+      sectionItem.appendChild(document.createTextNode(displaySectionTitle(item)));
       const pointList = document.createElement('ol');
       for (const point of item.knowledge_points || []) {
         const pointItem = document.createElement('li');
