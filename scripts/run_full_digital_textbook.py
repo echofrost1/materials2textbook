@@ -123,7 +123,12 @@ def main() -> None:
         help="XLSX manifest prepared by the teammate. Used first for chapter/section allocation in --book-mode.",
     )
     parser.add_argument("--book-plan-output", type=Path, default=None, help="Optional output path for book_plan.json.")
-    parser.add_argument("--chapter-output-root", type=Path, default=None, help="Reserved output root for per-chapter artifacts.")
+    parser.add_argument("--chapter-output-root", type=Path, default=None, help="Output root for per-chapter book-mode artifacts.")
+    parser.add_argument(
+        "--force-rebuild-chapters",
+        action="store_true",
+        help="In --book-mode, rebuild chapters even when chapter_status.json says a chapter completed successfully.",
+    )
     parser.add_argument("--max-chapter-input-tokens", type=int, default=12000, help="Per-chapter input token budget for --book-mode.")
     parser.add_argument("--max-chapters", type=int, default=0, help="Limit planned chapters in --book-mode; 0 means no limit.")
     parser.add_argument("--approved-only", action="store_true", help="Only include approved evidence.")
@@ -279,8 +284,10 @@ def main() -> None:
         book_mode=args.book_mode,
         manifest_xlsx=args.manifest_xlsx.resolve() if args.manifest_xlsx else None,
         book_plan_output=args.book_plan_output.resolve() if args.book_plan_output else None,
+        chapter_output_root=args.chapter_output_root.resolve() if args.chapter_output_root else None,
         max_chapters=args.max_chapters,
         max_chapter_input_tokens=args.max_chapter_input_tokens,
+        resume_chapters=not args.force_rebuild_chapters,
     )
 
     print("Full digital textbook generated:")
