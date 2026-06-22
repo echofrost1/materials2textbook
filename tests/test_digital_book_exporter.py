@@ -313,6 +313,13 @@ def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path:
     assert "`${section.section_no} ${section.title}`" not in app_js
     assert "toc-chapter-toggle" in app_js
     assert "toc-section-list" in app_js
+    assert "tocChapter(chapter, index === 0)" in app_js
+    assert "chapterIdForSection" in app_js
+    assert "expandActiveTocChapter" in app_js
+    assert "syncTocChapterIcon" in app_js
+    assert "link.dataset.chapterId" in app_js
+    assert "applyAbilityMapDensity" in app_js
+    assert "ultra-dense" in app_js
     assert "blockHeading" in app_js
     assert "block-marker" in app_js
     assert "sectionHeading" not in app_js

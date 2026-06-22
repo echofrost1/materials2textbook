@@ -1705,6 +1705,8 @@ def _book_plan_metadata(book_plan: BookPlan | None) -> dict:
         "book_id": book_plan.book_id,
         "title": book_plan.title,
         "planning_strategy": book_plan.planning_strategy,
+        "planned_chapter_count": book_plan.metadata.get("planned_chapter_count", len(book_plan.chapters)),
+        "generated_chapter_count": book_plan.metadata.get("generated_chapter_count", len(book_plan.chapters)),
         "chapters": [
             {
                 "chapter_id": chapter.chapter_id,
@@ -2795,6 +2797,33 @@ body {
 .ability-map-node.content-node {
   border-color: #e4a83a;
 }
+.ability-map-canvas.dense {
+  min-width: 860px;
+}
+.ability-map-canvas.dense .ability-map-grid {
+  grid-template-columns: 120px 150px 180px 180px 210px;
+  gap: 14px;
+}
+.ability-map-canvas.dense .ability-map-column {
+  gap: 6px;
+}
+.ability-map-canvas.dense .ability-map-node {
+  min-height: 30px;
+  padding: 5px 7px;
+  font-size: 11px;
+  line-height: 1.25;
+}
+.ability-map-canvas.ultra-dense {
+  min-width: 780px;
+}
+.ability-map-canvas.ultra-dense .ability-map-grid {
+  grid-template-columns: 105px 135px 160px 160px 190px;
+  gap: 10px;
+}
+.ability-map-canvas.ultra-dense .ability-map-node {
+  min-height: 28px;
+  padding: 4px 6px;
+}
 .ability-map-svg {
   position: absolute;
   inset: 0;
@@ -3018,8 +3047,8 @@ function renderToc(book) {
   toc.innerHTML = '';
   const plan = book.metadata?.book_plan;
   if (plan?.chapters?.length) {
-    for (const chapter of plan.chapters) {
-      toc.appendChild(tocChapter(chapter, false));
+    for (const [index, chapter] of plan.chapters.entries()) {
+      toc.appendChild(tocChapter(chapter, index === 0));
     }
     return;
   }
@@ -3043,18 +3072,13 @@ function tocChapter(chapter, expanded) {
   button.appendChild(label);
   const sectionList = el('div', 'toc-section-list');
   for (const section of chapter.sections || []) {
-    sectionList.appendChild(tocLink(displaySectionTitle(section), section.section_id || chapter.chapter_id, 'task toc-section-link'));
+    sectionList.appendChild(tocLink(displaySectionTitle(section), section.section_id || chapter.chapter_id, 'task toc-section-link', chapter.chapter_id));
   }
-  const syncIcon = () => {
-    icon.textContent = wrap.classList.contains('collapsed') ? '▶' : '▼';
-  };
   button.addEventListener('click', () => {
-    wrap.classList.toggle('collapsed');
-    syncIcon();
     setActiveSection(chapter.chapter_id);
     document.getElementById(chapter.chapter_id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
-  syncIcon();
+  syncTocChapterIcon(wrap);
   wrap.appendChild(button);
   wrap.appendChild(sectionList);
   return wrap;
@@ -3091,11 +3115,12 @@ function escapeRegExp(value) {
   return [...String(value)].map((char) => specials.has(char) ? `\\\\${char}` : char).join('');
 }
 
-function tocLink(text, id, className) {
+function tocLink(text, id, className, chapterId) {
   const link = document.createElement('a');
   link.href = `#${id}`;
   link.textContent = text;
   link.className = className;
+  if (chapterId) link.dataset.chapterId = chapterId;
   link.addEventListener('click', () => setActiveSection(id));
   return link;
 }
@@ -3173,6 +3198,7 @@ function renderAbilityMap(project) {
   for (const column of columns) grid.appendChild(column);
   canvas.appendChild(svg);
   canvas.appendChild(grid);
+  applyAbilityMapDensity(canvas);
   graph.appendChild(canvas);
   panel.appendChild(graph);
   return panel;
@@ -3202,9 +3228,16 @@ function renderGeneratedAbilityMap(graphData) {
   }
   canvas.appendChild(svg);
   canvas.appendChild(grid);
+  applyAbilityMapDensity(canvas);
   graph.appendChild(canvas);
   panel.appendChild(graph);
   return panel;
+}
+
+function applyAbilityMapDensity(canvas) {
+  const nodeCount = canvas.querySelectorAll('.ability-map-node').length;
+  canvas.classList.toggle('dense', nodeCount > 22);
+  canvas.classList.toggle('ultra-dense', nodeCount > 38);
 }
 
 function abilityNodeClass(columnId) {
@@ -3856,10 +3889,18 @@ function restoreReaderState() {
   renderBookmarks();
   const progress = Number(localStorage.getItem(`${state.storageKey}.progress`) || '0');
   updateProgress(progress);
+  const hashSection = decodeURIComponent(location.hash.replace('#', ''));
+  if (hashSection && document.getElementById(hashSection)) {
+    setActiveSection(hashSection);
+    return;
+  }
   const lastSection = localStorage.getItem(`${state.storageKey}.activeId`);
   if (lastSection && document.getElementById(lastSection) && !location.hash) {
     document.getElementById(lastSection).scrollIntoView({ block: 'start' });
     setActiveSection(lastSection);
+  } else {
+    const first = document.querySelector('.project, .task, .section-anchor');
+    if (first?.id) setActiveSection(first.id);
   }
 }
 
@@ -3894,8 +3935,46 @@ function setActiveSection(id) {
     link.classList.toggle('active', link.getAttribute('href') === `#${id}`);
   }
   for (const button of document.querySelectorAll('.toc-chapter-toggle')) {
-    button.classList.toggle('active', button.dataset.target === id);
+    button.classList.toggle('active', button.dataset.target === id || button.dataset.target === chapterIdForSection(id));
   }
+  expandActiveTocChapter(id);
+}
+
+function chapterIdForSection(id) {
+  if (!id) return '';
+  const direct = document.querySelector(`.toc-chapter-toggle[data-target="${cssEscape(id)}"]`);
+  if (direct) return id;
+  const link = document.querySelector(`.toc a[href="#${cssEscape(id)}"]`);
+  if (link?.dataset.chapterId) return link.dataset.chapterId;
+  const target = document.getElementById(id);
+  const project = target?.classList?.contains('project') ? target : target?.closest?.('.project');
+  if (project?.id) return project.id;
+  let current = target;
+  while (current && current.previousElementSibling) {
+    current = current.previousElementSibling;
+    if (current.classList?.contains('project')) return current.id;
+  }
+  return '';
+}
+
+function expandActiveTocChapter(id) {
+  const chapterId = chapterIdForSection(id);
+  if (!chapterId) return;
+  for (const chapter of document.querySelectorAll('.toc-chapter')) {
+    const toggle = chapter.querySelector('.toc-chapter-toggle');
+    chapter.classList.toggle('collapsed', toggle?.dataset.target !== chapterId);
+    syncTocChapterIcon(chapter);
+  }
+}
+
+function syncTocChapterIcon(chapter) {
+  const icon = chapter.querySelector('.toc-chapter-icon');
+  if (icon) icon.textContent = chapter.classList.contains('collapsed') ? '▶' : '▼';
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return CSS.escape(value);
+  return String(value).replace(/["\\\\]/g, '\\\\$&');
 }
 
 function getBookmarks() {
