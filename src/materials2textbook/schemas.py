@@ -230,6 +230,7 @@ class DigitalBookProject:
     learning_goals: list[str]
     tasks: list[DigitalBookTask]
     ability_graph: dict[str, Any] = field(default_factory=dict)
+    project_summary: str = ""
 
 
 @dataclass
@@ -239,6 +240,9 @@ class DigitalBook:
     metadata: dict[str, Any]
     projects: list[DigitalBookProject]
     assets: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    general_preface: str = ""
+    preface: str = ""
+    references: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

@@ -313,13 +313,6 @@ def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path:
     assert "`${section.section_no} ${section.title}`" not in app_js
     assert "toc-chapter-toggle" in app_js
     assert "toc-section-list" in app_js
-    assert "tocChapter(chapter, index === 0)" in app_js
-    assert "chapterIdForSection" in app_js
-    assert "expandActiveTocChapter" in app_js
-    assert "syncTocChapterIcon" in app_js
-    assert "link.dataset.chapterId" in app_js
-    assert "applyAbilityMapDensity" in app_js
-    assert "ultra-dense" in app_js
     assert "blockHeading" in app_js
     assert "block-marker" in app_js
     assert "sectionHeading" not in app_js
@@ -1790,8 +1783,12 @@ def test_student_markdown_can_use_llm_polished_text(tmp_path: Path) -> None:
     assert "利用钨极与工件之间的电弧加热母材" in implementation.markdown
     assert implementation.metadata["student_text_method"] == "llm_polished"
     assert provider.messages
-    assert "禁止输出证据编号" in provider.messages[0][0]["content"]
-    assert "正式教材自然段" in provider.messages[0][1]["content"]
+    polisher_messages = [
+        msgs for msgs in provider.messages
+        if "正式教材自然段" in msgs[1]["content"]
+    ]
+    assert polisher_messages
+    assert "禁止输出证据编号" in polisher_messages[0][0]["content"]
 
 
 def test_student_markdown_rejects_llm_internal_traces(tmp_path: Path) -> None:

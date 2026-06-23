@@ -12,6 +12,12 @@ from pathlib import Path, PurePosixPath
 from materials2textbook.io_utils import write_json, write_text
 from materials2textbook.llm.provider import LLMProvider
 from materials2textbook.prompts.ability_graph import build_ability_graph_messages
+from materials2textbook.prompts.book_sections import (
+    build_general_preface_messages,
+    build_preface_messages,
+    build_project_intro_messages,
+    build_project_summary_messages,
+)
 from materials2textbook.prompts.digital_book_polisher import build_digital_book_polisher_messages
 from materials2textbook.schemas import (
     BookChapterPlan,
@@ -60,6 +66,26 @@ def build_digital_book(
     assets: dict[str, list[dict]] = {"videos": [], "keyframes": [], "images": []}
     projects: list[DigitalBookProject] = []
 
+    project_titles: list[str] = []
+
+    for project_index, plan in enumerate(plans, start=1):
+        chapter_no = _book_chapter_no(book_plan, plan.chapter_id) or project_index
+        project_titles.append(f"第{chapter_no}章 {plan.title}")
+
+    general_preface = _generate_general_preface(
+        llm_provider=llm_provider,
+        use_llm=use_llm,
+        book_title=title,
+        project_titles=project_titles,
+        chunks=chunks,
+    )
+    preface = _generate_preface(
+        llm_provider=llm_provider,
+        use_llm=use_llm,
+        book_title=title,
+        project_titles=project_titles,
+    )
+
     for project_index, plan in enumerate(plans, start=1):
         chapter_no = _book_chapter_no(book_plan, plan.chapter_id) or project_index
         chapter_plan = _book_chapter_plan(book_plan, plan.chapter_id)
@@ -75,11 +101,36 @@ def build_digital_book(
             llm_provider=llm_provider,
             use_llm=use_llm,
         )
+        project_title = f"第{chapter_no}章 {plan.title}"
+        project_chunks = [
+            chunk_map[cid] for cid in plan.evidence_chunk_ids if cid in chunk_map
+        ]
+        task_titles = [task.title for task in tasks]
+        knowledge_points: list[str] = []
+        for task in tasks:
+            knowledge_points.extend(task.knowledge_points)
+        project_intro = _generate_project_intro(
+            llm_provider=llm_provider,
+            use_llm=use_llm,
+            project_title=project_title,
+            learning_goals=plan.learning_goals,
+            task_titles=task_titles,
+            chunks=project_chunks,
+            fallback_title=plan.title,
+        )
+        project_summary = _generate_project_summary(
+            llm_provider=llm_provider,
+            use_llm=use_llm,
+            project_title=project_title,
+            learning_goals=plan.learning_goals,
+            task_titles=task_titles,
+            knowledge_points=knowledge_points,
+        )
         projects.append(
             DigitalBookProject(
                 project_id=plan.chapter_id,
-                title=f"第{chapter_no}章 {plan.title}",
-                project_intro=f"本章围绕“{plan.title}”展开学习，结合示范视频和学习要点理解相关知识与操作。",
+                title=project_title,
+                project_intro=project_intro,
                 ability_map=[
                     "示范观察与要点提取",
                     "知识点理解与复述",
@@ -89,7 +140,7 @@ def build_digital_book(
                 tasks=tasks,
                 ability_graph=_build_ability_graph(
                     project_id=plan.chapter_id,
-                    project_title=f"第{chapter_no}章 {plan.title}",
+                    project_title=project_title,
                     learning_goals=plan.learning_goals,
                     ability_map=[
                         "示范观察与要点提取",
@@ -100,8 +151,11 @@ def build_digital_book(
                     llm_provider=llm_provider,
                     use_llm=use_llm,
                 ),
+                project_summary=project_summary,
             )
         )
+
+    references = _collect_references(chunks)
 
     return DigitalBook(
         book_id=_slugify(title),
@@ -113,6 +167,9 @@ def build_digital_book(
         },
         projects=projects,
         assets=assets,
+        general_preface=general_preface,
+        preface=preface,
+        references=references,
     )
 
 
@@ -801,8 +858,12 @@ def _student_learning_sections(chunks: list[EvidenceChunk], *, title: str = "") 
 
 
 def _sanitize_polished_markdown(markdown: str) -> str:
+    text = str(markdown or "")
+    # Strip Qwen3 thinking blocks before line-by-line processing
+    text = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL)
+    text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL)
     lines = []
-    for raw_line in str(markdown).splitlines():
+    for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             if lines and lines[-1]:
@@ -1339,6 +1400,155 @@ def _build_chapter_tasks(
     return tasks
 
 
+def _generate_general_preface(
+    *,
+    llm_provider: LLMProvider | None,
+    use_llm: bool,
+    book_title: str,
+    project_titles: list[str],
+    chunks: list[EvidenceChunk],
+) -> str:
+    if not use_llm or llm_provider is None:
+        return ""
+    try:
+        material_summary = _summarize_chunks(chunks)
+        raw = llm_provider.generate(
+            build_general_preface_messages(
+                book_title=book_title,
+                project_titles=project_titles,
+                material_summary=material_summary,
+            )
+        )
+        text = _sanitize_section_text(raw)
+        return text if text else ""
+    except Exception:
+        return ""
+
+
+def _generate_preface(
+    *,
+    llm_provider: LLMProvider | None,
+    use_llm: bool,
+    book_title: str,
+    project_titles: list[str],
+) -> str:
+    if not use_llm or llm_provider is None:
+        return ""
+    try:
+        raw = llm_provider.generate(
+            build_preface_messages(
+                book_title=book_title,
+                project_titles=project_titles,
+            )
+        )
+        return _sanitize_section_text(raw)
+    except Exception:
+        return ""
+
+
+def _generate_project_intro(
+    *,
+    llm_provider: LLMProvider | None,
+    use_llm: bool,
+    project_title: str,
+    learning_goals: list[str],
+    task_titles: list[str],
+    chunks: list[EvidenceChunk],
+    fallback_title: str = "",
+) -> str:
+    fallback = (
+        f'本章围绕\u201c{fallback_title}\u201d展开学习，'
+        '结合示范视频和学习要点理解相关知识与操作。'
+    )
+    if not use_llm or llm_provider is None:
+        return fallback
+    try:
+        material_summary = _summarize_chunks(chunks)
+        raw = llm_provider.generate(
+            build_project_intro_messages(
+                project_title=project_title,
+                learning_goals=learning_goals,
+                task_titles=task_titles,
+                material_summary=material_summary,
+            )
+        )
+        text = _sanitize_section_text(raw)
+        return text if text else fallback
+    except Exception:
+        return fallback
+
+
+def _generate_project_summary(
+    *,
+    llm_provider: LLMProvider | None,
+    use_llm: bool,
+    project_title: str,
+    learning_goals: list[str],
+    task_titles: list[str],
+    knowledge_points: list[str],
+) -> str:
+    if not use_llm or llm_provider is None:
+        return ""
+    try:
+        raw = llm_provider.generate(
+            build_project_summary_messages(
+                project_title=project_title,
+                learning_goals=learning_goals,
+                task_titles=task_titles,
+                knowledge_points=knowledge_points,
+            )
+        )
+        return _sanitize_section_text(raw)
+    except Exception:
+        return ""
+
+
+def _sanitize_section_text(raw: str) -> str:
+    text = str(raw or "").strip()
+    # Strip Qwen3 thinking blocks
+    text = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL)
+    text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL)
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:markdown)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text).strip()
+    return text.strip()
+
+
+def _summarize_chunks(chunks: list[EvidenceChunk]) -> str:
+    if not chunks:
+        return ""
+    subjects = sorted({chunk.subject for chunk in chunks if chunk.subject})
+    titles = [chunk.title for chunk in chunks[:20] if chunk.title]
+    parts: list[str] = []
+    if subjects:
+        parts.append("主题领域：" + "、".join(subjects[:5]))
+    if titles:
+        parts.append("素材示例：" + "；".join(titles[:10]))
+    return "\n".join(parts)
+
+
+def _collect_references(chunks: list[EvidenceChunk]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    references: list[dict[str, Any]] = []
+    for chunk in chunks:
+        key = chunk.title or chunk.locator.original_path or chunk.asset_id
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        ref: dict[str, Any] = {
+            "title": chunk.title,
+            "type": chunk.source_type,
+        }
+        if chunk.subject:
+            ref["subject"] = chunk.subject
+        if chunk.material_block:
+            ref["material_block"] = chunk.material_block
+        if chunk.locator.original_path:
+            ref["source"] = chunk.locator.original_path
+        references.append(ref)
+    return references
+
+
 def _build_ability_graph(
     *,
     project_id: str,
@@ -1705,8 +1915,6 @@ def _book_plan_metadata(book_plan: BookPlan | None) -> dict:
         "book_id": book_plan.book_id,
         "title": book_plan.title,
         "planning_strategy": book_plan.planning_strategy,
-        "planned_chapter_count": book_plan.metadata.get("planned_chapter_count", len(book_plan.chapters)),
-        "generated_chapter_count": book_plan.metadata.get("generated_chapter_count", len(book_plan.chapters)),
         "chapters": [
             {
                 "chapter_id": chapter.chapter_id,
@@ -2797,33 +3005,6 @@ body {
 .ability-map-node.content-node {
   border-color: #e4a83a;
 }
-.ability-map-canvas.dense {
-  min-width: 860px;
-}
-.ability-map-canvas.dense .ability-map-grid {
-  grid-template-columns: 120px 150px 180px 180px 210px;
-  gap: 14px;
-}
-.ability-map-canvas.dense .ability-map-column {
-  gap: 6px;
-}
-.ability-map-canvas.dense .ability-map-node {
-  min-height: 30px;
-  padding: 5px 7px;
-  font-size: 11px;
-  line-height: 1.25;
-}
-.ability-map-canvas.ultra-dense {
-  min-width: 780px;
-}
-.ability-map-canvas.ultra-dense .ability-map-grid {
-  grid-template-columns: 105px 135px 160px 160px 190px;
-  gap: 10px;
-}
-.ability-map-canvas.ultra-dense .ability-map-node {
-  min-height: 28px;
-  padding: 4px 6px;
-}
 .ability-map-svg {
   position: absolute;
   inset: 0;
@@ -3045,18 +3226,27 @@ function renderBook(book) {
 function renderToc(book) {
   const toc = document.getElementById('toc');
   toc.innerHTML = '';
+  if (book.general_preface) {
+    toc.appendChild(tocLink('总序', 'general_preface', 'front-matter'));
+  }
+  if (book.preface) {
+    toc.appendChild(tocLink('前言', 'preface', 'front-matter'));
+  }
   const plan = book.metadata?.book_plan;
   if (plan?.chapters?.length) {
-    for (const [index, chapter] of plan.chapters.entries()) {
-      toc.appendChild(tocChapter(chapter, index === 0));
+    for (const chapter of plan.chapters) {
+      toc.appendChild(tocChapter(chapter, false));
     }
-    return;
+  } else {
+    for (const project of book.projects || []) {
+      toc.appendChild(tocLink(project.title, project.project_id, 'project'));
+      for (const task of project.tasks || []) {
+        toc.appendChild(tocLink(task.title, task.task_id, 'task'));
+      }
+    }
   }
-  for (const project of book.projects || []) {
-    toc.appendChild(tocLink(project.title, project.project_id, 'project'));
-    for (const task of project.tasks || []) {
-      toc.appendChild(tocLink(task.title, task.task_id, 'task'));
-    }
+  if (book.references && book.references.length) {
+    toc.appendChild(tocLink('参考文献', 'references', 'back-matter'));
   }
 }
 
@@ -3072,13 +3262,18 @@ function tocChapter(chapter, expanded) {
   button.appendChild(label);
   const sectionList = el('div', 'toc-section-list');
   for (const section of chapter.sections || []) {
-    sectionList.appendChild(tocLink(displaySectionTitle(section), section.section_id || chapter.chapter_id, 'task toc-section-link', chapter.chapter_id));
+    sectionList.appendChild(tocLink(displaySectionTitle(section), section.section_id || chapter.chapter_id, 'task toc-section-link'));
   }
+  const syncIcon = () => {
+    icon.textContent = wrap.classList.contains('collapsed') ? '▶' : '▼';
+  };
   button.addEventListener('click', () => {
+    wrap.classList.toggle('collapsed');
+    syncIcon();
     setActiveSection(chapter.chapter_id);
     document.getElementById(chapter.chapter_id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
-  syncTocChapterIcon(wrap);
+  syncIcon();
   wrap.appendChild(button);
   wrap.appendChild(sectionList);
   return wrap;
@@ -3115,12 +3310,11 @@ function escapeRegExp(value) {
   return [...String(value)].map((char) => specials.has(char) ? `\\\\${char}` : char).join('');
 }
 
-function tocLink(text, id, className, chapterId) {
+function tocLink(text, id, className) {
   const link = document.createElement('a');
   link.href = `#${id}`;
   link.textContent = text;
   link.className = className;
-  if (chapterId) link.dataset.chapterId = chapterId;
   link.addEventListener('click', () => setActiveSection(id));
   return link;
 }
@@ -3128,6 +3322,12 @@ function tocLink(text, id, className, chapterId) {
 function renderContent(book) {
   const root = document.getElementById('content');
   root.innerHTML = '';
+  if (book.general_preface) {
+    root.appendChild(renderMarkdownSection('general_preface', 'h2', '总序', book.general_preface));
+  }
+  if (book.preface) {
+    root.appendChild(renderMarkdownSection('preface', 'h2', '前言', book.preface));
+  }
   const outline = renderBookOutline(book);
   if (outline) root.appendChild(outline);
   const bookChapters = book.metadata?.book_plan?.chapters || [];
@@ -3137,9 +3337,9 @@ function renderContent(book) {
     const section = el('section', 'project');
     section.id = project.project_id;
     section.appendChild(heading('h2', project.title));
-    section.appendChild(paragraph(project.project_intro));
-    section.appendChild(listBlock('学习目标', project.learning_goals || []));
+    section.appendChild(renderMarkdownSection(null, 'h3', '项目导学', project.project_intro));
     section.appendChild(renderAbilityMap(project));
+    section.appendChild(listBlock('学习目标', project.learning_goals || []));
     root.appendChild(section);
 
     for (const task of project.tasks || []) {
@@ -3156,7 +3356,42 @@ function renderContent(book) {
       }
       root.appendChild(taskEl);
     }
+
+    if (project.project_summary) {
+      root.appendChild(renderMarkdownSection(`${project.project_id}_summary`, 'h3', '项目小结', project.project_summary));
+    }
   }
+  if (book.references && book.references.length) {
+    root.appendChild(renderReferencesSection(book.references));
+  }
+}
+
+function renderMarkdownSection(id, level, title, markdown) {
+  const section = el('section', 'markdown-section');
+  if (id) section.id = id;
+  section.appendChild(heading(level, title));
+  const md = el('div', 'markdown');
+  md.innerHTML = renderMarkdown(markdown || '');
+  section.appendChild(md);
+  return section;
+}
+
+function renderReferencesSection(references) {
+  const section = el('section', 'references-section');
+  section.id = 'references';
+  section.appendChild(heading('h2', '参考文献'));
+  const list = document.createElement('ol');
+  for (const ref of references) {
+    const item = document.createElement('li');
+    const parts = [ref.title || ''];
+    if (ref.subject) parts.push(ref.subject);
+    if (ref.material_block) parts.push(ref.material_block);
+    if (ref.type) parts.push(ref.type);
+    item.textContent = parts.filter(Boolean).join('．');
+    list.appendChild(item);
+  }
+  section.appendChild(list);
+  return section;
 }
 
 function renderAbilityMap(project) {
@@ -3198,7 +3433,6 @@ function renderAbilityMap(project) {
   for (const column of columns) grid.appendChild(column);
   canvas.appendChild(svg);
   canvas.appendChild(grid);
-  applyAbilityMapDensity(canvas);
   graph.appendChild(canvas);
   panel.appendChild(graph);
   return panel;
@@ -3228,16 +3462,9 @@ function renderGeneratedAbilityMap(graphData) {
   }
   canvas.appendChild(svg);
   canvas.appendChild(grid);
-  applyAbilityMapDensity(canvas);
   graph.appendChild(canvas);
   panel.appendChild(graph);
   return panel;
-}
-
-function applyAbilityMapDensity(canvas) {
-  const nodeCount = canvas.querySelectorAll('.ability-map-node').length;
-  canvas.classList.toggle('dense', nodeCount > 22);
-  canvas.classList.toggle('ultra-dense', nodeCount > 38);
 }
 
 function abilityNodeClass(columnId) {
@@ -3589,7 +3816,40 @@ function escapeHtml(value) {
 
 function buildAskIndex(book) {
   const rows = [];
+  if (book.general_preface) {
+    rows.push({
+      id: 'general_preface',
+      blockType: 'preface',
+      projectTitle: book.title || '',
+      taskTitle: '总序',
+      blockTitle: '总序',
+      text: String(book.general_preface).replace(/\\s+/g, ' ').trim(),
+      evidence: [],
+    });
+  }
+  if (book.preface) {
+    rows.push({
+      id: 'preface',
+      blockType: 'preface',
+      projectTitle: book.title || '',
+      taskTitle: '前言',
+      blockTitle: '前言',
+      text: String(book.preface).replace(/\\s+/g, ' ').trim(),
+      evidence: [],
+    });
+  }
   for (const project of book.projects || []) {
+    if (project.project_summary) {
+      rows.push({
+        id: `${project.project_id}_summary`,
+        blockType: 'summary',
+        projectTitle: project.title || '',
+        taskTitle: '项目小结',
+        blockTitle: '项目小结',
+        text: String(project.project_summary).replace(/\\s+/g, ' ').trim(),
+        evidence: [],
+      });
+    }
     for (const task of project.tasks || []) {
       for (const block of task.blocks || []) {
         const textParts = [
@@ -3889,18 +4149,10 @@ function restoreReaderState() {
   renderBookmarks();
   const progress = Number(localStorage.getItem(`${state.storageKey}.progress`) || '0');
   updateProgress(progress);
-  const hashSection = decodeURIComponent(location.hash.replace('#', ''));
-  if (hashSection && document.getElementById(hashSection)) {
-    setActiveSection(hashSection);
-    return;
-  }
   const lastSection = localStorage.getItem(`${state.storageKey}.activeId`);
   if (lastSection && document.getElementById(lastSection) && !location.hash) {
     document.getElementById(lastSection).scrollIntoView({ block: 'start' });
     setActiveSection(lastSection);
-  } else {
-    const first = document.querySelector('.project, .task, .section-anchor');
-    if (first?.id) setActiveSection(first.id);
   }
 }
 
@@ -3935,46 +4187,8 @@ function setActiveSection(id) {
     link.classList.toggle('active', link.getAttribute('href') === `#${id}`);
   }
   for (const button of document.querySelectorAll('.toc-chapter-toggle')) {
-    button.classList.toggle('active', button.dataset.target === id || button.dataset.target === chapterIdForSection(id));
+    button.classList.toggle('active', button.dataset.target === id);
   }
-  expandActiveTocChapter(id);
-}
-
-function chapterIdForSection(id) {
-  if (!id) return '';
-  const direct = document.querySelector(`.toc-chapter-toggle[data-target="${cssEscape(id)}"]`);
-  if (direct) return id;
-  const link = document.querySelector(`.toc a[href="#${cssEscape(id)}"]`);
-  if (link?.dataset.chapterId) return link.dataset.chapterId;
-  const target = document.getElementById(id);
-  const project = target?.classList?.contains('project') ? target : target?.closest?.('.project');
-  if (project?.id) return project.id;
-  let current = target;
-  while (current && current.previousElementSibling) {
-    current = current.previousElementSibling;
-    if (current.classList?.contains('project')) return current.id;
-  }
-  return '';
-}
-
-function expandActiveTocChapter(id) {
-  const chapterId = chapterIdForSection(id);
-  if (!chapterId) return;
-  for (const chapter of document.querySelectorAll('.toc-chapter')) {
-    const toggle = chapter.querySelector('.toc-chapter-toggle');
-    chapter.classList.toggle('collapsed', toggle?.dataset.target !== chapterId);
-    syncTocChapterIcon(chapter);
-  }
-}
-
-function syncTocChapterIcon(chapter) {
-  const icon = chapter.querySelector('.toc-chapter-icon');
-  if (icon) icon.textContent = chapter.classList.contains('collapsed') ? '▶' : '▼';
-}
-
-function cssEscape(value) {
-  if (window.CSS?.escape) return CSS.escape(value);
-  return String(value).replace(/["\\\\]/g, '\\\\$&');
 }
 
 function getBookmarks() {
