@@ -1911,7 +1911,7 @@ def _book_chapter_no(book_plan: BookPlan | None, chapter_id: str) -> int:
 def _book_plan_metadata(book_plan: BookPlan | None) -> dict:
     if not book_plan:
         return {}
-    return {
+    result = {
         "book_id": book_plan.book_id,
         "title": book_plan.title,
         "planning_strategy": book_plan.planning_strategy,
@@ -1933,6 +1933,8 @@ def _book_plan_metadata(book_plan: BookPlan | None) -> dict:
             for chapter in book_plan.chapters
         ],
     }
+    result.update(dict(getattr(book_plan, "metadata", {}) or {}))
+    return result
 
 
 def _format_learning_path_item(point: KnowledgePoint, all_points: list[KnowledgePoint] | None = None) -> str:
