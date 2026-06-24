@@ -249,8 +249,9 @@ class TextbookWorkflow:
         write_text(revision_diff_path, revision_diff)
         write_json(summary_path, summary)
         write_text(final_path, final)
-        markdown_to_docx(draft, draft_docx_path)
-        markdown_to_docx(final, final_docx_path)
+        artifact_warnings = []
+        artifact_warnings.extend(_try_markdown_to_docx(draft, draft_docx_path))
+        artifact_warnings.extend(_try_markdown_to_docx(final, final_docx_path))
         _progress("exporting digital book")
         _digital_book, digital_book_path, digital_book_index_path = export_digital_book(
             title=title,
@@ -308,6 +309,7 @@ class TextbookWorkflow:
                 "review_rounds_completed": len(review_history),
                 "writer_generation_mode": writer_generation_mode,
                 "writer_generation_warning": writer_generation_warning,
+                "artifact_warnings": artifact_warnings,
                 "chapter_pipeline_enabled": bool(book_mode),
                 "chapter_pipeline_total": len(chapter_run_records),
                 "chapter_pipeline_completed": sum(1 for item in chapter_run_records if item.get("status") in {"success", "reused"}),
@@ -481,8 +483,9 @@ class TextbookWorkflow:
                 write_json(chapter_dir / "review_history.json", chapter_review_history)
                 write_json(chapter_dir / "workflow_summary.json", chapter_summary)
                 write_json(chapter_dir / "token_budget_report.json", chapter_token_budget_report)
-                markdown_to_docx(chapter_draft, chapter_dir / "textbook_draft.docx")
-                markdown_to_docx(chapter_final, chapter_dir / "textbook_final.docx")
+                chapter_artifact_warnings = []
+                chapter_artifact_warnings.extend(_try_markdown_to_docx(chapter_draft, chapter_dir / "textbook_draft.docx"))
+                chapter_artifact_warnings.extend(_try_markdown_to_docx(chapter_final, chapter_dir / "textbook_final.docx"))
 
                 record = {
                     "status": "success",
@@ -496,6 +499,7 @@ class TextbookWorkflow:
                     "review_rounds_completed": len(chapter_review_history),
                     "writer_generation_mode": self.writer.last_generation_mode,
                     "writer_generation_warning": self.writer.last_generation_warning,
+                    "artifact_warnings": chapter_artifact_warnings,
                     **chapter_cache_stats,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
@@ -656,6 +660,16 @@ def _aggregate_writer_warnings(chapter_runs: list[dict[str, Any]]) -> str:
         if str(record.get("writer_generation_warning") or "").strip()
     ]
     return " | ".join(dict.fromkeys(warnings[:5]))
+
+
+def _try_markdown_to_docx(markdown: str, output_path: Path) -> list[str]:
+    try:
+        markdown_to_docx(markdown, output_path)
+    except RuntimeError as exc:
+        warning = f"Skipped Word export for {output_path.name}: {exc}"
+        _progress(warning)
+        return [warning]
+    return []
 
 
 @contextmanager

@@ -2,10 +2,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+
+_THINK_PATTERN = re.compile(r"<think>.*?</think>\s*", flags=re.DOTALL)
+_THINK_UNCLOSED = re.compile(r"<think>.*$", flags=re.DOTALL)
+
+
+def strip_think_blocks(text: str) -> str:
+    """Remove Qwen3 <think>...</think> reasoning blocks from LLM output."""
+    text = _THINK_PATTERN.sub("", text)
+    text = _THINK_UNCLOSED.sub("", text)
+    return text.strip()
 
 
 class LLMProvider(Protocol):
@@ -61,6 +73,7 @@ class OpenAICompatibleProvider:
             "messages": messages,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         request = urllib.request.Request(
             url=f"{self.config.base_url.rstrip('/')}/chat/completions",
@@ -87,4 +100,4 @@ class OpenAICompatibleProvider:
             raise RuntimeError(f"Unexpected LLM response shape: {data}") from exc
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError(f"Unexpected empty LLM response content: {data}")
-        return content
+        return strip_think_blocks(content)

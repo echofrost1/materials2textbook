@@ -123,12 +123,7 @@ def main() -> None:
         help="XLSX manifest prepared by the teammate. Used first for chapter/section allocation in --book-mode.",
     )
     parser.add_argument("--book-plan-output", type=Path, default=None, help="Optional output path for book_plan.json.")
-    parser.add_argument("--chapter-output-root", type=Path, default=None, help="Output root for per-chapter book-mode artifacts.")
-    parser.add_argument(
-        "--force-rebuild-chapters",
-        action="store_true",
-        help="In --book-mode, rebuild chapters even when chapter_status.json says a chapter completed successfully.",
-    )
+    parser.add_argument("--chapter-output-root", type=Path, default=None, help="Reserved output root for per-chapter artifacts.")
     parser.add_argument("--max-chapter-input-tokens", type=int, default=12000, help="Per-chapter input token budget for --book-mode.")
     parser.add_argument("--max-chapters", type=int, default=0, help="Limit planned chapters in --book-mode; 0 means no limit.")
     parser.add_argument("--approved-only", action="store_true", help="Only include approved evidence.")
@@ -209,6 +204,12 @@ def main() -> None:
     parser.add_argument("--llm-retry-backoff", type=float, default=1.0)
     parser.add_argument("--llm-cache-path", type=Path, default=None)
     parser.add_argument("--no-llm-cache", action="store_true")
+    parser.add_argument(
+        "--skip-resource-analyst-llm",
+        action="store_true",
+        help="Skip per-chunk LLM enhancement in ResourceAnalystAgent. Saves ~1000 LLM calls. "
+        "Rule-based conversion still runs; downstream agents still use LLM.",
+    )
     args = parser.parse_args()
 
     material_root = args.material_root.resolve()
@@ -261,6 +262,9 @@ def main() -> None:
     provider = build_llm_provider(args, output_dir)
     print(f"[runner] use_llm={args.use_llm}", flush=True)
     workflow = TextbookWorkflow(llm_provider=provider, use_llm=args.use_llm)
+    if args.skip_resource_analyst_llm:
+        workflow.resource_analyst.use_llm = False
+        print("[runner] ResourceAnalystAgent LLM enhancement: SKIPPED (rule-based only)", flush=True)
     config = WorkflowConfig(
         include_pending=not args.approved_only,
         include_rejected=args.include_rejected,
@@ -284,10 +288,8 @@ def main() -> None:
         book_mode=args.book_mode,
         manifest_xlsx=args.manifest_xlsx.resolve() if args.manifest_xlsx else None,
         book_plan_output=args.book_plan_output.resolve() if args.book_plan_output else None,
-        chapter_output_root=args.chapter_output_root.resolve() if args.chapter_output_root else None,
         max_chapters=args.max_chapters,
         max_chapter_input_tokens=args.max_chapter_input_tokens,
-        resume_chapters=not args.force_rebuild_chapters,
     )
 
     print("Full digital textbook generated:")
