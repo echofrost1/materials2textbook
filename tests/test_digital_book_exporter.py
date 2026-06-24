@@ -36,6 +36,25 @@ class FakeLLMProvider:
         return self.response
 
 
+def assert_tree_ability_graph(graph: dict) -> None:
+    columns = [column["id"] for column in graph["columns"]]
+    order = {column: index for index, column in enumerate(columns)}
+    node_columns = {node["id"]: node["column"] for node in graph["nodes"]}
+    parents = {node["id"]: 0 for node in graph["nodes"]}
+    children = {node["id"]: 0 for node in graph["nodes"]}
+    for edge in graph["edges"]:
+        assert order[node_columns[edge["to"]]] == order[node_columns[edge["from"]]] + 1
+        parents[edge["to"]] += 1
+        children[edge["from"]] += 1
+    for node in graph["nodes"]:
+        if node["column"] == columns[0]:
+            assert parents[node["id"]] == 0
+        else:
+            assert parents[node["id"]] == 1
+        if node["column"] != columns[-1]:
+            assert children[node["id"]] >= 1
+
+
 def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> None:
     source_dir = tmp_path / "source"
     source_dir.mkdir()
@@ -149,9 +168,14 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     ability_graph = payload["projects"][0]["ability_graph"]
     assert ability_graph["schema"] == "materials2textbook.ability_graph.v1"
     assert ability_graph["generation_method"] == "rule"
-    assert [column["id"] for column in ability_graph["columns"]] == ["project", "task", "ability", "knowledge", "content"]
+    assert [column["id"] for column in ability_graph["columns"]] == [
+        "project",
+        "task",
+        "ability",
+        "knowledge",
+        "content",
+    ]
     assert any(node["column"] == "knowledge" and node["label"] == "送丝" for node in ability_graph["nodes"])
-    assert any(node["column"] == "content" and node["label"] == "送丝" for node in ability_graph["nodes"])
     assert ability_graph["edges"]
     assert (tmp_path / "digital_book" / "assets" / "videos" / "demo.mp4").exists()
     assert (tmp_path / "digital_book" / "assets" / "keyframes" / "frame.jpg").exists()
@@ -159,7 +183,11 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert any(block.type == "case_example" for block in book.projects[0].tasks[0].blocks)
     assert "证据定位" not in " ".join(book.projects[0].ability_map)
     assert "人工复核" not in " ".join(book.projects[0].ability_map)
-    assert not any(block.type == "learning_nav" for block in book.projects[0].tasks[0].blocks)
+    block_types = [block.type for block in book.projects[0].tasks[0].blocks]
+    assert "learning_nav" in block_types
+    assert block_types.index("scenario") < block_types.index("learning_nav") < block_types.index("implementation")
+    assert block_types[-2:] == ["assessment", "exercises"]
+    assert_tree_ability_graph(ability_graph)
     assert "数字教材" in index_html
 
 
@@ -177,9 +205,9 @@ def test_export_digital_book_can_use_llm_generated_ability_graph(tmp_path: Path)
             "nodes": [
                 {"id": "project_01", "column": "project", "label": "数字化装备学习项目"},
                 {"id": "task_01", "column": "task", "label": "认识数字化装备"},
-                {"id": "ability_01", "column": "ability", "label": "识读设备组成与工艺关系"},
+                {"id": "ability_01", "column": "ability", "label": "能说明数字化测量设备"},
                 {"id": "knowledge_01", "column": "knowledge", "label": "数字化测量设备"},
-                {"id": "content_01", "column": "content", "label": "设备组成观察任务"},
+                {"id": "content_01", "column": "content", "label": "数字化测量设备学习要点"},
             ],
             "edges": [
                 {"from": "project_01", "to": "task_01"},
@@ -211,7 +239,8 @@ def test_export_digital_book_can_use_llm_generated_ability_graph(tmp_path: Path)
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     ability_graph = payload["projects"][0]["ability_graph"]
     assert ability_graph["generation_method"] == "llm"
-    assert any(node["label"] == "识读设备组成与工艺关系" for node in ability_graph["nodes"])
+    assert any(node["label"] == "数字化测量设备" for node in ability_graph["nodes"])
+    assert_tree_ability_graph(ability_graph)
     assert ability_graph == book.projects[0].ability_graph
     assert provider.messages
     assert "能力图谱" in provider.messages[-1][0]["content"]
@@ -238,7 +267,313 @@ def test_export_digital_book_falls_back_when_llm_ability_graph_is_invalid(tmp_pa
 
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     assert payload["projects"][0]["ability_graph"]["generation_method"] == "rule_fallback"
+    assert_tree_ability_graph(payload["projects"][0]["ability_graph"])
     assert book.projects[0].ability_graph["nodes"]
+
+
+def test_export_digital_book_filters_unknown_evidence_ids(tmp_path: Path) -> None:
+    chunk = EvidenceChunk(
+        chunk_id="C1",
+        asset_id="A1",
+        title="送丝操作",
+        content="送丝时保持动作稳定。",
+        summary="送丝稳定。",
+        keywords=["送丝"],
+        subject="焊接技术",
+        material_block="TIG",
+        material_block_code="tig",
+        recommended_chapter="基本操作",
+        locator=EvidenceLocator(),
+        score=EvidenceScore(teaching_value=0.8),
+        review_status="approved",
+    )
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="基本操作",
+        learning_goals=["理解送丝操作"],
+        knowledge_points=[KnowledgePoint("kp_01", "送丝操作", ["C1", "C999"])],
+        evidence_chunk_ids=["C1", "C999"],
+        case_examples=[
+            CaseExample(
+                "case_bad",
+                "错误证据案例",
+                "分析送丝问题。",
+                "该案例只有无效证据。",
+                target_knowledge_point_ids=["kp_01"],
+                evidence_chunk_ids=["C999"],
+            )
+        ],
+    )
+
+    book, json_path, _ = export_digital_book(
+        title="样书",
+        plans=[plan],
+        chunks=[chunk],
+        output_dir=tmp_path / "digital_book",
+    )
+
+    payload_text = json_path.read_text(encoding="utf-8")
+    assert "C999" not in payload_text
+    task = book.projects[0].tasks[0]
+    assert task.evidence_chunk_ids == ["C1"]
+    assert not any(block.type == "case_example" for block in task.blocks)
+
+
+def test_export_digital_book_recovers_point_evidence_from_task_context(tmp_path: Path) -> None:
+    chunk = EvidenceChunk(
+        chunk_id="C1",
+        asset_id="A1",
+        title="焊接缺陷的分类与特征",
+        content="焊接缺陷可按形态和产生部位分类，识别时应观察焊缝外观和缺陷特征。",
+        summary="焊接缺陷分类。",
+        keywords=["焊接缺陷", "分类"],
+        subject="焊接技术",
+        material_block="质量检验",
+        material_block_code="quality",
+        recommended_chapter="缺陷识别",
+        locator=EvidenceLocator(),
+        score=EvidenceScore(teaching_value=0.8),
+        review_status="approved",
+    )
+    plan = ChapterPlan(
+        chapter_id="chapter_04",
+        title="缺陷识别",
+        learning_goals=["理解焊接缺陷"],
+        knowledge_points=[KnowledgePoint("kp_01", "焊接缺陷的分类与特征操作要点", ["C999"])],
+        evidence_chunk_ids=["C1", "C999"],
+    )
+
+    book, json_path, _ = export_digital_book(
+        title="样书",
+        plans=[plan],
+        chunks=[chunk],
+        output_dir=tmp_path / "digital_book",
+    )
+
+    task = book.projects[0].tasks[0]
+    implementation = next(block for block in task.blocks if block.type == "implementation")
+    assert implementation.title == "焊接缺陷的分类与特征"
+    assert implementation.evidence_chunk_ids == ["C1"]
+    assert "C999" not in json_path.read_text(encoding="utf-8")
+
+
+def test_export_digital_book_deduplicates_videos_within_task(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    video_path = source_dir / "demo.mp4"
+    video_path.write_bytes(b"video")
+    chunk = EvidenceChunk(
+        chunk_id="C1",
+        asset_id="A1",
+        title="送丝视频",
+        content="送丝演示。",
+        summary="送丝演示。",
+        keywords=["送丝"],
+        subject="焊接技术",
+        material_block="TIG",
+        material_block_code="tig",
+        recommended_chapter="基本操作",
+        locator=EvidenceLocator(path=str(video_path)),
+        score=EvidenceScore(teaching_value=0.8),
+        source_type="video_segment",
+        review_status="approved",
+    )
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="基本操作",
+        learning_goals=["理解送丝操作"],
+        knowledge_points=[
+            KnowledgePoint("kp_01", "送丝准备", ["C1"]),
+            KnowledgePoint("kp_02", "送丝观察", ["C1"]),
+        ],
+        evidence_chunk_ids=["C1"],
+    )
+
+    book, _json_path, _ = export_digital_book(
+        title="样书",
+        plans=[plan],
+        chunks=[chunk],
+        output_dir=tmp_path / "digital_book",
+    )
+
+    video_blocks = [block for block in book.projects[0].tasks[0].blocks if block.type == "video"]
+    assert len(video_blocks) == 1
+
+
+def test_export_digital_book_video_prompt_does_not_echo_bad_summary(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    video_path = source_dir / "demo.mp4"
+    video_path.write_bytes(b"video")
+    chunk = EvidenceChunk(
+        chunk_id="C1",
+        asset_id="A1",
+        title="收弧操作",
+        content="演示收弧操作。",
+        summary="控制飞箭也是保证汉戒治疗的重量；汉奉尺寸主要包括。",
+        keywords=["收弧"],
+        subject="焊接技术",
+        material_block="TIG",
+        material_block_code="tig",
+        recommended_chapter="基本操作",
+        locator=EvidenceLocator(path=str(video_path)),
+        score=EvidenceScore(teaching_value=0.8),
+        source_type="video_segment",
+        review_status="approved",
+    )
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="基本操作",
+        learning_goals=["理解收弧操作"],
+        knowledge_points=[KnowledgePoint("kp_01", "收弧操作", ["C1"])],
+        evidence_chunk_ids=["C1"],
+    )
+
+    book, _json_path, _ = export_digital_book(
+        title="样书",
+        plans=[plan],
+        chunks=[chunk],
+        output_dir=tmp_path / "digital_book",
+    )
+
+    video_block = next(block for block in book.projects[0].tasks[0].blocks if block.type == "video")
+    assert "汉戒治疗" not in video_block.markdown
+    assert "控制飞箭" not in video_block.markdown
+    assert "收弧操作" in video_block.markdown
+
+
+def test_export_digital_book_cleans_student_facing_titles(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    video_path = source_dir / "demo.mp4"
+    video_path.write_bytes(b"video")
+    chunk = EvidenceChunk(
+        chunk_id="C1",
+        asset_id="A1",
+        title="焊接基本操作视频片段",
+        content="焊接基本概念与分类需要结合焊接方法和操作场景理解。",
+        summary="焊接基本概念与分类。",
+        keywords=["焊接"],
+        subject="焊接技术",
+        material_block="焊接基本操作",
+        material_block_code="welding",
+        recommended_chapter="焊接基础",
+        locator=EvidenceLocator(path=str(video_path)),
+        score=EvidenceScore(teaching_value=0.8),
+        source_type="video_segment",
+        review_status="approved",
+    )
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="项目一 焊接基础认知",
+        learning_goals=["理解焊接基础"],
+        knowledge_points=[KnowledgePoint("kp_01", "焊接基本概念与分类操作要点", ["C1"])],
+        evidence_chunk_ids=["C1"],
+        case_examples=[
+            CaseExample(
+                "case_01",
+                "焊接基本概念与分类课堂应用示例",
+                "如何判断焊接方法？",
+                "应结合材料、热源和接头形式判断。",
+                target_knowledge_point_ids=["kp_01"],
+                evidence_chunk_ids=["C1"],
+            )
+        ],
+    )
+
+    book, _json_path, _ = export_digital_book(
+        title="样书",
+        plans=[plan],
+        chunks=[chunk],
+        output_dir=tmp_path / "digital_book",
+    )
+
+    task = book.projects[0].tasks[0]
+    titles = [task.title, *task.knowledge_points, *[block.title for block in task.blocks]]
+    assert "焊接基本概念与分类" in task.knowledge_points
+    assert any(block.type == "video" and block.title == "示范视频：焊接基本操作" for block in task.blocks)
+    assert any(block.type == "case_example" and block.title == "案例分析：焊接基本概念与分类" for block in task.blocks)
+    assert not any(title.endswith(("操作要点", "认知", "应用分析", "课堂应用示例", "视频片段")) for title in titles)
+    nav = next(block for block in task.blocks if block.type == "learning_nav")
+    exercises = next(block for block in task.blocks if block.type == "exercises")
+    assert any("焊接基本概念与分类" in item for item in nav.items)
+    assert all("操作要点" not in item for item in [*nav.items, *exercises.items])
+
+
+def test_export_digital_book_skips_redundant_project_title_section(tmp_path: Path) -> None:
+    chunks = [
+        EvidenceChunk(
+            chunk_id="C1",
+            asset_id="A1",
+            title="焊条选择",
+            content="焊条选择需要结合材料和工艺要求。",
+            summary="焊条选择。",
+            keywords=["焊条"],
+            subject="焊接技术",
+            material_block="SMAW",
+            material_block_code="smaw",
+            recommended_chapter="焊条电弧焊操作",
+            locator=EvidenceLocator(),
+            score=EvidenceScore(teaching_value=0.8),
+            review_status="approved",
+        ),
+        EvidenceChunk(
+            chunk_id="C2",
+            asset_id="A2",
+            title="项目总结",
+            content="总结焊条电弧焊操作要求。",
+            summary="项目总结。",
+            keywords=["总结"],
+            subject="焊接技术",
+            material_block="SMAW",
+            material_block_code="smaw",
+            recommended_chapter="焊条电弧焊操作",
+            locator=EvidenceLocator(),
+            score=EvidenceScore(teaching_value=0.8),
+            review_status="approved",
+        ),
+    ]
+    plan = ChapterPlan(
+        chapter_id="chapter_02",
+        title="项目二 焊条电弧焊操作",
+        learning_goals=["理解焊条电弧焊操作"],
+        knowledge_points=[
+            KnowledgePoint("kp_01", "焊条选择", ["C1"]),
+            KnowledgePoint("kp_02", "项目总结", ["C2"]),
+        ],
+        evidence_chunk_ids=["C1", "C2"],
+    )
+    book_plan = BookPlan(
+        book_id="sample",
+        title="样书",
+        planning_strategy="manifest_xlsx_first",
+        chapters=[
+            BookChapterPlan(
+                chapter_id="chapter_02",
+                chapter_no=2,
+                title="项目二 焊条电弧焊操作",
+                learning_goals=["理解焊条电弧焊操作"],
+                sections=[
+                    BookSectionPlan("sec_2_1", "2.1", "焊条的选择与保管", ["焊条选择"], primary_material_ids=["C1"]),
+                    BookSectionPlan("sec_2_5", "2.5", "项目二 焊条电弧焊操作", ["项目总结"], primary_material_ids=["C2"]),
+                ],
+                primary_material_ids=["C1", "C2"],
+            )
+        ],
+    )
+
+    book, _json_path, _ = export_digital_book(
+        title="样书",
+        plans=[plan],
+        chunks=chunks,
+        output_dir=tmp_path / "digital_book",
+        book_plan=book_plan,
+    )
+
+    tasks = book.projects[0].tasks
+    assert len(tasks) == 1
+    assert tasks[0].title == "2.1 焊条的选择与保管"
+    assert "项目总结" in tasks[0].knowledge_points
 
 
 def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path: Path) -> None:
@@ -299,10 +634,10 @@ def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path:
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     app_js = (tmp_path / "digital_book" / "app.js").read_text(encoding="utf-8")
     assert payload["metadata"]["book_plan"]["chapters"][0]["sections"][0]["section_no"] == "1.1"
-    assert book.projects[0].title == "第1章 基本操作"
+    assert book.projects[0].title == "基本操作"
     assert book.projects[0].project_id == "chapter_01"
     assert book.projects[0].ability_graph["nodes"]
-    assert any(edge["from"].endswith("_knowledge_01") for edge in book.projects[0].ability_graph["edges"])
+    assert any(edge["to"].endswith("_knowledge_01") for edge in book.projects[0].ability_graph["edges"])
     assert "renderBookOutline" in app_js
     assert "教材大纲" in app_js
     assert "tocChapter" in app_js
@@ -439,7 +774,7 @@ def test_export_digital_book_default_student_copy_is_readable_utf8(tmp_path: Pat
             *[block.markdown for block in task.blocks],
         ]
     )
-    assert "第1章 钨极氩弧焊基本操作" in visible_text
+    assert "钨极氩弧焊基本操作" in visible_text
     assert "本章围绕“钨极氩弧焊基本操作”展开学习" in visible_text
     assert "情境导入" in visible_text
     assert "学习路径" not in visible_text

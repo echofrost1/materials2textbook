@@ -32,6 +32,7 @@ from materials2textbook.schemas import (
     EvidenceChunk,
     KnowledgePoint,
 )
+from materials2textbook.agents.exercise_designer import ExerciseDesignerAgent
 
 MAX_VIDEO_BLOCKS_PER_KNOWLEDGE_POINT = 2
 STUDENT_PACKAGE_EXCLUDED_FILES = {"digital_book_review.json", "digital_book_review.md"}
@@ -70,7 +71,7 @@ def build_digital_book(
 
     for project_index, plan in enumerate(plans, start=1):
         chapter_no = _book_chapter_no(book_plan, plan.chapter_id) or project_index
-        project_titles.append(f"第{chapter_no}章 {plan.title}")
+        project_titles.append(plan.title)
 
     general_preface = _generate_general_preface(
         llm_provider=llm_provider,
@@ -101,7 +102,7 @@ def build_digital_book(
             llm_provider=llm_provider,
             use_llm=use_llm,
         )
-        project_title = f"第{chapter_no}章 {plan.title}"
+        project_title = plan.title
         project_chunks = [
             chunk_map[cid] for cid in plan.evidence_chunk_ids if cid in chunk_map
         ]
@@ -837,6 +838,37 @@ def _finish_sentence(text: str) -> str:
     return cleaned + "。"
 
 
+# ASR 同音字纠错词典：键为错误形式，值为正确焊接术语。
+# 这些是焊接领域专业术语，只有一个正确写法，替换安全。
+_WELDING_ASR_CORRECTIONS: dict[str, str] = {
+    # 按长度降序排列，避免短键先匹配导致部分替换
+    "颇厚质备": "坡口制备",
+    "脚变形": "角变形",
+    "直肌法": "直击法",
+    "汉宫": "焊工",
+    "汉公": "焊工",
+    "汉奉": "焊缝",
+    "汉戒": "焊接",
+    "汉条": "焊条",
+    "汉键": "焊件",
+    "汉前": "焊钳",
+    "汉箱": "焊枪",
+    "西骨": "熄弧",
+    "飞箭": "飞溅",
+    "破口": "坡口",
+}
+
+
+def _fix_welding_terms(text: str) -> str:
+    """对 ASR 同音字错误做安全术语替换。"""
+    if not text:
+        return text
+    for wrong, correct in _WELDING_ASR_CORRECTIONS.items():
+        if wrong in text:
+            text = text.replace(wrong, correct)
+    return text
+
+
 def _student_learning_sections(chunks: list[EvidenceChunk], *, title: str = "") -> dict[str, list[str]]:
     sections = {"concept": [], "steps": [], "notes": [], "mistakes": []}
     for chunk in chunks:
@@ -1251,7 +1283,7 @@ def _select_video_chunks(chunks: list[EvidenceChunk]) -> list[EvidenceChunk]:
     seen_sources: set[str] = set()
     video_chunks = [chunk for chunk in chunks if chunk.source_type in {"video_segment", "video", "audio_segment"}]
     for chunk in video_chunks:
-        source_key = chunk.locator.path or chunk.metadata.get("source_video", "") or chunk.asset_id
+        source_key = _video_source_key(chunk)
         if source_key in seen_sources:
             continue
         seen_sources.add(source_key)
@@ -1261,6 +1293,10 @@ def _select_video_chunks(chunks: list[EvidenceChunk]) -> list[EvidenceChunk]:
     if not selected and video_chunks:
         return video_chunks[:1]
     return selected
+
+
+def _video_source_key(chunk: EvidenceChunk) -> str:
+    return str(chunk.locator.path or chunk.metadata.get("source_video", "") or chunk.asset_id or chunk.chunk_id)
 
 
 def _teacher_evidence_refs(chunks: list[EvidenceChunk]) -> list[dict[str, str]]:
@@ -1299,7 +1335,10 @@ def _build_chapter_tasks(
 
     for task_index, (section, points) in enumerate(section_groups, start=1):
         task_title = _section_task_title(chapter_no, task_index, section, plan)
-        task_evidence_ids = _task_evidence_ids(section, points, plan)
+        task_evidence_ids = _valid_chunk_ids(_task_evidence_ids(section, points, plan), chunk_map) or _valid_chunk_ids(
+            plan.evidence_chunk_ids,
+            chunk_map,
+        )
         task_blocks: list[DigitalBookBlock] = [
             DigitalBookBlock(
                 block_id=f"p{project_index:02d}_t{task_index:02d}_scenario",
@@ -1310,12 +1349,26 @@ def _build_chapter_tasks(
             )
         ]
 
+        task_blocks.append(
+            DigitalBookBlock(
+                block_id=f"p{project_index:02d}_t{task_index:02d}_learning_nav",
+                type="learning_nav",
+                title="任务导学",
+                items=_learning_nav_items(section, plan, points, task_evidence_ids, chunk_map),
+                evidence_chunk_ids=task_evidence_ids,
+            )
+        )
+
         key_terms: list[str] = []
+        used_video_sources: set[str] = set()
         for point_index, point in enumerate(points, start=1):
-            point_chunks = [chunk_map[chunk_id] for chunk_id in point.chunk_ids if chunk_id in chunk_map]
-            key_terms.extend(point.title for _chunk in point_chunks[:1])
+            point_title = _student_display_title(point.title)
+            point_chunks = _chunks_for_point(point, task_evidence_ids, chunk_map)
+            if not point_chunks:
+                continue
+            key_terms.extend(point_title for _chunk in point_chunks[:1])
             implementation_text, polish_metadata = _render_point_markdown(
-                point.title,
+                point_title,
                 point.summary,
                 point_chunks,
                 llm_provider=llm_provider,
@@ -1325,13 +1378,20 @@ def _build_chapter_tasks(
                 DigitalBookBlock(
                     block_id=f"p{project_index:02d}_t{task_index:02d}_kp{point_index:02d}_text",
                     type="implementation",
-                    title=point.title,
+                    title=point_title,
                     markdown=implementation_text,
                     evidence_chunk_ids=[chunk.chunk_id for chunk in point_chunks],
-                    metadata={"teacher_evidence": _teacher_evidence_refs(point_chunks), **polish_metadata},
+                    metadata={
+                        "teacher_evidence": _teacher_evidence_refs(point_chunks),
+                        "source_title": point.title,
+                        **polish_metadata,
+                    },
                 )
             )
             for media_index, chunk in enumerate(_select_video_chunks(point_chunks), start=1):
+                video_source_key = _video_source_key(chunk)
+                if video_source_key in used_video_sources:
+                    continue
                 media_block = _build_video_block(
                     chunk=chunk,
                     output_dir=output_dir,
@@ -1340,18 +1400,22 @@ def _build_chapter_tasks(
                     copy_media_assets=copy_media_assets,
                 )
                 if media_block:
+                    used_video_sources.add(video_source_key)
                     task_blocks.append(media_block)
 
         section_cases = _cases_for_points(plan.case_examples, points, used_case_ids)
         for case_index, case in enumerate(section_cases, start=1):
+            case_evidence_ids = _valid_chunk_ids(case.evidence_chunk_ids, chunk_map)
+            if not case_evidence_ids:
+                continue
             used_case_ids.add(case.case_id)
             task_blocks.append(
                 DigitalBookBlock(
                     block_id=f"p{project_index:02d}_t{task_index:02d}_case{case_index:02d}",
                     type="case_example",
-                    title=case.title,
+                    title=_case_display_title(case.title),
                     markdown=f"**例题**：{case.prompt}\n\n**参考分析**：{case.reference_answer}",
-                    evidence_chunk_ids=case.evidence_chunk_ids,
+                    evidence_chunk_ids=case_evidence_ids,
                 )
             )
 
@@ -1368,7 +1432,13 @@ def _build_chapter_tasks(
                     block_id=f"p{project_index:02d}_t{task_index:02d}_exercises",
                     type="exercises",
                     title="思考与练习",
-                    items=_exercise_items_for_points(points),
+                    items=_generate_exercise_items(
+                        points=points,
+                        chunk_map=chunk_map,
+                        task_title=task_title,
+                        llm_provider=llm_provider,
+                        use_llm=use_llm,
+                    ),
                     evidence_chunk_ids=task_evidence_ids,
                 ),
             ]
@@ -1379,7 +1449,7 @@ def _build_chapter_tasks(
                 task_id=f"{plan.chapter_id}_task_{task_index:02d}",
                 title=task_title,
                 blocks=task_blocks,
-                knowledge_points=[point.title for point in points],
+                knowledge_points=[_student_display_title(point.title) for point in points],
                 key_terms=_dedupe(key_terms),
                 evidence_chunk_ids=task_evidence_ids,
             )
@@ -1388,13 +1458,16 @@ def _build_chapter_tasks(
     unused_cases = [case for case in plan.case_examples if case.case_id not in used_case_ids]
     if unused_cases and tasks:
         for case_index, case in enumerate(unused_cases, start=1):
+            case_evidence_ids = _valid_chunk_ids(case.evidence_chunk_ids, chunk_map)
+            if not case_evidence_ids:
+                continue
             tasks[-1].blocks.append(
                 DigitalBookBlock(
                     block_id=f"p{project_index:02d}_t{len(tasks):02d}_extra_case{case_index:02d}",
                     type="case_example",
-                    title=case.title,
+                    title=_case_display_title(case.title),
                     markdown=f"**例题**：{case.prompt}\n\n**参考分析**：{case.reference_answer}",
-                    evidence_chunk_ids=case.evidence_chunk_ids,
+                    evidence_chunk_ids=case_evidence_ids,
                 )
             )
     return tasks
@@ -1604,39 +1677,30 @@ def _build_rule_ability_graph(
 
     project_node_id = f"{project_id}_project"
     nodes.append({"id": project_node_id, "column": "project", "label": project_title})
-    ability_labels = (ability_map or ["知识理解", "示范观察", "操作分析"])[:4]
 
     for task_index, task in enumerate(tasks, start=1):
         task_node_id = f"{task.task_id}_task"
         nodes.append({"id": task_node_id, "column": "task", "label": task.title})
         edges.append({"from": project_node_id, "to": task_node_id})
 
-        knowledge_node_ids: list[str] = []
-        for point_index, point_title in enumerate(_ability_graph_knowledge_labels(task), start=1):
-            point_node_id = f"{task.task_id}_knowledge_{point_index:02d}"
-            knowledge_node_ids.append(point_node_id)
-            nodes.append({"id": point_node_id, "column": "knowledge", "label": point_title})
-
-        for ability_index, ability in enumerate(ability_labels, start=1):
-            ability_node_id = f"{task.task_id}_ability_{ability_index:02d}"
-            nodes.append({"id": ability_node_id, "column": "ability", "label": ability})
-            edges.append({"from": task_node_id, "to": ability_node_id})
-            for point_node_id in knowledge_node_ids:
-                edges.append({"from": ability_node_id, "to": point_node_id})
-
+        knowledge_labels = _ability_graph_knowledge_labels(task)
         content_nodes = _ability_graph_content_nodes(task)
-        if not content_nodes:
-            content_nodes = [{"label": "教材正文与课堂活动", "knowledge_titles": []}]
-        for content_index, content in enumerate(content_nodes, start=1):
-            content_node_id = f"{task.task_id}_content_{content_index:02d}"
-            nodes.append({"id": content_node_id, "column": "content", "label": content["label"]})
-            source_points = _matching_knowledge_node_ids(
-                knowledge_node_ids,
-                _ability_graph_knowledge_labels(task),
-                content["knowledge_titles"],
+        for point_index, point_title in enumerate(knowledge_labels, start=1):
+            ability_node_id = f"{task.task_id}_ability_{point_index:02d}"
+            point_node_id = f"{task.task_id}_knowledge_{point_index:02d}"
+            content_node_id = f"{task.task_id}_content_{point_index:02d}"
+            nodes.append({"id": ability_node_id, "column": "ability", "label": _ability_goal_label(point_title)})
+            nodes.append({"id": point_node_id, "column": "knowledge", "label": point_title})
+            nodes.append(
+                {
+                    "id": content_node_id,
+                    "column": "content",
+                    "label": _content_label_for_knowledge(point_title, content_nodes) or f"{point_title}学习要点",
+                }
             )
-            for point_node_id in source_points or knowledge_node_ids:
-                edges.append({"from": point_node_id, "to": content_node_id})
+            edges.append({"from": task_node_id, "to": ability_node_id})
+            edges.append({"from": ability_node_id, "to": point_node_id})
+            edges.append({"from": point_node_id, "to": content_node_id})
 
     return {
         "schema": "materials2textbook.ability_graph.v1",
@@ -1658,6 +1722,15 @@ def _ability_graph_prompt_tasks(tasks: list[DigitalBookTask]) -> list[dict]:
             }
         )
     return prompt_tasks
+
+
+def _ability_goal_label(point_title: str) -> str:
+    title = _student_display_title(point_title)
+    if any(term in title for term in ("安全", "防护", "检查")):
+        return f"能完成{title}判断"
+    if any(term in title for term in ("操作", "焊", "送丝", "引弧", "收弧")):
+        return f"能规范完成{title}"
+    return f"能说明{title}"
 
 
 def _parse_json_object(raw_text: str) -> dict:
@@ -1690,7 +1763,7 @@ def _normalize_llm_ability_graph(graph: dict, fallback: dict) -> dict:
         if not isinstance(raw_node, dict):
             continue
         column = str(raw_node.get("column", "")).strip()
-        label = _clean_student_text(str(raw_node.get("label", "")), max_chars=50)
+        label = _student_display_title(str(raw_node.get("label", "")), fallback="")
         if column not in allowed_columns or not label or _contains_student_forbidden_trace(label):
             continue
         raw_id = str(raw_node.get("id", "")).strip()
@@ -1711,17 +1784,30 @@ def _normalize_llm_ability_graph(graph: dict, fallback: dict) -> dict:
         if source in node_ids and target in node_ids and source != target:
             edges.append({"from": source, "to": target})
 
-    if len(nodes) < 5 or not edges:
+    if len(nodes) < 3 or not edges:
         raise ValueError("LLM ability graph is too sparse")
     missing_columns = [column_id for column_id in allowed_columns if column_counts.get(column_id, 0) == 0]
     if missing_columns:
         raise ValueError(f"LLM ability graph missing columns: {', '.join(missing_columns)}")
+    _validate_ability_graph_tree(nodes, edges, allowed_columns)
+    nodes = _dedupe_content_labels_vs_knowledge(nodes)
     return {
         "schema": "materials2textbook.ability_graph.v1",
         "columns": fallback_columns,
         "nodes": nodes,
         "edges": _dedupe_edges(edges),
     }
+
+
+def _dedupe_content_labels_vs_knowledge(nodes: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Ensure content node labels differ from knowledge node labels."""
+    knowledge_labels = {
+        n["label"].strip() for n in nodes if n.get("column") == "knowledge"
+    }
+    for node in nodes:
+        if node.get("column") == "content" and node["label"].strip() in knowledge_labels:
+            node["label"] = f"{node['label'].strip()}（学习材料）"
+    return nodes
 
 
 def _safe_graph_id(value: str, column: str, index: int) -> str:
@@ -1733,13 +1819,44 @@ def _safe_graph_id(value: str, column: str, index: int) -> str:
     return cleaned[:64]
 
 
+def _validate_ability_graph_tree(
+    nodes: list[dict[str, str]],
+    edges: list[dict[str, str]],
+    columns: list[str],
+) -> None:
+    column_order = {column: index for index, column in enumerate(columns)}
+    node_columns = {node["id"]: node["column"] for node in nodes}
+    parent_counts = {node["id"]: 0 for node in nodes}
+    child_counts = {node["id"]: 0 for node in nodes}
+    for edge in edges:
+        source = edge["from"]
+        target = edge["to"]
+        if source not in node_columns or target not in node_columns:
+            raise ValueError("Ability graph edge references a missing node")
+        if column_order[node_columns[target]] != column_order[node_columns[source]] + 1:
+            raise ValueError("Ability graph edges must connect adjacent columns")
+        parent_counts[target] += 1
+        child_counts[source] += 1
+
+    for node in nodes:
+        node_id = node["id"]
+        column = node["column"]
+        if column == columns[0]:
+            if parent_counts[node_id] != 0:
+                raise ValueError("Project nodes must not have parents")
+        elif parent_counts[node_id] != 1:
+            raise ValueError("Non-project ability graph nodes must have exactly one parent")
+        if column != columns[-1] and child_counts[node_id] == 0:
+            raise ValueError("Non-content ability graph nodes must have at least one child")
+
+
 def _ability_graph_knowledge_labels(task: DigitalBookTask) -> list[str]:
     labels = task.knowledge_points or task.key_terms
     return _dedupe(labels)[:6] or [task.title]
 
 
 def _ability_graph_content_nodes(task: DigitalBookTask) -> list[dict[str, list[str] | str]]:
-    blocked_types = {"assessment", "exercises"}
+    blocked_types = {"assessment", "exercises", "learning_nav", "scenario"}
     nodes: list[dict[str, list[str] | str]] = []
     for block in task.blocks:
         block_type = block.type or block.metadata.get("block_type", "")
@@ -1754,6 +1871,23 @@ def _ability_graph_content_nodes(task: DigitalBookTask) -> list[dict[str, list[s
         if len(nodes) >= 6:
             break
     return nodes
+
+
+def _content_label_for_knowledge(
+    point_title: str,
+    content_nodes: list[dict[str, list[str] | str]],
+) -> str:
+    for content in content_nodes:
+        matched_titles = content.get("knowledge_titles", [])
+        if isinstance(matched_titles, str):
+            matched_titles = [matched_titles]
+        if any(_match_key(point_title) == _match_key(title) for title in matched_titles):
+            return str(content.get("label", ""))
+    for content in content_nodes:
+        label = str(content.get("label", ""))
+        if _titles_overlap(point_title, label):
+            return label
+    return ""
 
 
 def _matching_knowledge_node_ids(
@@ -1798,6 +1932,11 @@ def _section_groups_for_plan(
             continue
         used_ids = {id(point) for point in points}
         remaining = [point for point in remaining if id(point) not in used_ids]
+        if _is_redundant_project_section(section, plan):
+            if groups:
+                previous_section, previous_points = groups[-1]
+                groups[-1] = (previous_section, previous_points + points)
+            continue
         groups.append((section, points))
     if remaining:
         groups.append((None, remaining))
@@ -1816,6 +1955,20 @@ def _points_for_section(section: BookSectionPlan, points: list[KnowledgePoint]) 
     ]
 
 
+def _is_redundant_project_section(section: BookSectionPlan, plan: ChapterPlan) -> bool:
+    section_title = _strip_outline_prefix(section.title)
+    plan_title = _strip_outline_prefix(plan.title)
+    if not section_title or not plan_title:
+        return False
+    section_key = _match_key(section_title)
+    plan_key = _match_key(plan_title)
+    if not section_key or not plan_key:
+        return False
+    if section_key == plan_key:
+        return True
+    return section_key.startswith(_match_key("项目")) and _titles_overlap(section_title, plan_title)
+
+
 def _task_evidence_ids(section: BookSectionPlan | None, points: list[KnowledgePoint], plan: ChapterPlan) -> list[str]:
     ids: list[str] = []
     if section:
@@ -1825,6 +1978,73 @@ def _task_evidence_ids(section: BookSectionPlan | None, points: list[KnowledgePo
     if section:
         ids.extend(section.reference_material_ids)
     return _dedupe(ids) or plan.evidence_chunk_ids
+
+
+def _valid_chunk_ids(ids: list[str], chunk_map: dict[str, EvidenceChunk]) -> list[str]:
+    return _dedupe([chunk_id for chunk_id in ids if chunk_id in chunk_map])
+
+
+def _chunks_for_point(
+    point: KnowledgePoint,
+    task_evidence_ids: list[str],
+    chunk_map: dict[str, EvidenceChunk],
+) -> list[EvidenceChunk]:
+    explicit_chunks = [chunk_map[chunk_id] for chunk_id in point.chunk_ids if chunk_id in chunk_map]
+    if explicit_chunks:
+        return explicit_chunks
+    point_key = _match_key(_student_display_title(point.title))
+    point_terms = {_match_key(term) for term in [point.title, *getattr(point, "keywords", [])] if term}
+    point_terms = {term for term in point_terms if term}
+    matched: list[EvidenceChunk] = []
+    for chunk_id in task_evidence_ids:
+        chunk = chunk_map.get(chunk_id)
+        if not chunk:
+            continue
+        chunk_values = [
+            chunk.title,
+            chunk.summary,
+            chunk.material_block,
+            chunk.recommended_chapter,
+            *chunk.keywords,
+        ]
+        chunk_keys = {_match_key(value) for value in chunk_values if value}
+        chunk_keys = {key for key in chunk_keys if key}
+        if any(
+            point_key and chunk_key and (point_key in chunk_key or chunk_key in point_key)
+            for chunk_key in chunk_keys
+        ) or any(
+            point_term and chunk_key and (point_term in chunk_key or chunk_key in point_term)
+            for point_term in point_terms
+            for chunk_key in chunk_keys
+        ):
+            matched.append(chunk)
+    return matched
+
+
+def _learning_nav_items(
+    section: BookSectionPlan | None,
+    plan: ChapterPlan,
+    points: list[KnowledgePoint],
+    task_evidence_ids: list[str],
+    chunk_map: dict[str, EvidenceChunk],
+) -> list[str]:
+    title = _section_display_title(section, plan)
+    point_titles = [_student_display_title(point.title) for point in points if point.title]
+    video_count = sum(
+        1
+        for chunk_id in task_evidence_ids
+        if chunk_id in chunk_map and chunk_map[chunk_id].source_type in {"video_segment", "video", "audio_segment"}
+    )
+    items = [
+        f"先阅读“{title}”任务情境，明确本任务要解决的学习问题。",
+        "重点掌握：" + "、".join(point_titles[:5]) if point_titles else "重点梳理本任务涉及的核心知识点。",
+    ]
+    if video_count:
+        items.append("观看配套视频时，重点对应正文中的操作步骤、观察要点和质量要求。")
+    else:
+        items.append("阅读正文时，重点把概念、操作要求和常见问题对应起来。")
+    items.append("完成任务后，用自己的话说明关键知识点，并完成思考与练习。")
+    return items
 
 
 def _cases_for_points(
@@ -1853,17 +2073,51 @@ def _section_task_title(chapter_no: int, task_index: int, section: BookSectionPl
 
 def _section_display_title(section: BookSectionPlan | None, plan: ChapterPlan) -> str:
     if section and section.title:
-        title = _strip_outline_prefix(section.title)
+        title = _student_display_title(section.title)
         if len(plan.knowledge_points) == 1 and not _titles_overlap(title, plan.title):
-            return plan.title
+            return _student_display_title(plan.title)
         return title
-    return plan.title
+    return _student_display_title(plan.title)
+
+
+_STUDENT_TITLE_SUFFIX_PATTERNS = (
+    r"(课堂)?应用示例$",
+    r"案例分析$",
+    r"视频片段$",
+    r"示范视频$",
+    r"学习内容$",
+    r"知识梳理$",
+    r"操作要点$",
+    r"应用分析$",
+    r"综合分析$",
+    r"认知$",
+)
+
+
+def _student_display_title(title: str, *, fallback: str = "本任务") -> str:
+    cleaned = _clean_student_text(_fix_welding_terms(_strip_outline_prefix(str(title or ""))), max_chars=48)
+    cleaned = re.sub(r"\s+", "", cleaned)
+    previous = ""
+    while cleaned and cleaned != previous:
+        previous = cleaned
+        for pattern in _STUDENT_TITLE_SUFFIX_PATTERNS:
+            cleaned = re.sub(pattern, "", cleaned).strip(" ：:-，。；;")
+    if not cleaned:
+        cleaned = _clean_student_text(_fix_welding_terms(_strip_outline_prefix(str(fallback or ""))), max_chars=48)
+    return cleaned.strip(" ：:-，。；;") or fallback
+
+
+def _case_display_title(title: str) -> str:
+    cleaned = _student_display_title(title, fallback="案例分析")
+    if cleaned == "案例分析" or cleaned.startswith("案例"):
+        return cleaned
+    return f"案例分析：{cleaned}"
 
 
 def _assessment_items_for_points(points: list[KnowledgePoint]) -> list[str]:
     if not points:
         return _assessment_items(ChapterPlan("", "", [], [], []))
-    lead = points[0].title
+    lead = _student_display_title(points[0].title)
     return [
         f"能说出“{lead}”相关的核心概念或关键操作。",
         "能结合教材资源说明关键动作、工件状态或质量要求。",
@@ -1873,9 +2127,30 @@ def _assessment_items_for_points(points: list[KnowledgePoint]) -> list[str]:
 
 def _exercise_items_for_points(points: list[KnowledgePoint]) -> list[str]:
     return [
-        f"结合示范视频和学习要点，说明“{point.title}”的关键内容。"
+        f"结合示范视频和学习要点，说明“{_student_display_title(point.title)}”的关键内容。"
         for point in points[:5]
     ] or ["结合示范视频和学习要点，总结本节的关键学习收获。"]
+
+
+def _generate_exercise_items(
+    *,
+    points: list[KnowledgePoint],
+    chunk_map: dict[str, EvidenceChunk],
+    task_title: str,
+    llm_provider: LLMProvider | None,
+    use_llm: bool,
+) -> list[str]:
+    """Generate real fill-blank/thinking exercises via LLM, else fall back to template."""
+    if use_llm and llm_provider is not None:
+        designer = ExerciseDesignerAgent(llm_provider=llm_provider, use_llm=True)
+        items = designer.design_items(
+            points=points,
+            chunk_map=chunk_map,
+            task_title=task_title,
+        )
+        if items:
+            return items
+    return _exercise_items_for_points(points)
 
 
 def _match_key(value: str) -> str:
@@ -1962,7 +2237,7 @@ def _exercise_items(plan: ChapterPlan) -> list[str]:
     if items:
         return items
     return [
-        f"结合示范视频和学习要点，说明“{point.title}”的关键内容。"
+        f"结合示范视频和学习要点，说明“{_student_display_title(point.title)}”的关键内容。"
         for point in plan.knowledge_points[:5]
     ] or ["结合示范视频和学习要点，总结本任务的关键学习收获。"]
 
@@ -2026,7 +2301,7 @@ def _build_video_block(
     return DigitalBookBlock(
         block_id=block_id,
         type="video",
-        title=f"{chunk.title} 视频片段",
+        title=_video_display_title(chunk),
         markdown=_render_video_observation_markdown(chunk),
         src=video_rel,
         poster=poster_rel,
@@ -2041,11 +2316,25 @@ def _build_video_block(
 
 
 def _render_video_observation_markdown(chunk: EvidenceChunk) -> str:
-    sentences = _student_sentences(chunk.content)
-    observations = _paragraph_clauses(sentences, limit=2)
-    if observations:
-        return _finish_sentence(f"观看本视频时，重点观察{'；'.join(observations)}")
-    return "观看本视频时，注意教师示范的动作顺序、工件状态变化和操作安全要求。"
+    title = _clean_video_observation_title(chunk.title)
+    if title:
+        return f"观看本视频时，重点把“{title}”与本任务正文对应起来，观察操作步骤、工件状态变化和安全要求。"
+    return "观看本视频时，重点观察操作步骤、工件状态变化和安全要求，并与本任务正文要点对应起来。"
+
+
+def _clean_video_observation_title(title: str) -> str:
+    cleaned = _student_display_title(title, fallback="")
+    cleaned = re.sub(r"\s*视频\s*$", "", cleaned)
+    if _looks_like_low_quality_asr(cleaned) or _contains_student_forbidden_trace(cleaned):
+        return ""
+    return cleaned.strip(" ：:-，。")
+
+
+def _video_display_title(chunk: EvidenceChunk) -> str:
+    title = _clean_video_observation_title(chunk.title)
+    if not title:
+        title = _student_display_title(chunk.material_block or chunk.recommended_chapter or "", fallback="操作示范")
+    return f"示范视频：{title}"
 
 
 def _resolve_source_path(path_value: str, asset_id: str = "") -> Path | None:
@@ -2420,7 +2709,13 @@ body {
   margin-bottom: 18px;
   padding: 20px;
 }
-.book-outline ol {
+.book-outline > ol,
+.book-outline > ol > li > ol {
+  list-style: none;
+  margin: 8px 0 0;
+  padding-left: 16px;
+}
+.book-outline > ol > li > ol > li > ol {
   margin: 8px 0 0;
   padding-left: 22px;
 }
@@ -3282,11 +3577,7 @@ function tocChapter(chapter, expanded) {
 }
 
 function displayChapterTitle(chapter) {
-  const title = cleanTitle(chapter?.title);
-  const chapterNo = chapter?.chapter_no;
-  if (!title) return chapterNo ? `第${chapterNo}章` : '';
-  if (/^第\\s*[0-9一二三四五六七八九十百千万]+\\s*章(?:\\s|[：:、.-]|$)/.test(title)) return title;
-  return chapterNo ? `第${chapterNo}章 ${title}` : title;
+  return cleanTitle(chapter?.title);
 }
 
 function displaySectionTitle(section) {
@@ -3398,6 +3689,7 @@ function renderReferencesSection(references) {
 
 function renderAbilityMap(project) {
   if (project.ability_graph?.nodes?.length) return renderGeneratedAbilityMap(project.ability_graph);
+  return renderGeneratedAbilityMap(buildFallbackAbilityGraph(project));
   const panel = el('section', 'ability-map-panel');
   panel.appendChild(heading('h4', '能力图谱'));
   const graph = el('div', 'ability-map-graph');
@@ -3469,6 +3761,52 @@ function renderGeneratedAbilityMap(graphData) {
   return panel;
 }
 
+function buildFallbackAbilityGraph(project) {
+  const columns = [
+    { id: 'project', title: '项目' },
+    { id: 'task', title: '任务' },
+    { id: 'ability', title: '能力目标' },
+    { id: 'knowledge', title: '知识点' },
+    { id: 'content', title: '学习内容' },
+  ];
+  const nodes = [];
+  const edges = [];
+  const projectId = abilityNodeId('project', 0, 0);
+  nodes.push({ id: projectId, column: 'project', label: project.title || '项目' });
+  for (const [taskIndex, task] of (project.tasks || []).entries()) {
+    const taskId = abilityNodeId('task', taskIndex, 0);
+    nodes.push({ id: taskId, column: 'task', label: task.title || `任务 ${taskIndex + 1}` });
+    edges.push({ from: projectId, to: taskId });
+    const knowledge = knowledgeLabels(task);
+    for (const [pointIndex, point] of knowledge.entries()) {
+      const abilityId = abilityNodeId('ability', taskIndex, pointIndex);
+      const pointId = abilityNodeId('knowledge', taskIndex, pointIndex);
+      const contentId = abilityNodeId('content', taskIndex, pointIndex);
+      nodes.push({ id: abilityId, column: 'ability', label: fallbackAbilityLabel(point) });
+      nodes.push({ id: pointId, column: 'knowledge', label: point });
+      nodes.push({ id: contentId, column: 'content', label: fallbackContentLabel(task, point) });
+      edges.push({ from: taskId, to: abilityId });
+      edges.push({ from: abilityId, to: pointId });
+      edges.push({ from: pointId, to: contentId });
+    }
+  }
+  return { schema: 'materials2textbook.ability_graph.v1', columns, nodes, edges, generation_method: 'viewer_fallback' };
+}
+
+function fallbackAbilityLabel(point) {
+  if (/安全|防护|检查/.test(point)) return `能完成${point}判断`;
+  if (/操作|焊|送丝|引弧|收弧/.test(point)) return `能规范完成${point}`;
+  return `能说明${point}`;
+}
+
+function fallbackContentLabel(task, point) {
+  for (const block of task.blocks || []) {
+    if (!block?.title || ['assessment', 'exercises', 'learning_nav', 'scenario'].includes(block.type || block.block_type || '')) continue;
+    if (block.title.includes(point) || point.includes(block.title)) return block.title;
+  }
+  return `${point}学习要点`;
+}
+
 function abilityNodeClass(columnId) {
   if (columnId === 'project') return 'project-node';
   if (columnId === 'task') return 'task-node';
@@ -3488,7 +3826,7 @@ function knowledgeLabels(task) {
 }
 
 function contentLabels(task) {
-  const blockedTypes = new Set(['assessment', 'exercises']);
+  const blockedTypes = new Set(['assessment', 'exercises', 'learning_nav', 'scenario']);
   const labels = [];
   for (const block of task.blocks || []) {
     if (!block?.title || blockedTypes.has(block.type || block.block_type || '')) continue;
@@ -3571,21 +3909,16 @@ function renderBlock(block) {
     video.controls = true;
     video.preload = 'metadata';
     video.playsInline = true;
-    video.src = block.src;
+    const startSec = timeToSeconds(block.start_time || '');
+    const endSec = timeToSeconds(block.end_time || '');
+    if (endSec > startSec) {
+      video.src = block.src + '#t=' + startSec + ',' + endSec;
+    } else {
+      video.src = block.src;
+    }
     if (block.poster) video.poster = block.poster;
     if (block.start_time) video.dataset.startTime = block.start_time;
     if (block.end_time) video.dataset.endTime = block.end_time;
-    video.addEventListener('loadedmetadata', () => {
-      const seconds = timeToSeconds(video.dataset.startTime || '');
-      if (seconds > 0) video.currentTime = seconds;
-    }, { once: true });
-    video.addEventListener('timeupdate', () => {
-      const endSeconds = timeToSeconds(video.dataset.endTime || '');
-      if (endSeconds > 0 && video.currentTime >= endSeconds) {
-        video.pause();
-        video.currentTime = timeToSeconds(video.dataset.startTime || '');
-      }
-    });
     node.appendChild(video);
     node.appendChild(videoActions(video));
     node.appendChild(paragraph(`${block.start_time || ''} - ${block.end_time || ''}`));
