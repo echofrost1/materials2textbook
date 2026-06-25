@@ -1,4 +1,4 @@
-"""Shared filesystem defaults for persistent materials data."""
+"""Shared filesystem defaults for local materials data."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import os
 from pathlib import Path
 
 
-DATA_ROOT = Path(os.environ.get("MATERIALS2TEXTBOOK_DATA", "/ai/data/materials2textbook"))
-RAW_ROOT = Path(os.environ.get("MATERIALS2TEXTBOOK_RAW", str(DATA_ROOT / "raw")))
-WORK_ROOT = Path(os.environ.get("MATERIALS2TEXTBOOK_WORK", str(DATA_ROOT / "work_material1")))
-MODELS_ROOT = Path(os.environ.get("MATERIALS2TEXTBOOK_MODELS", "/ai/data/models"))
+DATA_ROOT = Path(os.environ.get("DTEXTBOOKS_DATA", "local_runs"))
+RAW_ROOT = Path(os.environ.get("DTEXTBOOKS_RAW", str(DATA_ROOT / "raw")))
+WORK_ROOT = Path(os.environ.get("DTEXTBOOKS_WORK", str(DATA_ROOT / "work_material1")))
+MODELS_ROOT = Path(os.environ.get("DTEXTBOOKS_MODELS", str(DATA_ROOT / "models")))
 
 
 def default_data_root() -> Path:

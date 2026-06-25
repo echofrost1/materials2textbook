@@ -1,31 +1,26 @@
 # Examples
 
-这里保存可以提交到 Git 的轻量样例。
+This repository intentionally does not include real teaching materials or generated textbook outputs.
 
-当前样例：
-
-```text
-examples/outputs/agent_workflow/
-```
-
-它展示了 `scripts/run_agent_workflow.py` 基于 TIG 样例片段生成的结果，包括：
+For a small local smoke test, create your own toy evidence file under a temporary material root:
 
 ```text
-textbook_outline.md/json
-evidence_chunks.jsonl
-evidence_index.md
-chapter_plan.json
-textbook_draft.md/docx
-review_report.md/json
-workflow_summary.json
-artifact_manifest.json
-textbook_final.md/docx
+D:\textbook_runs\smoke_topic\
+└── work_material1\
+    └── 02_working_processing\
+        └── json\
+            └── reference_text_assets.jsonl
 ```
 
-真实运行时，脚本默认写入：
+Then run:
 
-```text
-/ai/data/materials2textbook/work_material1/05_final_deliverables/agent_workflow/
+```powershell
+python scripts/run_topic_textbook.py `
+  --material-root D:\textbook_runs\smoke_topic\work_material1 `
+  --title "Smoke Topic" `
+  --use-llm false `
+  --min-evidence-chunks 2 `
+  --min-candidate-chapters 1
 ```
 
-该目录属于本地工作区，不默认进入 Git。
+Keep real materials, processed JSONL files, and generated deliverables outside Git.

@@ -36,10 +36,8 @@ class OpenAICompatibleConfig:
 
     @classmethod
     def from_env(cls, prefix: str = "OPENAI") -> "OpenAICompatibleConfig":
-        legacy_prefix = "ECNU_PLUS"
-
         def env_value(name: str, default: str = "") -> str:
-            return os.getenv(f"{prefix}_{name}", os.getenv(f"{legacy_prefix}_{name}", default))
+            return os.getenv(f"{prefix}_{name}", default)
 
         return cls(
             api_key=env_value("API_KEY"),

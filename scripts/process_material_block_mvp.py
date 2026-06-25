@@ -6,10 +6,10 @@ after the TIG pilot. It reads the existing manifest/block mapping, selects a
 limited batch for one material block, and writes processed evidence to batch
 files by default:
 
-  /ai/data/materials2textbook/work_material1/01_manifest_inventory/video_segments.xlsx
-  /ai/data/materials2textbook/work_material1/02_working_processing/json/video_segments.jsonl
-  /ai/data/materials2textbook/work_material1/01_manifest_inventory/ppt_assets.xlsx
-  /ai/data/materials2textbook/work_material1/02_working_processing/json/ppt_assets.jsonl
+  local_runs/work_material1/01_manifest_inventory/video_segments.xlsx
+  local_runs/work_material1/02_working_processing/json/video_segments.jsonl
+  local_runs/work_material1/01_manifest_inventory/ppt_assets.xlsx
+  local_runs/work_material1/02_working_processing/json/ppt_assets.jsonl
 
 Use --merge-main only after validation if you want to append batch rows to the
 main textbook-generation inputs. It is intentionally conservative: process a

@@ -94,7 +94,7 @@ def main() -> None:
         "--material-root",
         type=Path,
         default=default_material_root(),
-        help="Material workspace root. Default: /ai/data/materials2textbook/work_material1.",
+        help="Material workspace root. Defaults to local_runs/work_material1 unless configured.",
     )
     parser.add_argument("--title", default="钨极氩弧焊数字教材")
     parser.add_argument("--segments", type=Path, default=None, help="Override video_segments.jsonl path.")

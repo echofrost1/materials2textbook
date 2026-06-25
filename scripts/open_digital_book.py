@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
         "--material-root",
         type=Path,
         default=DEFAULT_MATERIAL_ROOT,
-        help="Material root to serve. Default: /ai/data/materials2textbook/work_material1",
+        help="Material root to serve. Defaults to local_runs/work_material1 unless configured.",
     )
     parser.add_argument(
         "--book-index",

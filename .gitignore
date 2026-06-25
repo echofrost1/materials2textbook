@@ -1,17 +1,38 @@
-# Repository must stay code-only; persistent data lives under /ai/data/materials2textbook
-work_materials/
+# Keep the repository code-only. Store local materials and generated outputs outside Git.
 
-# Local recovery scratch area
-recovered_old_code/
+# Local material workspaces
+local_runs/
+work_material*/
+raw/
+data/
+outputs/
+logs/
 
-# Environment
+# Generated pipeline folders
+01_manifest_inventory/
+02_working_processing/
+03_review_manual_check/
+04_assets_by_course/
+05_final_deliverables/
+digital_book/
+digital_book.zip
+
+# Model and cache folders
+models/
+model-cache/
+download_logs/
+
+# Environment and secrets
 .env
+*.key
+*.pem
 
 # Python cache
 **/__pycache__/
 *.pyc
+.pytest_cache/
 
-# Temporary generated files (kept outside src/)
+# Temporary generated files
 .extensions.txt
 .git_compare.txt
 .git_log.txt
@@ -21,20 +42,7 @@ recovered_old_code/
 .new_branch_status.txt
 .new_branch_status2.txt
 .preview/
-
-# Generated student package (too large for normal GitHub blobs)
-digital_book.zip
-
-# Local preview server logs
 .digital_book_server_*.log
-
-# Cloud collaboration shared paths
-data
-data/
-models
-models/
-logs
-logs/
 
 # Large local data/model artifacts
 *.csv
@@ -47,8 +55,3 @@ logs/
 *.pt
 *.pth
 *.onnx
-
-# Persistent model/cache folders should not be committed
-model-cache/
-download_logs/
-outputs/

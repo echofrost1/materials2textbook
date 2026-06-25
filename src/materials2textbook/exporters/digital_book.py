@@ -2356,7 +2356,7 @@ def _resolve_source_path(path_value: str, asset_id: str = "") -> Path | None:
     path = Path(path_value)
     candidates = [path]
     if not path.is_absolute():
-        work_root = Path(os.environ.get("MATERIALS2TEXTBOOK_WORK", "/ai/data/materials2textbook/work_material1"))
+        work_root = Path(os.environ.get("DTEXTBOOKS_WORK", "local_runs/work_material1"))
         candidates.append(Path.cwd() / path)
         candidates.append(work_root / path)
         candidates.append(work_root / "02_working_processing" / "converted_mp4" / path.name)
