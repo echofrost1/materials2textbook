@@ -11,7 +11,10 @@ import argparse
 import json
 import math
 import re
+import shutil
 import subprocess
+import zipfile
+from xml.etree import ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +31,7 @@ JSON_DIR = WORK_DIR / "json"
 BATCH_JSON_DIR = JSON_DIR / "batches"
 BATCH_MANIFEST_DIR = MANIFEST_DIR / "batches"
 REFERENCE_MAIN_JSONL = JSON_DIR / "reference_text_assets.jsonl"
+SOFFICE_BIN = Path("/opt/libreoffice7.6/program/soffice")
 
 
 def clean_text(value: Any, limit: int | None = None) -> str:
@@ -51,6 +55,14 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def processed_source_asset_ids() -> set[str]:
+    processed = {clean_text(row.get("source_asset_id")) for row in read_jsonl(REFERENCE_MAIN_JSONL)}
+    for path in BATCH_JSON_DIR.glob("*reference_text_assets*.jsonl"):
+        processed.update(clean_text(row.get("source_asset_id")) for row in read_jsonl(path))
+    processed.discard("")
+    return processed
 
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -91,16 +103,117 @@ def next_number(rows: list[dict[str, Any]]) -> int:
     return max_num + 1
 
 
-def run_text_extract(pdf_path: Path, txt_path: Path) -> str:
+def read_docx_text(path: Path) -> str:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            xml = zf.read("word/document.xml")
+        root = ET.fromstring(xml)
+        texts = [node.text or "" for node in root.iter() if node.tag.endswith("}t")]
+        return clean_text(" ".join(texts))
+    except Exception:
+        return ""
+
+
+def read_pdf_text(path: Path) -> str:
+    try:
+        from pypdf import PdfReader  # type: ignore
+
+        reader = PdfReader(str(path))
+        parts = []
+        for page in reader.pages:
+            parts.append(page.extract_text() or "")
+        return clean_text("\n".join(parts))
+    except Exception:
+        return ""
+
+
+def read_doc_text_with_libreoffice(path: Path, txt_path: Path) -> str:
+    if not SOFFICE_BIN.exists():
+        return ""
+    out_dir = WORK_DIR / "reference_text_converted" / txt_path.stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+    expected = out_dir / f"{path.stem}.txt"
+    if not expected.exists() or expected.stat().st_size == 0:
+        result = subprocess.run(
+            [
+                str(SOFFICE_BIN),
+                "--headless",
+                "--nologo",
+                "--nofirststartwizard",
+                f"-env:UserInstallation=file://{(out_dir / '_lo_profile').resolve()}",
+                "--convert-to",
+                "txt:Text",
+                "--outdir",
+                str(out_dir),
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if result.returncode != 0:
+            return ""
+    converted = sorted(out_dir.glob("*.txt"))
+    if not converted:
+        return ""
+    for encoding in ("utf-8", "gb18030", "latin-1"):
+        try:
+            return clean_text(converted[0].read_text(encoding=encoding, errors="ignore"))
+        except Exception:
+            continue
+    return ""
+
+
+def can_extract_document(path: Path) -> bool:
+    ext = path.suffix.lower()
+    if ext in {".docx", ".txt", ".md"}:
+        return True
+    if ext == ".doc" and SOFFICE_BIN.exists():
+        return True
+    if ext == ".pdf":
+        return True
+    if ext == ".pdf" and shutil.which("pdftotext"):
+        return True
+    return False
+
+
+def run_text_extract(source_path: Path, txt_path: Path) -> str:
     txt_path.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        ["pdftotext", "-layout", "-enc", "UTF-8", str(pdf_path), str(txt_path)],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr[-1000:])
-    return txt_path.read_text(encoding="utf-8", errors="ignore")
+    ext = source_path.suffix.lower()
+    if ext == ".docx":
+        text = read_docx_text(source_path)
+    elif ext == ".doc":
+        text = read_doc_text_with_libreoffice(source_path, txt_path)
+    elif ext in {".txt", ".md"}:
+        text = source_path.read_text(encoding="utf-8", errors="ignore")
+    elif ext == ".pdf" and shutil.which("pdftotext"):
+        result = subprocess.run(
+            ["pdftotext", "-layout", "-enc", "UTF-8", str(source_path), str(txt_path)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr[-1000:])
+        return txt_path.read_text(encoding="utf-8", errors="ignore")
+    elif ext == ".pdf":
+        text = read_pdf_text(source_path)
+    else:
+        raise RuntimeError(f"unsupported document type without extractor: {source_path.suffix}")
+    txt_path.write_text(text, encoding="utf-8")
+    return text
+
+
+def text_extract_method(source_path: Path) -> str:
+    ext = source_path.suffix.lower()
+    if ext == ".docx":
+        return "docx_xml_text"
+    if ext == ".doc":
+        return "libreoffice_txt"
+    if ext in {".txt", ".md"}:
+        return f"{ext.lstrip('.')}_plain_text"
+    if ext == ".pdf":
+        return "pdftotext_layout" if shutil.which("pdftotext") else "pypdf_text"
+    return "unsupported"
 
 
 def chunk_text(text: str, max_chars: int = 1400) -> list[str]:
@@ -136,8 +249,12 @@ def load_source_rows(target_block: str, limit: int) -> pd.DataFrame:
         & df["file_type"].eq("document")
         & df["active_for_processing"].eq(True)
     ].copy()
-    processed = {row.get("source_asset_id") for row in read_jsonl(REFERENCE_MAIN_JSONL)}
-    df = df[~df["asset_id"].astype(str).isin(processed)]
+    supported = []
+    for _, row in df.iterrows():
+        supported.append(can_extract_document(source_path_for(row)))
+    df = df[supported].copy()
+    processed = processed_source_asset_ids()
+    df = df[~df["asset_id"].astype(str).map(clean_text).isin(processed)]
     relation_priority = {"primary": 0, "secondary": 1, "candidate": 2}
     df["_priority"] = df["relation_type"].map(relation_priority).fillna(8)
     df = df.sort_values(["_priority", "confidence", "asset_id"], ascending=[True, False, True]).drop(columns=["_priority"])
@@ -173,7 +290,8 @@ def main() -> int:
         text = run_text_extract(source_path, txt_path)
         chunks = chunk_text(text)
         if not chunks:
-            chunks = [""]
+            print(f"Skipping reference document {asset_id} {filename}: no extractable text")
+            continue
         for index, chunk in enumerate(chunks, start=1):
             reference_text_id = f"REF{next_id:06d}"
             next_id += 1
@@ -190,7 +308,7 @@ def main() -> int:
                     "text_length": len(chunk),
                     "extracted_text": chunk,
                     "evidence_text": clean_text(chunk, 1400),
-                    "text_extract_method": "pdftotext_layout",
+                    "text_extract_method": text_extract_method(source_path),
                     "source_text_path": txt_path.relative_to(PROJECT_ROOT).as_posix(),
                     "recommended_usage": "reference_definition_or_explanation",
                     "review_status": "Pending_Agent_Review",

@@ -156,19 +156,22 @@ def load_queue() -> pd.DataFrame:
 
 
 def select_queue_rows(target_block: str, action: str, limit: int) -> pd.DataFrame:
+    if limit <= 0:
+        return pd.DataFrame()
     queue = load_queue()
     selected = queue[
         queue["material_block_code"].eq(target_block)
         & queue["recommended_action"].eq(action)
     ].copy()
+    if action == "extract_structured_evidence" and "extension" in selected.columns:
+        selected = selected[selected["extension"].fillna("").str.lower().isin([".xls", ".xlsx", ".csv"])].copy()
     if selected.empty:
         return selected
     relation_priority = {"primary": 0, "secondary": 1, "candidate": 2}
     selected["_relation_priority"] = selected["relation_type"].map(relation_priority).fillna(8)
     selected = selected.sort_values(["_relation_priority", "confidence", "asset_id"], ascending=[True, False, True])
     selected = selected.drop(columns=["_relation_priority"])
-    if limit > 0:
-        selected = selected.head(limit)
+    selected = selected.head(limit)
     return selected
 
 
@@ -194,8 +197,14 @@ def process_audio(target_block: str, limit: int, batch_id: str, dry_run: bool) -
         source_path = source_path_for(asset)
         wav_path = WORK_DIR / "audio" / f"{asset_id}_{safe_stem(filename)}.wav"
         wav_path.parent.mkdir(parents=True, exist_ok=True)
-        if not wav_path.exists():
-            run_ffmpeg(["-i", str(source_path), "-vn", "-ac", "1", "-ar", "16000", str(wav_path)])
+        if not wav_path.exists() or wav_path.stat().st_size == 0:
+            try:
+                run_ffmpeg(["-i", str(source_path), "-vn", "-ac", "1", "-ar", "16000", str(wav_path)])
+            except Exception as exc:
+                print(f"Skipping audio {asset_id} {filename}: ffmpeg failed: {clean_text(exc, 300)}")
+                if wav_path.exists() and wav_path.stat().st_size == 0:
+                    wav_path.unlink()
+                continue
         duration = float(asset.get("duration_or_pages") or 0) or ffprobe_duration(source_path)
         transcript_path = WORK_DIR / "transcripts" / f"{asset_id}_{safe_stem(filename)}.txt"
         if transcript_path.exists():
