@@ -331,16 +331,17 @@ python scripts/run_full_digital_textbook.py `
 └── digital_book.zip
 ```
 
-打开电子教材：
+打开电子教材需要通过本地 HTTP 服务预览。不要直接双击 `index.html`，多数浏览器会因为 `file://` 限制而无法加载 `digital_book.json` 或媒体资源。
 
 ```powershell
-python scripts/open_digital_book.py
+python scripts/open_digital_book.py `
+  --material-root D:\textbook_runs\new_topic\work_material1
 ```
 
-或直接打开：
+脚本会自动打开类似这样的地址：
 
 ```text
-05_final_deliverables\digital_book\index.html
+http://127.0.0.1:8767/05_final_deliverables/digital_book/index.html
 ```
 
 ## 常见失败处理
