@@ -3531,8 +3531,8 @@ function renderToc(book) {
   }
   const plan = book.metadata?.book_plan;
   if (plan?.chapters?.length) {
-    for (const chapter of plan.chapters) {
-      toc.appendChild(tocChapter(chapter, false));
+    for (const [index, chapter] of plan.chapters.entries()) {
+      toc.appendChild(tocChapter(chapter, index === 0));
     }
   } else {
     for (const project of book.projects || []) {
@@ -3727,6 +3727,7 @@ function renderAbilityMap(project) {
   for (const column of columns) grid.appendChild(column);
   canvas.appendChild(svg);
   canvas.appendChild(grid);
+  applyAbilityMapDensity(canvas);
   graph.appendChild(canvas);
   panel.appendChild(graph);
   return panel;
@@ -3756,9 +3757,16 @@ function renderGeneratedAbilityMap(graphData) {
   }
   canvas.appendChild(svg);
   canvas.appendChild(grid);
+  applyAbilityMapDensity(canvas);
   graph.appendChild(canvas);
   panel.appendChild(graph);
   return panel;
+}
+
+function applyAbilityMapDensity(canvas) {
+  const nodeCount = canvas.querySelectorAll('.ability-map-node').length;
+  canvas.classList.toggle('dense', nodeCount > 22);
+  canvas.classList.toggle('ultra-dense', nodeCount > 38);
 }
 
 function buildFallbackAbilityGraph(project) {
