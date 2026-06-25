@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from materials2textbook.io_utils import write_json, write_text
+from materials2textbook.domain_config import DomainConfig, default_domain_config
 from materials2textbook.llm.provider import LLMProvider
 from materials2textbook.prompts.ability_graph import build_ability_graph_messages
 from materials2textbook.prompts.book_sections import (
@@ -62,7 +63,9 @@ def build_digital_book(
     llm_provider: LLMProvider | None = None,
     use_llm: bool = False,
     book_plan: BookPlan | None = None,
+    domain_config: DomainConfig | None = None,
 ) -> DigitalBook:
+    domain_config = domain_config or default_domain_config()
     chunk_map = {chunk.chunk_id: chunk for chunk in chunks}
     assets: dict[str, list[dict]] = {"videos": [], "keyframes": [], "images": []}
     projects: list[DigitalBookProject] = []
@@ -101,6 +104,7 @@ def build_digital_book(
             copy_media_assets=copy_media_assets,
             llm_provider=llm_provider,
             use_llm=use_llm,
+            domain_config=domain_config,
         )
         project_title = plan.title
         project_chunks = [
@@ -151,6 +155,7 @@ def build_digital_book(
                     tasks=tasks,
                     llm_provider=llm_provider,
                     use_llm=use_llm,
+                    domain_config=domain_config,
                 ),
                 project_summary=project_summary,
             )
@@ -165,6 +170,7 @@ def build_digital_book(
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "format": "materials2textbook.digital_book.v1",
             "book_plan": _book_plan_metadata(book_plan),
+            "domain_config": domain_config.to_dict(),
         },
         projects=projects,
         assets=assets,
@@ -184,6 +190,7 @@ def export_digital_book(
     llm_provider: LLMProvider | None = None,
     use_llm: bool = False,
     book_plan: BookPlan | None = None,
+    domain_config: DomainConfig | None = None,
 ) -> tuple[DigitalBook, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     book = build_digital_book(
@@ -195,6 +202,7 @@ def export_digital_book(
         llm_provider=llm_provider,
         use_llm=use_llm,
         book_plan=book_plan,
+        domain_config=domain_config,
     )
     json_path = output_dir / "digital_book.json"
     index_path = output_dir / "index.html"
@@ -1328,6 +1336,7 @@ def _build_chapter_tasks(
     copy_media_assets: bool,
     llm_provider: LLMProvider | None,
     use_llm: bool,
+    domain_config: DomainConfig,
 ) -> list[DigitalBookTask]:
     section_groups = _section_groups_for_plan(plan, chapter_plan)
     tasks: list[DigitalBookTask] = []
@@ -1438,6 +1447,7 @@ def _build_chapter_tasks(
                         task_title=task_title,
                         llm_provider=llm_provider,
                         use_llm=use_llm,
+                        domain_config=domain_config,
                     ),
                     evidence_chunk_ids=task_evidence_ids,
                 ),
@@ -1631,6 +1641,7 @@ def _build_ability_graph(
     tasks: list[DigitalBookTask],
     llm_provider: LLMProvider | None = None,
     use_llm: bool = False,
+    domain_config: DomainConfig | None = None,
 ) -> dict:
     fallback = _build_rule_ability_graph(
         project_id=project_id,
@@ -1648,6 +1659,7 @@ def _build_ability_graph(
                 learning_goals=learning_goals,
                 tasks=_ability_graph_prompt_tasks(tasks),
                 fallback_graph=fallback,
+                domain_config=domain_config,
             )
         )
         graph = _normalize_llm_ability_graph(_parse_json_object(raw_graph), fallback)
@@ -2139,10 +2151,11 @@ def _generate_exercise_items(
     task_title: str,
     llm_provider: LLMProvider | None,
     use_llm: bool,
+    domain_config: DomainConfig | None = None,
 ) -> list[str]:
     """Generate real fill-blank/thinking exercises via LLM, else fall back to template."""
     if use_llm and llm_provider is not None:
-        designer = ExerciseDesignerAgent(llm_provider=llm_provider, use_llm=True)
+        designer = ExerciseDesignerAgent(llm_provider=llm_provider, use_llm=True, domain_config=domain_config)
         items = designer.design_items(
             points=points,
             chunk_map=chunk_map,

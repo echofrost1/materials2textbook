@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from materials2textbook.io_utils import read_jsonl, write_jsonl
+from materials2textbook.domain_config import load_domain_config
 from materials2textbook.llm.cache import CachingLLMProvider
 from materials2textbook.llm.provider import OpenAICompatibleConfig, OpenAICompatibleProvider
 from materials2textbook.llm.retry import RetryingLLMProvider
@@ -68,8 +69,8 @@ def build_llm_provider(args: argparse.Namespace, output_dir: Path):
         llm_config.model = args.llm_model
     if not llm_config.is_configured:
         raise SystemExit(
-            "LLM is enabled but not configured. Set ECNU_PLUS_API_KEY, "
-            "ECNU_PLUS_BASE_URL, ECNU_PLUS_MODEL or pass --llm-* options."
+            "LLM is enabled but not configured. Set OPENAI_API_KEY, "
+            "OPENAI_BASE_URL, OPENAI_MODEL or pass --llm-* options."
         )
     provider = OpenAICompatibleProvider(llm_config)
     if args.llm_max_retries:
@@ -123,6 +124,12 @@ def main() -> None:
         help="XLSX manifest prepared by the teammate. Used first for chapter/section allocation in --book-mode.",
     )
     parser.add_argument("--book-plan-output", type=Path, default=None, help="Optional output path for book_plan.json.")
+    parser.add_argument("--book-plan-input", type=Path, default=None, help="Optional external book_plan.json. Skips automatic planning.")
+    parser.add_argument("--domain-config", type=Path, default=None, help="Optional domain_config YAML/JSON.")
+    parser.add_argument("--domain-name", default="", help="Override generated/loaded domain name.")
+    parser.add_argument("--audience", default="", help="Override generated/loaded audience.")
+    parser.add_argument("--disable-auto-plan", action="store_true", help="Disable automatic book planning in --book-mode.")
+    parser.add_argument("--disable-llm-book-planning", action="store_true", help="Disable LLM book planning and use rule fallback.")
     parser.add_argument("--chapter-output-root", type=Path, default=None, help="Output root for per-chapter book-mode artifacts.")
     parser.add_argument(
         "--force-rebuild-chapters",
@@ -223,22 +230,17 @@ def main() -> None:
     ppt_assets_path = (args.ppt_assets or json_dir / "ppt_assets.jsonl").resolve()
     output_dir = (args.output_dir or material_root / "05_final_deliverables" / "agent_workflow").resolve()
 
-    if not video_segments_path.exists():
-        raise SystemExit(f"Missing video segments: {video_segments_path}")
-
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"[runner] material_root={material_root}", flush=True)
     print(f"[runner] output_dir={output_dir}", flush=True)
     print("[runner] loading video segments", flush=True)
-    video_records = read_jsonl(video_segments_path)
+    video_records = read_jsonl(video_segments_path) if video_segments_path.exists() else []
     video_records = filter_records(
         video_records,
         chapter=args.chapter,
         knowledge_point=args.knowledge_point,
         limit=args.max_video_records,
     )
-    if not video_records:
-        raise SystemExit("No video segment records matched the selected filters.")
     print(f"[runner] selected video records={len(video_records)}", flush=True)
     selected_video_segments_path = output_dir / "selected_video_segments.jsonl"
     write_jsonl(selected_video_segments_path, video_records)
@@ -263,10 +265,23 @@ def main() -> None:
         combined_document_path = output_dir / "combined_document_segments.jsonl"
         write_jsonl(combined_document_path, document_records)
     print(f"[runner] selected document records={len(document_records)}", flush=True)
+    if not video_records and not document_records:
+        raise SystemExit("No video or document evidence records matched the selected filters.")
 
     provider = build_llm_provider(args, output_dir)
+    domain_config = load_domain_config(
+        args.domain_config.resolve() if args.domain_config else None,
+        domain_name=args.domain_name,
+        audience=args.audience,
+    )
     print(f"[runner] use_llm={args.use_llm}", flush=True)
-    workflow = TextbookWorkflow(llm_provider=provider, use_llm=args.use_llm)
+    workflow = TextbookWorkflow(
+        llm_provider=provider,
+        use_llm=args.use_llm,
+        domain_config=domain_config,
+        auto_plan=not args.disable_auto_plan,
+        llm_book_planning=not args.disable_llm_book_planning,
+    )
     if args.skip_resource_analyst_llm:
         workflow.resource_analyst.use_llm = False
         print("[runner] ResourceAnalystAgent LLM enhancement: SKIPPED (rule-based only)", flush=True)
@@ -297,6 +312,10 @@ def main() -> None:
         max_chapters=args.max_chapters,
         max_chapter_input_tokens=args.max_chapter_input_tokens,
         resume_chapters=not args.force_rebuild_chapters,
+        domain_config=domain_config,
+        auto_plan=not args.disable_auto_plan,
+        llm_book_planning=not args.disable_llm_book_planning,
+        book_plan_input=args.book_plan_input.resolve() if args.book_plan_input else None,
     )
 
     print("Full digital textbook generated:")
@@ -310,6 +329,7 @@ def main() -> None:
     print(f"- max_tokens_per_evidence_chunk: {args.max_tokens_per_evidence_chunk}")
     print(f"- summarize_over_budget: {args.summarize_over_budget}")
     print(f"- book_mode: {args.book_mode}")
+    print(f"- domain_name: {domain_config.domain_name}")
     if args.manifest_xlsx:
         print(f"- manifest_xlsx: {args.manifest_xlsx.resolve()}")
     if combined_document_path:

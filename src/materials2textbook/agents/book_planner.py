@@ -8,6 +8,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+from materials2textbook.domain_config import DomainConfig, default_domain_config
 from materials2textbook.schemas import (
     BookChapterPlan,
     BookPlan,
@@ -59,6 +60,9 @@ class ManifestMaterial:
 class BookPlannerAgent:
     """Plan a whole textbook before chapter-level generation."""
 
+    def __init__(self, domain_config: DomainConfig | None = None) -> None:
+        self.domain_config = domain_config or default_domain_config()
+
     def run(
         self,
         *,
@@ -68,10 +72,12 @@ class BookPlannerAgent:
         max_chapters: int = 0,
         max_knowledge_points_per_chapter: int = DEFAULT_MAX_KNOWLEDGE_POINTS,
         chapter_token_budget: int = DEFAULT_CHAPTER_TOKEN_BUDGET,
+        domain_config: DomainConfig | None = None,
     ) -> BookPlan:
+        domain_config = domain_config or self.domain_config
         manifest_rows = read_manifest_xlsx(manifest_xlsx) if manifest_xlsx else []
         manifest_by_id = _best_manifest_by_id(manifest_rows)
-        curriculum_order = build_curriculum_order(manifest_rows, chunks)
+        curriculum_order = build_curriculum_order(manifest_rows, chunks, domain_config=domain_config)
         curriculum_index = {title: index for index, title in enumerate(curriculum_order, start=1)}
         chunk_ids = {chunk.chunk_id for chunk in chunks}
         primary_owner: dict[str, str] = {}
@@ -140,7 +146,7 @@ class BookPlannerAgent:
                 )
             )
 
-        return BookPlan(
+        book_plan = BookPlan(
             book_id=_slugify(title),
             title=title,
             planning_strategy="manifest_xlsx_first",
@@ -160,9 +166,11 @@ class BookPlannerAgent:
             metadata={
                 "manifest_xlsx": str(manifest_xlsx or ""),
                 "curriculum_order": curriculum_order,
-                "curriculum_order_source": "manifest_plus_default_welding_rules",
+                "curriculum_order_source": "manifest_plus_domain_config",
+                "domain_config": domain_config.to_dict(),
             },
         )
+        return book_plan
 
 
 def read_manifest_xlsx(path: Path | None) -> list[ManifestMaterial]:
@@ -236,8 +244,13 @@ def read_manifest_xlsx(path: Path | None) -> list[ManifestMaterial]:
     return rows
 
 
-def build_curriculum_order(manifest_rows: list[ManifestMaterial], chunks: list[EvidenceChunk]) -> list[str]:
-    """Build a deterministic course order from manifest data plus welding defaults."""
+def build_curriculum_order(
+    manifest_rows: list[ManifestMaterial],
+    chunks: list[EvidenceChunk],
+    *,
+    domain_config: DomainConfig | None = None,
+) -> list[str]:
+    """Build a deterministic course order from manifest data plus domain defaults."""
 
     counts: Counter[str] = Counter()
     code_by_chapter: dict[str, str] = {}
@@ -262,7 +275,8 @@ def build_curriculum_order(manifest_rows: list[ManifestMaterial], chunks: list[E
                 code_by_chapter[chapter] = chunk.material_block_code
 
     result: list[str] = []
-    for title in DEFAULT_WELDING_CHAPTER_ORDER:
+    default_order = (domain_config.chapter_order if domain_config else None) or DEFAULT_WELDING_CHAPTER_ORDER
+    for title in default_order:
         match = _find_matching_chapter(title, counts)
         if match and match not in result:
             result.append(match)
