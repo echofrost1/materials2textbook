@@ -139,57 +139,7 @@ raw\潘俊屹工作整理\
 
 尽量保持原始文件名和准备素材包时使用的文件名一致。如果文件名或相对目录变化很大，建议重新生成素材台账和 evidence JSONL。
 
-## 4. 各目录含义
-
-```text
-raw\
-```
-
-存放试用方本地原始素材，位于试用根目录下，例如 `D:\DTextbooksTrial\raw`。可以包括视频、PPT、Word、PDF、Markdown、TXT、Excel、CSV、音频等。
-
-```text
-01_manifest_inventory\
-```
-
-素材台账和规划相关文件，通常包括：
-
-```text
-assets_manifest.xlsx
-asset_block_map.xlsx
-material_blocks.xlsx
-domain_config.generated.yml
-book_plan.generated.json
-```
-
-```text
-02_working_processing\json\
-```
-
-教材生成读取的 evidence 中间文件，通常包括：
-
-```text
-video_segments.jsonl
-ppt_assets.jsonl
-reference_text_assets.jsonl
-audio_segments.jsonl
-structured_assets.jsonl
-```
-
-如果这些 JSONL 文件已经随包提供，可以不重新处理原始视频/PPT/文档，直接生成教材。
-
-```text
-05_final_deliverables\
-```
-
-最终输出目录：
-
-```text
-agent_workflow\
-digital_book\
-digital_book.zip
-```
-
-## 5. 推荐试用方式：不重新处理素材，只重新生成教材
+## 4. 推荐试用方式：不重新处理素材，只重新生成教材
 
 首次试用推荐这种方式。它直接复用素材包里的：
 
@@ -251,7 +201,7 @@ python scripts/run_full_digital_textbook.py `
 
 只有在原始大文件已经放好、且 evidence 中的媒体路径能被解析时，才建议使用 `--copy-media-assets`。否则教材正文可以正常生成，但视频资源可能无法完整打进 zip 包。
 
-## 6. 重新处理素材后再生成教材
+## 5. 重新处理素材后再生成教材
 
 以下情况建议重新处理素材：
 
@@ -394,7 +344,7 @@ python scripts/run_topic_textbook.py `
   --student-package-output "$env:DTEXTBOOKS_WORK\05_final_deliverables\digital_book.zip"
 ```
 
-## 7. 两种方式的区别
+## 6. 两种方式的区别
 
 | 方式 | 做什么 | 什么时候用 |
 | --- | --- | --- |
@@ -414,7 +364,7 @@ python scripts/run_topic_textbook.py `
 - 数字教材前端
 - 可选的 `digital_book.zip`
 
-## 8. 生成教材的结构
+## 7. 生成教材的结构
 
 生成结果采用项目化教材结构：
 
@@ -440,7 +390,7 @@ python scripts/run_topic_textbook.py `
 
 只要素材证据足够，每个项目默认至少 3 个任务。素材不足时，系统会记录素材缺口，不会硬编不存在的内容。
 
-## 9. 打开数字教材
+## 8. 打开数字教材
 
 不要直接双击 `index.html`。多数浏览器会限制 `file://` 页面读取 `digital_book.json` 和媒体资源。
 
@@ -464,7 +414,7 @@ python scripts/open_digital_book.py `
 http://127.0.0.1:8767/05_final_deliverables/digital_book/index.html
 ```
 
-## 10. 生成后检查哪些文件
+## 9. 生成后检查哪些文件
 
 成功生成后，至少检查：
 
@@ -485,7 +435,7 @@ http://127.0.0.1:8767/05_final_deliverables/digital_book/index.html
 <work_material>\05_final_deliverables\digital_book.zip
 ```
 
-## 11. 常见问题
+## 10. 常见问题
 
 ### 找不到 evidence JSONL
 
@@ -564,7 +514,7 @@ python scripts/open_digital_book.py --material-root <work_material>
 
 不要从文件管理器直接打开 `index.html`。
 
-## 12. 验证项目代码
+## 11. 验证项目代码
 
 在仓库根目录运行：
 
