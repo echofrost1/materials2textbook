@@ -5,7 +5,7 @@ DTextbooks 用于把本地教学素材整理、规划并生成项目化数字教
 推荐试用流程：
 
 1. 解压素材包，例如 `work_material1` 或 `work_material_panjunyi`。
-2. 把对应原始大文件放入该素材包自己的 `raw` 目录。
+2. 把原始大文件放入试用根目录下的 `raw` 目录。
 3. 根据需要选择“复用已有中间结果生成教材”或“重新处理原始素材后生成教材”。
 4. 通过本地 HTTP 服务打开生成的数字教材。
 
@@ -73,20 +73,40 @@ python scripts/run_full_digital_textbook.py `
 
 ```text
 D:\DTextbooksTrial\
+├── raw\
+│   ├── 潘俊屹工作整理\
+│   └── 谢志怡工作整理\
 ├── work_material1\
 └── work_material_panjunyi\
 ```
 
-每个素材包都独立放置自己的原始文件和中间文件。以 `work_material1` 为例：
+也就是说，试用根目录里直接放我们处理好的两个工作目录：
+
+```text
+D:\DTextbooksTrial\
+├── work_material1\
+└── work_material_panjunyi\
+```
+
+同时在同级 `raw` 目录下放甲方已有的原始文件：
+
+```text
+D:\DTextbooksTrial\raw\
+├── 潘俊屹工作整理\
+└── 谢志怡工作整理\
+```
+
+其中：
+
+- `raw\潘俊屹工作整理`：放潘俊屹工作整理对应的原始视频、PPT、Word、PDF、表格、音频等。
+- `raw\谢志怡工作整理`：放谢志怡工作整理对应的原始视频、PPT、Word、PDF、表格、音频等。
+- `work_material1`：直接放我们提供的已处理工作目录。
+- `work_material_panjunyi`：直接放我们提供的已处理工作目录。
+
+`work_material1` 的目录结构示例：
 
 ```text
 D:\DTextbooksTrial\work_material1\
-├── raw\
-│   ├── video\
-│   ├── ppt\
-│   ├── docs\
-│   ├── audio\
-│   └── structured\
 ├── 01_manifest_inventory\
 ├── 02_working_processing\
 │   └── json\
@@ -99,17 +119,16 @@ D:\DTextbooksTrial\work_material1\
 
 ```text
 D:\DTextbooksTrial\work_material_panjunyi\
-├── raw\
 ├── 01_manifest_inventory\
 ├── 02_working_processing\
 │   └── json\
 └── 05_final_deliverables\
 ```
 
-`raw` 下面的子目录名不是强制要求，只是推荐分类。原始文件也可以按课程、章节或来源继续嵌套：
+`raw` 下可以继续按课程、章节或来源嵌套：
 
 ```text
-raw\
+raw\潘俊屹工作整理\
 ├── 第1部分\
 │   ├── 001.mp4
 │   └── 课件.pptx
@@ -126,7 +145,7 @@ raw\
 raw\
 ```
 
-存放试用方本地原始素材，可以包括视频、PPT、Word、PDF、Markdown、TXT、Excel、CSV、音频等。
+存放试用方本地原始素材，位于试用根目录下，例如 `D:\DTextbooksTrial\raw`。可以包括视频、PPT、Word、PDF、Markdown、TXT、Excel、CSV、音频等。
 
 ```text
 01_manifest_inventory\
@@ -189,6 +208,7 @@ python scripts/run_full_digital_textbook.py `
   --book-mode `
   --use-llm `
   --manifest-xlsx D:\DTextbooksTrial\work_material1\01_manifest_inventory\assets_manifest.xlsx `
+  --llm-cache-path D:\DTextbooksTrial\work_material1\05_final_deliverables\agent_workflow\llm_cache.json `
   --student-package-output D:\DTextbooksTrial\work_material1\05_final_deliverables\digital_book.zip
 ```
 
@@ -201,8 +221,19 @@ python scripts/run_full_digital_textbook.py `
   --book-mode `
   --use-llm `
   --manifest-xlsx D:\DTextbooksTrial\work_material_panjunyi\01_manifest_inventory\assets_manifest.xlsx `
+  --llm-cache-path D:\DTextbooksTrial\work_material_panjunyi\05_final_deliverables\agent_workflow\llm_cache.json `
   --student-package-output D:\DTextbooksTrial\work_material_panjunyi\05_final_deliverables\digital_book.zip
 ```
+
+第一次使用 LLM 生成教材时，`ResourceAnalystAgent` 会对 evidence 进行逐条增强分析，耗时较长，也会消耗较多 token。上面命令中的 `--llm-cache-path` 会把 LLM 调用结果保存到固定缓存文件。后续用同一批素材、同一模型和相近参数再次运行时，会优先复用缓存，能明显减少等待时间和 token 消耗。
+
+如果只是想快速验证教材生成链路，不希望第一次试用就触发大量 Resource Analyst LLM 调用，可以加：
+
+```powershell
+--skip-resource-analyst-llm
+```
+
+这样会跳过逐条素材增强分析，但后续大纲、正文、能力图谱和练习仍可以继续使用 LLM。
 
 输出会写入：
 
@@ -233,14 +264,14 @@ python scripts/run_full_digital_textbook.py `
 
 ```powershell
 $env:DTEXTBOOKS_WORK = "D:\DTextbooksTrial\work_material1"
-$env:DTEXTBOOKS_RAW = "D:\DTextbooksTrial\work_material1\raw"
+$env:DTEXTBOOKS_RAW = "D:\DTextbooksTrial\raw"
 ```
 
 如果处理 `work_material_panjunyi`，改成：
 
 ```powershell
 $env:DTEXTBOOKS_WORK = "D:\DTextbooksTrial\work_material_panjunyi"
-$env:DTEXTBOOKS_RAW = "D:\DTextbooksTrial\work_material_panjunyi\raw"
+$env:DTEXTBOOKS_RAW = "D:\DTextbooksTrial\raw"
 ```
 
 ### 第一步：重建素材台账
@@ -346,6 +377,7 @@ python scripts/run_topic_textbook.py `
   --raw-root $env:DTEXTBOOKS_RAW `
   --title "试用数字教材" `
   --use-llm true `
+  --llm-cache-path "$env:DTEXTBOOKS_WORK\05_final_deliverables\agent_workflow\llm_cache.json" `
   --student-package-output "$env:DTEXTBOOKS_WORK\05_final_deliverables\digital_book.zip"
 ```
 
@@ -358,6 +390,7 @@ python scripts/run_topic_textbook.py `
   --title "试用数字教材" `
   --use-llm true `
   --copy-media-assets `
+  --llm-cache-path "$env:DTEXTBOOKS_WORK\05_final_deliverables\agent_workflow\llm_cache.json" `
   --student-package-output "$env:DTEXTBOOKS_WORK\05_final_deliverables\digital_book.zip"
 ```
 
@@ -510,13 +543,13 @@ python scripts/run_topic_textbook.py `
 
 常见原因：
 
-- 原始视频/PPT 没有放到对应素材包的 `raw` 目录。
+- 原始视频/PPT 没有放到试用根目录的 `raw` 目录。
 - 原始文件名发生变化。
 - JSONL 中的媒体路径来自旧机器。
 
 建议处理：
 
-1. 把原始文件放到正确的 `raw` 目录。
+1. 把原始文件放到正确的 `D:\DTextbooksTrial\raw` 目录。
 2. 重建素材台账。
 3. 重新处理受影响的素材板块。
 4. 如果要生成自包含教材包，生成时加 `--copy-media-assets`。
