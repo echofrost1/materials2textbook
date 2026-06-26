@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from materials2textbook.io_utils import write_json, write_text
+from materials2textbook.domain_config import DomainConfig, default_domain_config
 from materials2textbook.llm.provider import LLMProvider
 from materials2textbook.prompts.ability_graph import build_ability_graph_messages
 from materials2textbook.prompts.book_sections import (
@@ -62,7 +63,9 @@ def build_digital_book(
     llm_provider: LLMProvider | None = None,
     use_llm: bool = False,
     book_plan: BookPlan | None = None,
+    domain_config: DomainConfig | None = None,
 ) -> DigitalBook:
+    domain_config = domain_config or default_domain_config()
     chunk_map = {chunk.chunk_id: chunk for chunk in chunks}
     assets: dict[str, list[dict]] = {"videos": [], "keyframes": [], "images": []}
     projects: list[DigitalBookProject] = []
@@ -101,6 +104,7 @@ def build_digital_book(
             copy_media_assets=copy_media_assets,
             llm_provider=llm_provider,
             use_llm=use_llm,
+            domain_config=domain_config,
         )
         project_title = plan.title
         project_chunks = [
@@ -151,6 +155,7 @@ def build_digital_book(
                     tasks=tasks,
                     llm_provider=llm_provider,
                     use_llm=use_llm,
+                    domain_config=domain_config,
                 ),
                 project_summary=project_summary,
             )
@@ -165,6 +170,7 @@ def build_digital_book(
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "format": "materials2textbook.digital_book.v1",
             "book_plan": _book_plan_metadata(book_plan),
+            "domain_config": domain_config.to_dict(),
         },
         projects=projects,
         assets=assets,
@@ -184,6 +190,7 @@ def export_digital_book(
     llm_provider: LLMProvider | None = None,
     use_llm: bool = False,
     book_plan: BookPlan | None = None,
+    domain_config: DomainConfig | None = None,
 ) -> tuple[DigitalBook, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     book = build_digital_book(
@@ -195,6 +202,7 @@ def export_digital_book(
         llm_provider=llm_provider,
         use_llm=use_llm,
         book_plan=book_plan,
+        domain_config=domain_config,
     )
     json_path = output_dir / "digital_book.json"
     index_path = output_dir / "index.html"
@@ -1328,6 +1336,7 @@ def _build_chapter_tasks(
     copy_media_assets: bool,
     llm_provider: LLMProvider | None,
     use_llm: bool,
+    domain_config: DomainConfig,
 ) -> list[DigitalBookTask]:
     section_groups = _section_groups_for_plan(plan, chapter_plan)
     tasks: list[DigitalBookTask] = []
@@ -1341,23 +1350,20 @@ def _build_chapter_tasks(
         )
         task_blocks: list[DigitalBookBlock] = [
             DigitalBookBlock(
+                block_id=f"p{project_index:02d}_t{task_index:02d}_learning_nav",
+                type="learning_nav",
+                title="学习导航",
+                items=_learning_nav_items(section, plan, points, task_evidence_ids, chunk_map),
+                evidence_chunk_ids=task_evidence_ids,
+            ),
+            DigitalBookBlock(
                 block_id=f"p{project_index:02d}_t{task_index:02d}_scenario",
                 type="scenario",
                 title="情境导入",
-                markdown=f"本节围绕“{_section_display_title(section, plan)}”展开学习，结合教材正文、示范视频和课堂任务理解关键知识。",
+                markdown=f"本任务围绕“{_section_display_title(section, plan)}”展开学习，结合教材正文、示范视频和课堂任务理解关键知识。",
                 evidence_chunk_ids=task_evidence_ids,
-            )
+            ),
         ]
-
-        task_blocks.append(
-            DigitalBookBlock(
-                block_id=f"p{project_index:02d}_t{task_index:02d}_learning_nav",
-                type="learning_nav",
-                title="任务导学",
-                items=_learning_nav_items(section, plan, points, task_evidence_ids, chunk_map),
-                evidence_chunk_ids=task_evidence_ids,
-            )
-        )
 
         key_terms: list[str] = []
         used_video_sources: set[str] = set()
@@ -1378,7 +1384,7 @@ def _build_chapter_tasks(
                 DigitalBookBlock(
                     block_id=f"p{project_index:02d}_t{task_index:02d}_kp{point_index:02d}_text",
                     type="implementation",
-                    title=point_title,
+                    title=f"任务实施：{point_title}",
                     markdown=implementation_text,
                     evidence_chunk_ids=[chunk.chunk_id for chunk in point_chunks],
                     metadata={
@@ -1424,7 +1430,7 @@ def _build_chapter_tasks(
                 DigitalBookBlock(
                     block_id=f"p{project_index:02d}_t{task_index:02d}_assessment",
                     type="assessment",
-                    title="学习评价",
+                    title="任务评价",
                     items=_assessment_items_for_points(points),
                     evidence_chunk_ids=task_evidence_ids,
                 ),
@@ -1438,6 +1444,7 @@ def _build_chapter_tasks(
                         task_title=task_title,
                         llm_provider=llm_provider,
                         use_llm=use_llm,
+                        domain_config=domain_config,
                     ),
                     evidence_chunk_ids=task_evidence_ids,
                 ),
@@ -1631,6 +1638,7 @@ def _build_ability_graph(
     tasks: list[DigitalBookTask],
     llm_provider: LLMProvider | None = None,
     use_llm: bool = False,
+    domain_config: DomainConfig | None = None,
 ) -> dict:
     fallback = _build_rule_ability_graph(
         project_id=project_id,
@@ -1648,6 +1656,7 @@ def _build_ability_graph(
                 learning_goals=learning_goals,
                 tasks=_ability_graph_prompt_tasks(tasks),
                 fallback_graph=fallback,
+                domain_config=domain_config,
             )
         )
         graph = _normalize_llm_ability_graph(_parse_json_object(raw_graph), fallback)
@@ -2068,7 +2077,7 @@ def _cases_for_points(
 def _section_task_title(chapter_no: int, task_index: int, section: BookSectionPlan | None, plan: ChapterPlan) -> str:
     title = _section_display_title(section, plan)
     section_no = section.section_no if section and section.section_no else f"{chapter_no}.{task_index}"
-    return f"{section_no} {title}"
+    return f"任务{section_no} {title}"
 
 
 def _section_display_title(section: BookSectionPlan | None, plan: ChapterPlan) -> str:
@@ -2139,10 +2148,11 @@ def _generate_exercise_items(
     task_title: str,
     llm_provider: LLMProvider | None,
     use_llm: bool,
+    domain_config: DomainConfig | None = None,
 ) -> list[str]:
     """Generate real fill-blank/thinking exercises via LLM, else fall back to template."""
     if use_llm and llm_provider is not None:
-        designer = ExerciseDesignerAgent(llm_provider=llm_provider, use_llm=True)
+        designer = ExerciseDesignerAgent(llm_provider=llm_provider, use_llm=True, domain_config=domain_config)
         items = designer.design_items(
             points=points,
             chunk_map=chunk_map,
@@ -2343,7 +2353,7 @@ def _resolve_source_path(path_value: str, asset_id: str = "") -> Path | None:
     path = Path(path_value)
     candidates = [path]
     if not path.is_absolute():
-        work_root = Path(os.environ.get("MATERIALS2TEXTBOOK_WORK", "/ai/data/materials2textbook/work_material1"))
+        work_root = Path(os.environ.get("DTEXTBOOKS_WORK", "local_runs/work_material1"))
         candidates.append(Path.cwd() / path)
         candidates.append(work_root / path)
         candidates.append(work_root / "02_working_processing" / "converted_mp4" / path.name)
@@ -3531,8 +3541,8 @@ function renderToc(book) {
   }
   const plan = book.metadata?.book_plan;
   if (plan?.chapters?.length) {
-    for (const chapter of plan.chapters) {
-      toc.appendChild(tocChapter(chapter, false));
+    for (const [index, chapter] of plan.chapters.entries()) {
+      toc.appendChild(tocChapter(chapter, index === 0));
     }
   } else {
     for (const project of book.projects || []) {
@@ -3727,6 +3737,7 @@ function renderAbilityMap(project) {
   for (const column of columns) grid.appendChild(column);
   canvas.appendChild(svg);
   canvas.appendChild(grid);
+  applyAbilityMapDensity(canvas);
   graph.appendChild(canvas);
   panel.appendChild(graph);
   return panel;
@@ -3756,9 +3767,16 @@ function renderGeneratedAbilityMap(graphData) {
   }
   canvas.appendChild(svg);
   canvas.appendChild(grid);
+  applyAbilityMapDensity(canvas);
   graph.appendChild(canvas);
   panel.appendChild(graph);
   return panel;
+}
+
+function applyAbilityMapDensity(canvas) {
+  const nodeCount = canvas.querySelectorAll('.ability-map-node').length;
+  canvas.classList.toggle('dense', nodeCount > 22);
+  canvas.classList.toggle('ultra-dense', nodeCount > 38);
 }
 
 function buildFallbackAbilityGraph(project) {

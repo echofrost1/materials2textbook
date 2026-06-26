@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from textwrap import shorten
 
+from materials2textbook.domain_config import DomainConfig, default_domain_config
 from materials2textbook.llm.provider import LLMProvider
 from materials2textbook.prompts.textbook_writer import build_textbook_writer_messages
 from materials2textbook.schemas import ChapterPlan, EvidenceChunk
@@ -11,9 +12,15 @@ from materials2textbook.schemas import ChapterPlan, EvidenceChunk
 class TextbookWriterAgent:
     """Draft a Markdown textbook from chapter plans and evidence chunks."""
 
-    def __init__(self, llm_provider: LLMProvider | None = None, use_llm: bool = False) -> None:
+    def __init__(
+        self,
+        llm_provider: LLMProvider | None = None,
+        use_llm: bool = False,
+        domain_config: DomainConfig | None = None,
+    ) -> None:
         self.llm_provider = llm_provider
         self.use_llm = use_llm
+        self.domain_config = domain_config or default_domain_config()
         self.last_generation_mode = "rule"
         self.last_generation_warning = ""
 
@@ -21,7 +28,7 @@ class TextbookWriterAgent:
         if self.use_llm:
             if self.llm_provider is not None:
                 try:
-                    messages = build_textbook_writer_messages(plans, chunks, title)
+                    messages = build_textbook_writer_messages(plans, chunks, title, domain_config=self.domain_config)
                     llm_markdown = self.llm_provider.generate(messages).rstrip()
                     if _llm_markdown_is_usable(llm_markdown, plans, chunks, title):
                         self.last_generation_mode = "llm"

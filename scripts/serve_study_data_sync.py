@@ -22,14 +22,14 @@ def make_handler(output_dir: Path) -> type[BaseHTTPRequestHandler]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     class StudyDataHandler(BaseHTTPRequestHandler):
-        server_version = "Materials2TextbookStudySync/1.0"
+        server_version = "DTextbooksStudySync/1.0"
 
         def do_OPTIONS(self) -> None:
             self._send_json({"ok": True})
 
         def do_GET(self) -> None:
             if self.path.rstrip("/") in {"", "/health"}:
-                self._send_json({"ok": True, "service": "materials2textbook.study_data"})
+                self._send_json({"ok": True, "service": "dtextbooks.study_data"})
                 return
             self._send_json({"error": "Not found"}, status=404)
 

@@ -6,10 +6,10 @@ after the TIG pilot. It reads the existing manifest/block mapping, selects a
 limited batch for one material block, and writes processed evidence to batch
 files by default:
 
-  /ai/data/materials2textbook/work_material1/01_manifest_inventory/video_segments.xlsx
-  /ai/data/materials2textbook/work_material1/02_working_processing/json/video_segments.jsonl
-  /ai/data/materials2textbook/work_material1/01_manifest_inventory/ppt_assets.xlsx
-  /ai/data/materials2textbook/work_material1/02_working_processing/json/ppt_assets.jsonl
+  local_runs/work_material1/01_manifest_inventory/video_segments.xlsx
+  local_runs/work_material1/02_working_processing/json/video_segments.jsonl
+  local_runs/work_material1/01_manifest_inventory/ppt_assets.xlsx
+  local_runs/work_material1/02_working_processing/json/ppt_assets.jsonl
 
 Use --merge-main only after validation if you want to append batch rows to the
 main textbook-generation inputs. It is intentionally conservative: process a
@@ -45,6 +45,7 @@ RAW_DIR = default_raw_root() / "谢志怡工作整理"
 MANIFEST_DIR = PROJECT_ROOT / "01_manifest_inventory"
 WORK_DIR = PROJECT_ROOT / "02_working_processing"
 JSON_DIR = WORK_DIR / "json"
+CONVERTED_PPTX_DIR = WORK_DIR / "converted_pptx"
 
 VIDEO_SEGMENTS_XLSX = MANIFEST_DIR / "video_segments.xlsx"
 VIDEO_SEGMENTS_JSONL = JSON_DIR / "video_segments.jsonl"
@@ -52,6 +53,7 @@ PPT_ASSETS_XLSX = MANIFEST_DIR / "ppt_assets.xlsx"
 PPT_ASSETS_JSONL = JSON_DIR / "ppt_assets.jsonl"
 BATCH_JSON_DIR = JSON_DIR / "batches"
 BATCH_MANIFEST_DIR = MANIFEST_DIR / "batches"
+SOFFICE_BIN = Path("/opt/libreoffice7.6/program/soffice")
 
 BLOCK_CHAPTERS = {
     "shielded_metal_arc_welding": ("焊条电弧焊", "焊条电弧焊基本操作"),
@@ -94,6 +96,52 @@ def source_path_for(asset: pd.Series) -> Path:
         if path.exists():
             return path
     return RAW_DIR / str(asset["original_path"])
+
+
+def ensure_pptx_for_processing(asset_id: str, source_path: Path) -> Path | None:
+    suffix = source_path.suffix.lower()
+    if suffix == ".pptx":
+        return source_path
+    if suffix != ".ppt":
+        return None
+    if not SOFFICE_BIN.exists():
+        print(f"Skipping .ppt without LibreOffice {asset_id} {source_path.name}")
+        return None
+
+    out_dir = CONVERTED_PPTX_DIR / asset_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    expected = out_dir / f"{source_path.stem}.pptx"
+    if expected.exists() and expected.stat().st_size > 0:
+        return expected
+
+    print(f"Converting PPT {asset_id} {source_path.name}")
+    profile_dir = out_dir / "_lo_profile"
+    result = subprocess.run(
+        [
+            str(SOFFICE_BIN),
+            "--headless",
+            "--nologo",
+            "--nofirststartwizard",
+            f"-env:UserInstallation=file://{profile_dir.resolve()}",
+            "--convert-to",
+            "pptx",
+            "--outdir",
+            str(out_dir),
+            str(source_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    if result.returncode != 0:
+        print(f"Skipping unconverted ppt {asset_id}: {clean_text(result.stderr or result.stdout, 300)}")
+        return None
+
+    converted = sorted(path for path in out_dir.glob("*.pptx") if path.stat().st_size > 0)
+    if not converted:
+        print(f"Skipping unconverted ppt {asset_id}: no pptx output")
+        return None
+    return converted[0]
 
 
 def write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
@@ -159,6 +207,16 @@ def ffprobe_duration(path: Path) -> float:
         return 0.0
 
 
+def safe_duration(value: Any) -> float:
+    try:
+        duration = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isnan(duration) or math.isinf(duration):
+        return 0.0
+    return max(0.0, duration)
+
+
 def run_ffmpeg(args: List[str]) -> None:
     result = subprocess.run(["ffmpeg", "-y", *args], capture_output=True, text=True)
     if result.returncode != 0:
@@ -180,6 +238,7 @@ def parse_time(value: str) -> int:
 
 
 def choose_segment_ranges(duration: float) -> List[tuple[float, float]]:
+    duration = safe_duration(duration)
     if duration <= 0:
         return [(0, 90)]
     if duration <= 90:
@@ -206,6 +265,8 @@ def load_source_tables() -> pd.DataFrame:
 
 
 def select_assets(target_block: str, file_type: str, limit: int) -> pd.DataFrame:
+    if limit <= 0:
+        return pd.DataFrame()
     df = load_source_tables()
     df = df[
         df["material_block_code"].eq(target_block)
@@ -221,19 +282,25 @@ def select_assets(target_block: str, file_type: str, limit: int) -> pd.DataFrame
         ["relation_priority", "confidence", "duration_sort", "asset_id"],
         ascending=[True, False, True, True],
     ).drop(columns=["relation_priority"])
-    if limit > 0:
-        df = df.head(limit)
+    df = df.head(limit)
     return df
 
 
 def load_asr_model() -> Any:
     try:
         from faster_whisper import WhisperModel  # type: ignore
-
-        return WhisperModel("small", device="cpu", compute_type="int8")
     except Exception as exc:
         print(f"warning: faster-whisper unavailable, ASR skipped: {exc}")
         return None
+    try:
+        return WhisperModel("small", device="cuda", compute_type="float16")
+    except Exception as exc:
+        print(f"warning: faster-whisper CUDA unavailable, falling back to CPU int8: {exc}")
+        try:
+            return WhisperModel("small", device="cpu", compute_type="int8")
+        except Exception as cpu_exc:
+            print(f"warning: faster-whisper unavailable, ASR skipped: {cpu_exc}")
+            return None
 
 
 def transcribe_audio(model: Any, wav_path: Path) -> str:
@@ -253,6 +320,7 @@ def transcribe_audio(model: Any, wav_path: Path) -> str:
 def extract_keyframes(mp4_path: Path, asset_id: str, duration: float) -> str:
     out_dir = WORK_DIR / "keyframes" / asset_id
     out_dir.mkdir(parents=True, exist_ok=True)
+    duration = safe_duration(duration)
     if duration <= 0:
         duration = ffprobe_duration(mp4_path)
     points = [duration * ratio for ratio in (0.2, 0.5, 0.8) if duration > 0]
@@ -265,11 +333,14 @@ def extract_keyframes(mp4_path: Path, asset_id: str, duration: float) -> str:
             except Exception as exc:
                 print(f"warning: keyframe failed {asset_id} {point:.1f}s: {exc}")
                 continue
-        paths.append(out.relative_to(PROJECT_ROOT).as_posix())
+        if out.exists() and out.stat().st_size > 0:
+            paths.append(out.relative_to(PROJECT_ROOT).as_posix())
+        else:
+            print(f"warning: keyframe missing after extraction {asset_id} {point:.1f}s")
     return ";".join(paths)
 
 
-def convert_and_extract(asset: pd.Series) -> tuple[Path, Path, float]:
+def convert_and_extract(asset: pd.Series) -> tuple[Path, Path, float, str]:
     asset_id = str(asset["asset_id"])
     raw_path = source_path_for(asset)
     stem = f"{asset_id}_{safe_stem(str(asset['filename']))}"
@@ -282,10 +353,15 @@ def convert_and_extract(asset: pd.Series) -> tuple[Path, Path, float]:
             shutil.copy2(raw_path, mp4_path)
         else:
             run_ffmpeg(["-i", str(raw_path), "-c:v", "libx264", "-c:a", "aac", str(mp4_path)])
+    audio_status = "DONE"
     if not wav_path.exists():
-        run_ffmpeg(["-i", str(mp4_path), "-vn", "-ac", "1", "-ar", "16000", str(wav_path)])
-    duration = float(asset.get("duration_seconds") or 0) or ffprobe_duration(mp4_path)
-    return mp4_path, wav_path, duration
+        try:
+            run_ffmpeg(["-i", str(mp4_path), "-vn", "-ac", "1", "-ar", "16000", str(wav_path)])
+        except RuntimeError as exc:
+            print(f"warning: audio extraction failed for {asset_id}: {exc}")
+            audio_status = "NO_AUDIO"
+    duration = safe_duration(asset.get("duration_seconds")) or ffprobe_duration(mp4_path)
+    return mp4_path, wav_path, duration, audio_status
 
 
 def next_clip_number(existing: List[Dict[str, Any]]) -> int:
@@ -323,11 +399,18 @@ def process_videos(target_block: str, limit: int, merge_main: bool, batch_id: st
     for _, asset in selected.iterrows():
         asset_id = str(asset["asset_id"])
         print(f"Processing video {asset_id} {asset['filename']}")
-        mp4_path, wav_path, duration = convert_and_extract(asset)
+        try:
+            mp4_path, wav_path, duration, audio_status = convert_and_extract(asset)
+        except Exception as exc:
+            print(f"warning: video conversion failed for {asset_id}: {clean_text(exc, 300)}")
+            continue
         transcript_path = WORK_DIR / "transcripts" / f"{asset_id}_{safe_stem(str(asset['filename']))}.txt"
         transcript_path.parent.mkdir(parents=True, exist_ok=True)
         if transcript_path.exists():
             transcript = transcript_path.read_text(encoding="utf-8", errors="ignore")
+        elif audio_status == "NO_AUDIO":
+            transcript = ""
+            transcript_path.write_text(transcript, encoding="utf-8")
         else:
             transcript = transcribe_audio(model, wav_path)
             transcript_path.write_text(transcript, encoding="utf-8")
@@ -338,6 +421,12 @@ def process_videos(target_block: str, limit: int, merge_main: bool, batch_id: st
             clip_id = f"C{next_num:06d}"
             next_num += 1
             text = transcript_for_range(transcript, start, end)
+            if not clean_text(text):
+                text = clean_text(
+                    f"{block_name}视频候选片段：{asset['filename']}；"
+                    f"知识点：{kp}；时间范围：{format_time(start)}-{format_time(end)}；"
+                    "当前环境未安装 ASR，证据先由文件名、素材块、时间段和关键帧生成，待后续转写补充。"
+                )
             row = {
                 "clip_id": clip_id,
                 "source_asset_id": asset_id,
@@ -366,7 +455,7 @@ def process_videos(target_block: str, limit: int, merge_main: bool, batch_id: st
                 "processing_batch_id": f"{target_block}_{datetime.now().strftime('%Y%m%d')}",
                 "processing_route": "material_block_mvp",
                 "convert_status": "DONE",
-                "audio_status": "DONE",
+                "audio_status": audio_status,
                 "converted_mp4": mp4_path.relative_to(PROJECT_ROOT).as_posix(),
                 "audio_wav": wav_path.relative_to(PROJECT_ROOT).as_posix(),
                 "transcript_txt": transcript_path.relative_to(PROJECT_ROOT).as_posix(),
@@ -461,12 +550,17 @@ def process_ppts(target_block: str, limit: int, merge_main: bool, batch_id: str)
     new_rows: List[Dict[str, Any]] = []
     for _, asset in selected.iterrows():
         asset_id = str(asset["asset_id"])
-        raw_path = source_path_for(asset)
-        if raw_path.suffix.lower() != ".pptx":
+        raw_path = ensure_pptx_for_processing(asset_id, source_path_for(asset))
+        if raw_path is None:
             print(f"Skipping non-pptx {asset_id} {asset['filename']}")
             continue
         print(f"Processing PPT {asset_id} {asset['filename']}")
-        with zipfile.ZipFile(raw_path) as zf:
+        try:
+            zf_context = zipfile.ZipFile(raw_path)
+        except zipfile.BadZipFile:
+            print(f"Skipping invalid pptx {asset_id} {asset['filename']}")
+            continue
+        with zf_context as zf:
             for slide_index, slide_path in enumerate(ppt_slide_paths(zf), start=1):
                 text = extract_slide_text(zf, slide_path)
                 images = extract_slide_images(zf, slide_path, asset_id, slide_index)

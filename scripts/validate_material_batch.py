@@ -5,7 +5,7 @@ The forward plan requires deep-processing outputs to be reviewable and
 traceable before they enter the main textbook-generation inputs. This validator
 checks batch JSONL files under:
 
-  /ai/data/materials2textbook/work_material1/02_working_processing/json/batches/
+  local_runs/work_material1/02_working_processing/json/batches/
 
 It writes a human-readable xlsx report plus a JSON summary.
 """

@@ -110,8 +110,8 @@ def main() -> None:
             llm_config.model = args.llm_model
         if not llm_config.is_configured:
             raise SystemExit(
-                "LLM is enabled but not configured. Set ECNU_PLUS_API_KEY, "
-                "ECNU_PLUS_BASE_URL, ECNU_PLUS_MODEL or pass --llm-* options."
+                "LLM is enabled but not configured. Set OPENAI_API_KEY, "
+                "OPENAI_BASE_URL, OPENAI_MODEL or pass --llm-* options."
             )
         llm_provider = OpenAICompatibleProvider(llm_config)
         if args.llm_max_retries:

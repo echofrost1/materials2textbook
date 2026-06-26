@@ -41,7 +41,7 @@ def build_llm_provider(args: argparse.Namespace) -> Any:
     if args.llm_model:
         config.model = args.llm_model
     if not config.is_configured:
-        raise SystemExit("LLM ask service needs ECNU_PLUS_API_KEY, ECNU_PLUS_BASE_URL and ECNU_PLUS_MODEL.")
+        raise SystemExit("LLM ask service needs OPENAI_API_KEY, OPENAI_BASE_URL and OPENAI_MODEL.")
     provider: Any = OpenAICompatibleProvider(config)
     if args.llm_max_retries:
         provider = RetryingLLMProvider(
@@ -56,14 +56,14 @@ def build_llm_provider(args: argparse.Namespace) -> Any:
 
 def make_handler(llm_provider: Any) -> type[BaseHTTPRequestHandler]:
     class AskHandler(BaseHTTPRequestHandler):
-        server_version = "Materials2TextbookAsk/1.0"
+        server_version = "DTextbooksAsk/1.0"
 
         def do_OPTIONS(self) -> None:
             self._send_json({"ok": True})
 
         def do_GET(self) -> None:
             if self.path.rstrip("/") in {"", "/health"}:
-                self._send_json({"ok": True, "service": "materials2textbook.ask_book"})
+                self._send_json({"ok": True, "service": "dtextbooks.ask_book"})
                 return
             self._send_json({"error": "Not found"}, status=404)
 
@@ -102,8 +102,8 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind.")
     parser.add_argument("--port", type=int, default=8120, help="Port to bind.")
     parser.add_argument("--llm-base-url", default=None, help="OpenAI-compatible base URL.")
-    parser.add_argument("--llm-api-key", default=None, help="API key. Prefer ECNU_PLUS_API_KEY in environment.")
-    parser.add_argument("--llm-model", default=None, help="Model name. Defaults to ECNU_PLUS_MODEL or ecnu-plus.")
+    parser.add_argument("--llm-api-key", default=None, help="API key. Prefer OPENAI_API_KEY in environment.")
+    parser.add_argument("--llm-model", default=None, help="Model name. Defaults to OPENAI_MODEL.")
     parser.add_argument("--llm-max-retries", type=int, default=2, help="Retry failed LLM calls this many times.")
     parser.add_argument("--llm-retry-backoff", type=float, default=1.0, help="Initial retry backoff in seconds.")
     parser.add_argument(

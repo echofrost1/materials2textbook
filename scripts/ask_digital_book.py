@@ -45,8 +45,8 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=5, help="Maximum retrieved source blocks.")
     parser.add_argument("--use-llm", action="store_true", help="Use OpenAI-compatible LLM after retrieval.")
     parser.add_argument("--llm-base-url", default=None, help="OpenAI-compatible base URL.")
-    parser.add_argument("--llm-api-key", default=None, help="API key. Prefer ECNU_PLUS_API_KEY in environment.")
-    parser.add_argument("--llm-model", default=None, help="Model name. Defaults to ECNU_PLUS_MODEL or ecnu-plus.")
+    parser.add_argument("--llm-api-key", default=None, help="API key. Prefer OPENAI_API_KEY in environment.")
+    parser.add_argument("--llm-model", default=None, help="Model name. Defaults to OPENAI_MODEL.")
     parser.add_argument("--llm-max-retries", type=int, default=2, help="Retry failed LLM calls this many times.")
     parser.add_argument("--llm-retry-backoff", type=float, default=1.0, help="Initial retry backoff in seconds.")
     parser.add_argument(
@@ -68,7 +68,7 @@ def main() -> None:
         if args.llm_model:
             config.model = args.llm_model
         if not config.is_configured:
-            raise SystemExit("LLM is enabled but not configured. Set ECNU_PLUS_* env vars or pass --llm-* options.")
+            raise SystemExit("LLM is enabled but not configured. Set OPENAI_* env vars or pass --llm-* options.")
         llm_provider = OpenAICompatibleProvider(config)
         if args.llm_max_retries:
             llm_provider = RetryingLLMProvider(
