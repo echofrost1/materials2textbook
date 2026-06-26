@@ -13,6 +13,9 @@ from materials2textbook.schemas import BookChapterPlan, BookPlan, BookSectionPla
 MIN_CHAPTERS = 3
 MAX_CHAPTERS = 12
 MIN_SECTIONS_PER_CHAPTER = 3
+TEXTBOOK_STRUCTURE = "project_task"
+TASK_MODULES = ["学习导航", "情境导入", "任务实施", "任务评价", "思考与练习"]
+PROJECT_MODULES = ["项目导学", "能力图谱", "学习目标", "项目小结"]
 
 
 class BookPlanLLMAgent:
@@ -141,6 +144,10 @@ def book_plan_from_llm_payload(
         metadata={
             "domain_config": domain_config.to_dict(),
             "planning_mode": "llm",
+            "textbook_structure": TEXTBOOK_STRUCTURE,
+            "front_matter": ["总序", "前言"],
+            "project_modules": PROJECT_MODULES,
+            "task_modules": TASK_MODULES,
             "min_sections_per_chapter": MIN_SECTIONS_PER_CHAPTER,
         },
     )
@@ -339,8 +346,8 @@ def _fill_sections(
             BookSectionPlan(
                 section_id=f"{chapter_id}_section_{section_index:02d}",
                 section_no=f"{chapter_index}.{section_index}",
-                title=f"{chapter_title} evidence gap {section_index}",
-                knowledge_point_ids=[f"{chapter_title} evidence gap {section_index}"],
+                title=f"{chapter_title} task evidence gap {section_index}",
+                knowledge_point_ids=[f"{chapter_title} task evidence gap {section_index}"],
                 primary_material_ids=[],
             )
         )

@@ -6,6 +6,7 @@ from materials2textbook.agents.book_plan_llm import BookPlanLLMAgent, book_plan_
 from materials2textbook.agents.domain_config_agent import DomainConfigAgent
 from materials2textbook.domain_config import DomainConfig
 from materials2textbook.prompts.ability_graph import build_ability_graph_messages
+from materials2textbook.prompts.book_plan import build_book_plan_messages
 from materials2textbook.prompts.exercises import build_exercises_messages
 from materials2textbook.prompts.textbook_writer import build_textbook_writer_messages
 from materials2textbook.schemas import ChapterPlan, EvidenceChunk, EvidenceLocator, EvidenceScore, KnowledgePoint
@@ -95,6 +96,9 @@ def test_book_plan_llm_repairs_short_chapter_sections() -> None:
     assert not plan_has_blocking_issues(issues)
     assert len(plan.chapters) == 3
     assert all(len(chapter.sections) >= 3 for chapter in plan.chapters)
+    assert plan.metadata["textbook_structure"] == "project_task"
+    assert plan.metadata["front_matter"] == ["总序", "前言"]
+    assert plan.metadata["task_modules"] == ["学习导航", "情境导入", "任务实施", "任务评价", "思考与练习"]
 
 
 def test_book_plan_llm_blocks_missing_chapters() -> None:
@@ -149,3 +153,16 @@ def test_domain_prompts_do_not_contain_welding_examples() -> None:
         assert forbidden.lower() not in combined.lower()
     assert "automotive repair" in combined
     assert "brake" in combined
+
+
+def test_book_plan_prompt_requires_project_task_textbook_structure() -> None:
+    messages = build_book_plan_messages(
+        title="Auto Repair",
+        chunks=[chunk("C1", "brake inspection", "brake system")],
+        domain_config=DomainConfig(domain_name="automotive repair"),
+    )
+    combined = "\n".join(message["content"] for message in messages)
+
+    for required in ["总序", "前言", "项目导学", "能力图谱", "学习目标", "任务1.1", "学习导航", "情境导入", "任务实施", "任务评价", "思考与练习", "项目小结"]:
+        assert required in combined
+    assert "use chapters as projects and sections as tasks" in combined

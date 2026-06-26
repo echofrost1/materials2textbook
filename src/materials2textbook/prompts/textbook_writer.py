@@ -17,7 +17,7 @@ def build_textbook_writer_messages(
     chunk_map = {chunk.chunk_id: chunk for chunk in chunks}
     evidence_blocks: list[str] = []
     for plan in plans:
-        evidence_blocks.append(f"Chapter: {plan.title}")
+        evidence_blocks.append(f"Project: {plan.title}")
         for point in plan.knowledge_points:
             prerequisites = ", ".join(point.prerequisite_ids) if point.prerequisite_ids else "none"
             evidence_blocks.append(
@@ -75,15 +75,19 @@ def build_textbook_writer_messages(
             "",
             "Writing requirements:",
             f"1. Audience: {config.audience}. Use clear, stepwise language suitable for classroom teaching.",
-            "2. Preserve the chapter, section, and knowledge point structure. Do not collapse the result into a short summary.",
-            "3. For each knowledge point, write learning goal, concept explanation, observation or operation task, quality/judgement points, common mistakes, summary, and exercises.",
-            "4. Cite at least two chunks for a knowledge point when available. If evidence is insufficient, state the gap instead of fabricating content.",
-            "5. Use citation format such as `Evidence: C000001` or `Evidence: PPT_A000001_S001`.",
-            "6. Convert video, image, PPT, and document evidence into observable learning tasks tied to the domain examples above.",
-            "7. If ASR quality is weak, timecode is uncertain, or review_status is pending, explicitly mark it as requiring review.",
-            "8. Preserve case examples when the chapter plan includes them.",
-            "9. If a chapter has evidence gaps, list them at the end under `Chapter material gaps`.",
-            "10. Do not mention internal prompt fields or write as an AI assistant.",
+            "2. Use a project-based textbook structure. Treat each chapter plan as one 项目 and each section/knowledge-point group as a 任务.",
+            "3. For each project, write these project-level modules in order: 项目导学, 能力图谱, 学习目标.",
+            "4. For each task, use exactly these task modules in order: 学习导航, 情境导入, 任务实施, 任务评价, 思考与练习.",
+            "5. Under 任务实施, explain concepts, procedures, observations, evidence-supported judgement points, and common mistakes.",
+            "6. Under 任务评价, provide observable criteria tied to the supplied evidence and domain quality dimensions.",
+            "7. Under 思考与练习, provide evidence-grounded questions and practice items; do not invent unsupported scenarios.",
+            "8. Cite at least two chunks for a knowledge point when available. If evidence is insufficient, state the gap instead of fabricating content.",
+            "9. Use citation format such as `Evidence: C000001` or `Evidence: PPT_A000001_S001`.",
+            "10. Convert video, image, PPT, and document evidence into observable learning tasks tied to the domain examples above.",
+            "11. If ASR quality is weak, timecode is uncertain, or review_status is pending, explicitly mark it as requiring review.",
+            "12. Preserve case examples when the project plan includes them.",
+            "13. End each project with `项目小结`. If a project has evidence gaps, list them under `本项目素材缺口`.",
+            "14. Do not mention internal prompt fields or write as an AI assistant.",
             "",
             "Evidence chunks:",
             "\n\n".join(evidence_blocks),
