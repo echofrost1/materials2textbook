@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any
 
+from materials2textbook.domain_config import DomainConfig, default_domain_config
 from materials2textbook.llm.provider import LLMProvider
 from materials2textbook.prompts.exercises import build_exercises_messages
 from materials2textbook.schemas import EvidenceChunk, KnowledgePoint
@@ -18,9 +19,15 @@ class ExerciseDesignerAgent:
     available or returns unparsable output.
     """
 
-    def __init__(self, llm_provider: LLMProvider | None = None, use_llm: bool = False) -> None:
+    def __init__(
+        self,
+        llm_provider: LLMProvider | None = None,
+        use_llm: bool = False,
+        domain_config: DomainConfig | None = None,
+    ) -> None:
         self.llm_provider = llm_provider
         self.use_llm = use_llm
+        self.domain_config = domain_config or default_domain_config()
 
     def design_items(
         self,
@@ -57,6 +64,7 @@ class ExerciseDesignerAgent:
                     evidence_summary=evidence_summary,
                     fill_blank_count=fill_blank_count,
                     thinking_count=thinking_count,
+                    domain_config=self.domain_config,
                 )
             )
         except Exception:

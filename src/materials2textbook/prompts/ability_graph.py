@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from materials2textbook.domain_config import DomainConfig, default_domain_config
+
 
 def build_ability_graph_messages(
     *,
@@ -10,44 +12,46 @@ def build_ability_graph_messages(
     tasks: list[dict],
     fallback_graph: dict,
     max_chars: int = 6000,
+    domain_config: DomainConfig | None = None,
 ) -> list[dict[str, str]]:
     """Build a prompt for generating a structured student-facing ability graph."""
 
+    config = domain_config or default_domain_config()
     payload = {
         "project_title": project_title,
         "learning_goals": learning_goals,
         "tasks": tasks,
         "fallback_graph": fallback_graph,
+        "domain_config": config.to_dict(),
     }
     clipped = json.dumps(payload, ensure_ascii=False, indent=2)[:max_chars]
     system = (
-        "你是职业教育数字教材的能力图谱设计 Agent。"
-        "你需要根据章节目标、任务、知识点和学习内容，生成学生端可展示的结构化能力图谱 JSON。"
-        "禁止输出证据编号、chunk_id、文件名、路径、时间码、review_status、待人工复核、agent 等内部信息。"
-        "只输出 JSON 对象，不要 Markdown 代码块，不要解释。"
+        "You are a vocational digital textbook ability graph (能力图谱) design agent. "
+        "Generate a student-facing structured JSON graph from the chapter goals, tasks, knowledge points, and content. "
+        "Do not output internal evidence IDs, chunk IDs, file names, paths, timecodes, review status, or agent notes. "
+        "Return only one JSON object. Do not use Markdown fences."
     )
     user = "\n".join(
         [
-            "请生成符合以下 schema 的能力图谱：",
+            "Generate an ability graph matching this schema:",
             "",
             "{",
             '  "schema": "materials2textbook.ability_graph.v1",',
-            '  "columns": [{"id": "project|task|ability|knowledge|content", "title": "列名"}],',
-            '  "nodes": [{"id": "稳定英文或拼音ID", "column": "project|task|ability|knowledge|content", "label": "学生可见标题"}],',
-            '  "edges": [{"from": "源节点ID", "to": "目标节点ID"}]',
+            '  "columns": [{"id": "project|task|ability|knowledge|content", "title": "column title"}],',
+            '  "nodes": [{"id": "stable_ascii_id", "column": "project|task|ability|knowledge|content", "label": "student-visible label"}],',
+            '  "edges": [{"from": "source_node_id", "to": "target_node_id"}]',
             "}",
             "",
-            "生成要求：",
-            "1. 必须包含五列：project、task、ability、knowledge、content。",
-            "2. ability 列要概括真实能力目标，例如「能规范完成送丝操作」「能判断焊接安全风险」。",
-            "3. knowledge 列来自任务知识点，可适度合并同义项。",
-            "4. content 列来自具体学习内容（正文段落、示范视频、案例示例），不要输出评价题或练习题。",
-            "5. **content 节点的 label 必须与 knowledge 节点不同**。content 应描述具体学习材料，例如「焊接原理动画演示」「坡口制备操作视频」「安全防护案例分析」，而不是重复知识点名称。",
-            "6. 连线只能连接相邻层级：project -> task -> ability -> knowledge -> content。",
-            "7. 每个非 project 节点只能有一个上游父节点，避免多个能力汇聚到同一知识点或多个知识点汇聚到同一内容。",
-            "8. 节点数量要克制：ability 不超过 10 个，knowledge 不超过 12 个，content 不超过 12 个。",
+            "Requirements:",
+            "1. Include exactly these five layers: project, task, ability, knowledge, content.",
+            "2. Ability labels must describe real target abilities for this domain, using the supplied domain and operation terms.",
+            "3. Knowledge labels must come from the tasks and may merge close synonyms.",
+            "4. Content labels must describe concrete learning content. They must not repeat the knowledge label verbatim.",
+            "5. Edges may only connect adjacent layers: project -> task -> ability -> knowledge -> content.",
+            "6. Every non-project node should have one upstream parent.",
+            "7. Keep the graph concise: no more than 10 ability nodes, 12 knowledge nodes, and 12 content nodes.",
             "",
-            "教材结构：",
+            "Textbook structure:",
             clipped,
         ]
     )

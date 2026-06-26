@@ -185,7 +185,7 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert "人工复核" not in " ".join(book.projects[0].ability_map)
     block_types = [block.type for block in book.projects[0].tasks[0].blocks]
     assert "learning_nav" in block_types
-    assert block_types.index("scenario") < block_types.index("learning_nav") < block_types.index("implementation")
+    assert block_types.index("learning_nav") < block_types.index("scenario") < block_types.index("implementation")
     assert block_types[-2:] == ["assessment", "exercises"]
     assert_tree_ability_graph(ability_graph)
     assert "数字教材" in index_html
@@ -352,7 +352,7 @@ def test_export_digital_book_recovers_point_evidence_from_task_context(tmp_path:
 
     task = book.projects[0].tasks[0]
     implementation = next(block for block in task.blocks if block.type == "implementation")
-    assert implementation.title == "焊接缺陷的分类与特征"
+    assert implementation.title == "任务实施：焊接缺陷的分类与特征"
     assert implementation.evidence_chunk_ids == ["C1"]
     assert "C999" not in json_path.read_text(encoding="utf-8")
 
@@ -572,7 +572,7 @@ def test_export_digital_book_skips_redundant_project_title_section(tmp_path: Pat
 
     tasks = book.projects[0].tasks
     assert len(tasks) == 1
-    assert tasks[0].title == "2.1 焊条的选择与保管"
+    assert tasks[0].title == "任务2.1 焊条的选择与保管"
     assert "项目总结" in tasks[0].knowledge_points
 
 
@@ -740,7 +740,7 @@ def test_export_digital_book_splits_chapter_into_section_tasks(tmp_path: Path) -
     )
 
     tasks = book.projects[0].tasks
-    assert [task.title for task in tasks] == ["1.1 基本原理", "1.2 送丝操作"]
+    assert [task.title for task in tasks] == ["任务1.1 基本原理", "任务1.2 送丝操作"]
     assert [task.knowledge_points for task in tasks] == [["基本原理"], ["送丝操作"]]
     assert tasks[0].evidence_chunk_ids == ["C1"]
     assert tasks[1].evidence_chunk_ids == ["C2"]

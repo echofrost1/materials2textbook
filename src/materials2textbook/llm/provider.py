@@ -35,14 +35,17 @@ class OpenAICompatibleConfig:
     timeout_seconds: int = 120
 
     @classmethod
-    def from_env(cls, prefix: str = "ECNU_PLUS") -> "OpenAICompatibleConfig":
+    def from_env(cls, prefix: str = "OPENAI") -> "OpenAICompatibleConfig":
+        def env_value(name: str, default: str = "") -> str:
+            return os.getenv(f"{prefix}_{name}", default)
+
         return cls(
-            api_key=os.getenv(f"{prefix}_API_KEY", ""),
-            base_url=os.getenv(f"{prefix}_BASE_URL", ""),
-            model=os.getenv(f"{prefix}_MODEL", "ecnu-plus"),
-            temperature=float(os.getenv(f"{prefix}_TEMPERATURE", "0.2")),
-            max_tokens=int(os.getenv(f"{prefix}_MAX_TOKENS", "4096")),
-            timeout_seconds=int(os.getenv(f"{prefix}_TIMEOUT_SECONDS", "120")),
+            api_key=env_value("API_KEY"),
+            base_url=env_value("BASE_URL"),
+            model=env_value("MODEL"),
+            temperature=float(env_value("TEMPERATURE", "0.2")),
+            max_tokens=int(env_value("MAX_TOKENS", "4096")),
+            timeout_seconds=int(env_value("TIMEOUT_SECONDS", "120")),
         )
 
     @property
@@ -54,8 +57,8 @@ class OpenAICompatibleProvider:
     """Minimal OpenAI-compatible chat-completions client.
 
     This avoids locking the project to one SDK. It works with services that expose
-    an OpenAI-style `/chat/completions` endpoint, including the planned ecnu-plus
-    deployment when base URL, key, and model are provided.
+    an OpenAI-style `/chat/completions` endpoint when base URL, key, and model are
+    provided.
     """
 
     def __init__(self, config: OpenAICompatibleConfig) -> None:
@@ -64,8 +67,8 @@ class OpenAICompatibleProvider:
     def generate(self, messages: list[dict[str, str]]) -> str:
         if not self.config.is_configured:
             raise RuntimeError(
-                "LLM provider is not configured. Set ECNU_PLUS_API_KEY, "
-                "ECNU_PLUS_BASE_URL, and ECNU_PLUS_MODEL, or pass CLI options."
+                "LLM provider is not configured. Set OPENAI_API_KEY, "
+                "OPENAI_BASE_URL, and OPENAI_MODEL, or pass CLI options."
             )
 
         payload: dict[str, Any] = {

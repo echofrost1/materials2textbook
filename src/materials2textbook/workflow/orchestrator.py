@@ -21,6 +21,12 @@ from materials2textbook.agents.book_planner import (
     render_book_plan_review_markdown,
     review_book_plan,
 )
+from materials2textbook.agents.book_plan_llm import (
+    BookPlanLLMAgent,
+    book_plan_from_dict,
+    enforce_minimum_sections,
+    plan_has_blocking_issues,
+)
 from materials2textbook.agents.case_designer import CaseDesignerAgent
 from materials2textbook.agents.knowledge_organizer import KnowledgeOrganizerAgent
 from materials2textbook.agents.outline_planner import OutlinePlannerAgent, render_outline_markdown
@@ -29,6 +35,7 @@ from materials2textbook.agents.reviewers import EvidenceReviewerAgent, PedagogyR
 from materials2textbook.agents.revision import RevisionAgent, render_revision_diff_markdown
 from materials2textbook.agents.textbook_writer import TextbookWriterAgent
 from materials2textbook.agents.title_polisher import TitlePolisherAgent
+from materials2textbook.domain_config import DomainConfig, default_domain_config
 from materials2textbook.exporters.digital_book import export_digital_book
 from materials2textbook.exporters.docx import markdown_to_docx
 from materials2textbook.io_utils import read_jsonl, write_json, write_jsonl, write_text
@@ -47,15 +54,29 @@ def _progress(message: str) -> None:
 class TextbookWorkflow:
     """Run the first multi-agent orchestration loop over processed material segments."""
 
-    def __init__(self, llm_provider: LLMProvider | None = None, use_llm: bool = False) -> None:
+    def __init__(
+        self,
+        llm_provider: LLMProvider | None = None,
+        use_llm: bool = False,
+        domain_config: DomainConfig | None = None,
+        auto_plan: bool = True,
+        llm_book_planning: bool = True,
+    ) -> None:
+        self.domain_config = domain_config or default_domain_config()
+        self.auto_plan = auto_plan
+        self.llm_book_planning = llm_book_planning
         self.resource_analyst = ResourceAnalystAgent(llm_provider=llm_provider, use_llm=use_llm)
-        self.book_planner = BookPlannerAgent()
+        self.book_planner = BookPlannerAgent(domain_config=self.domain_config)
+        self.book_plan_llm = BookPlanLLMAgent(
+            llm_provider=llm_provider,
+            use_llm=use_llm and llm_book_planning,
+        )
         self.outline_planner = OutlinePlannerAgent()
         self.organizer = KnowledgeOrganizerAgent()
         self.activity_designer = ActivityDesignerAgent()
         self.case_designer = CaseDesignerAgent()
         self.title_polisher = TitlePolisherAgent()
-        self.writer = TextbookWriterAgent(llm_provider=llm_provider, use_llm=use_llm)
+        self.writer = TextbookWriterAgent(llm_provider=llm_provider, use_llm=use_llm, domain_config=self.domain_config)
         self.evidence_reviewer = EvidenceReviewerAgent(llm_provider=llm_provider, use_llm=use_llm)
         self.pedagogy_reviewer = PedagogyReviewerAgent(llm_provider=llm_provider, use_llm=use_llm)
         self.review_composer = ReviewComposer()
@@ -76,8 +97,15 @@ class TextbookWorkflow:
         max_chapters: int = 0,
         max_chapter_input_tokens: int = 12000,
         resume_chapters: bool = True,
+        domain_config: DomainConfig | None = None,
+        auto_plan: bool | None = None,
+        llm_book_planning: bool | None = None,
+        book_plan_input: Path | None = None,
     ) -> WorkflowOutputs:
         config = config or WorkflowConfig()
+        domain_config = domain_config or self.domain_config
+        auto_plan = self.auto_plan if auto_plan is None else auto_plan
+        llm_book_planning = self.llm_book_planning if llm_book_planning is None else llm_book_planning
         _progress("reading selected video and document evidence")
         records = read_jsonl(video_segments_path)
         document_records = read_jsonl(document_segments_path) if document_segments_path else []
@@ -106,16 +134,51 @@ class TextbookWorkflow:
         )
         book_plan = None
         book_plan_review = []
+        planning_mode = "chapter"
         if book_mode:
             _progress("planning whole-book chapter structure")
-            book_plan = self.book_planner.run(
-                title=title,
-                chunks=chunks,
-                manifest_xlsx=manifest_xlsx,
-                max_chapters=max_chapters,
-                chapter_token_budget=max_chapter_input_tokens,
+            auto_plan_issues = []
+            if book_plan_input:
+                payload = json.loads(Path(book_plan_input).read_text(encoding="utf-8"))
+                book_plan = book_plan_from_dict(
+                    payload,
+                    title=title,
+                    chapter_token_budget=max_chapter_input_tokens,
+                )
+                planning_mode = "external"
+            elif auto_plan and llm_book_planning:
+                candidate_plan, auto_plan_issues = self.book_plan_llm.run(
+                    title=title,
+                    chunks=chunks,
+                    domain_config=domain_config,
+                    max_chapters=max_chapters,
+                    chapter_token_budget=max_chapter_input_tokens,
+                )
+                if candidate_plan is not None and not plan_has_blocking_issues(auto_plan_issues):
+                    book_plan = candidate_plan
+                    planning_mode = "llm"
+            if book_plan is None:
+                book_plan = self.book_planner.run(
+                    title=title,
+                    chunks=chunks,
+                    manifest_xlsx=manifest_xlsx,
+                    max_chapters=max_chapters,
+                    chapter_token_budget=max_chapter_input_tokens,
+                    domain_config=domain_config,
+                )
+                planning_mode = "rule_fallback" if auto_plan_issues else "rule"
+            book_plan, section_issues = enforce_minimum_sections(book_plan, chunks)
+            metadata = dict(book_plan.metadata)
+            metadata.update(
+                {
+                    "planning_mode": planning_mode,
+                    "domain_config": domain_config.to_dict(),
+                    "auto_plan": bool(auto_plan),
+                    "llm_book_planning": bool(llm_book_planning),
+                }
             )
-            book_plan_review = review_book_plan(book_plan, chunks)
+            book_plan = replace(book_plan, metadata=metadata)
+            book_plan_review = auto_plan_issues + section_issues + review_book_plan(book_plan, chunks)
             plans = book_plan_to_chapter_plans(book_plan, chunks)
         else:
             _progress("organizing selected evidence into chapter plans")
@@ -262,6 +325,7 @@ class TextbookWorkflow:
             llm_provider=self.writer.llm_provider,
             use_llm=self.writer.use_llm,
             book_plan=book_plan,
+            domain_config=domain_config,
         )
         _progress("reviewing exported digital book")
         digital_book_review = self.digital_book_reviewer.run(
@@ -280,6 +344,8 @@ class TextbookWorkflow:
         manifest = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "title": title,
+            "domain_config": domain_config.to_dict(),
+            "planning_mode": planning_mode,
             "input": {
                 "video_segments_path": _portable_path(video_segments_path),
                 "document_segments_path": _portable_path(document_segments_path) if document_segments_path else "",
