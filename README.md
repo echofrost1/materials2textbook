@@ -55,14 +55,14 @@ OPENAI_TIMEOUT_SECONDS=120
 也可以在命令行中直接传入：
 
 ```powershell
-python scripts/run_full_digital_textbook.py `
+python scripts/run_topic_textbook.py `
   --material-root D:\DTextbooksTrial\work_material1 `
   --title "试用数字教材" `
-  --book-mode `
-  --use-llm `
+  --use-llm true `
   --llm-base-url "https://your-openai-compatible-endpoint/v1" `
   --llm-api-key "your_api_key" `
-  --llm-model "your_model"
+  --llm-model "your_model" `
+  --llm-cache-path D:\DTextbooksTrial\work_material1\05_final_deliverables\agent_workflow\llm_cache.json
 ```
 
 如果只是快速检查本地流程，可以先不加 `--use-llm`。不使用 LLM 时，教材质量和自动规划能力会下降，但可以验证目录、JSONL 和导出链路是否正常。
@@ -152,27 +152,21 @@ raw\潘俊屹工作整理\
 ### 示例 A：work_material1
 
 ```powershell
-python scripts/run_full_digital_textbook.py `
+python scripts/run_topic_textbook.py `
   --material-root D:\DTextbooksTrial\work_material1 `
   --title "work_material1试用数字教材" `
-  --book-mode `
-  --use-llm `
-  --manifest-xlsx D:\DTextbooksTrial\work_material1\01_manifest_inventory\assets_manifest.xlsx `
-  --llm-cache-path D:\DTextbooksTrial\work_material1\05_final_deliverables\agent_workflow\llm_cache.json `
-  --student-package-output D:\DTextbooksTrial\work_material1\05_final_deliverables\digital_book.zip
+  --use-llm true `
+  --llm-cache-path D:\DTextbooksTrial\work_material1\05_final_deliverables\agent_workflow\llm_cache.json
 ```
 
 ### 示例 B：work_material_panjunyi
 
 ```powershell
-python scripts/run_full_digital_textbook.py `
+python scripts/run_topic_textbook.py `
   --material-root D:\DTextbooksTrial\work_material_panjunyi `
   --title "work_material_panjunyi试用数字教材" `
-  --book-mode `
-  --use-llm `
-  --manifest-xlsx D:\DTextbooksTrial\work_material_panjunyi\01_manifest_inventory\assets_manifest.xlsx `
-  --llm-cache-path D:\DTextbooksTrial\work_material_panjunyi\05_final_deliverables\agent_workflow\llm_cache.json `
-  --student-package-output D:\DTextbooksTrial\work_material_panjunyi\05_final_deliverables\digital_book.zip
+  --use-llm true `
+  --llm-cache-path D:\DTextbooksTrial\work_material_panjunyi\05_final_deliverables\agent_workflow\llm_cache.json
 ```
 
 第一次使用 LLM 生成教材时，`ResourceAnalystAgent` 会对 evidence 进行逐条增强分析，耗时较长，也会消耗较多 token。上面命令中的 `--llm-cache-path` 会把 LLM 调用结果保存到固定缓存文件。后续用同一批素材、同一模型和相近参数再次运行时，会优先复用缓存，能明显减少等待时间和 token 消耗。
@@ -190,16 +184,16 @@ python scripts/run_full_digital_textbook.py `
 ```text
 <work_material>\05_final_deliverables\agent_workflow\
 <work_material>\05_final_deliverables\digital_book\
-<work_material>\05_final_deliverables\digital_book.zip
 ```
 
-如果希望把视频、关键帧等媒体文件复制进 `digital_book\assets`，可以额外加：
+如果确认媒体路径有效，并且希望把视频、关键帧等媒体文件复制进 `digital_book\assets` 并生成 zip 包，可以额外加：
 
 ```powershell
---copy-media-assets
+--copy-media-assets `
+--student-package-output D:\DTextbooksTrial\work_material1\05_final_deliverables\digital_book.zip
 ```
 
-只有在原始大文件已经放好、且 evidence 中的媒体路径能被解析时，才建议使用 `--copy-media-assets`。否则教材正文可以正常生成，但视频资源可能无法完整打进 zip 包。
+只有在原始大文件已经放好、且 evidence 中的媒体路径能被解析时，才建议打包 zip。否则教材正文和 `digital_book\` 可以正常生成，但 zip 校验可能因为媒体资源缺失而失败。
 
 ## 5. 重新处理素材后再生成教材
 
@@ -327,8 +321,7 @@ python scripts/run_topic_textbook.py `
   --raw-root $env:DTEXTBOOKS_RAW `
   --title "试用数字教材" `
   --use-llm true `
-  --llm-cache-path "$env:DTEXTBOOKS_WORK\05_final_deliverables\agent_workflow\llm_cache.json" `
-  --student-package-output "$env:DTEXTBOOKS_WORK\05_final_deliverables\digital_book.zip"
+  --llm-cache-path "$env:DTEXTBOOKS_WORK\05_final_deliverables\agent_workflow\llm_cache.json"
 ```
 
 如果需要把媒体也复制到数字教材包中：
