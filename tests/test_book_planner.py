@@ -91,7 +91,7 @@ def test_book_planner_can_auto_plan_from_asset_block_map(tmp_path: Path) -> None
     assert plan.chapters[1].sections[0].title == "送丝"
     assert plan.metadata["curriculum_order"][:2] == ["焊接设备与安全", "钨极氩弧焊"]
     assert "curriculum_order_source" in plan.metadata
-    assert "chapter_order:" in yaml
+    assert "project_order:" in yaml
     assert "title: 焊接设备与安全" in yaml
 
 
@@ -130,5 +130,8 @@ def test_book_plan_can_derive_chapter_plans_and_outline() -> None:
 
     assert chapter_plans[0].title == "基本操作"
     assert chapter_plans[0].knowledge_points[0].title == "送丝操作"
-    assert "第1章 基本操作" in outline
+    assert "项目1 基本操作" in outline
+    assert "任务1.1 送丝操作" in outline
+    assert "学习导航" in outline
+    assert "任务实施" in outline
     assert issues == []

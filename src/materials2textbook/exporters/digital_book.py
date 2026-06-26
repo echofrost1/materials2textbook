@@ -1350,23 +1350,20 @@ def _build_chapter_tasks(
         )
         task_blocks: list[DigitalBookBlock] = [
             DigitalBookBlock(
+                block_id=f"p{project_index:02d}_t{task_index:02d}_learning_nav",
+                type="learning_nav",
+                title="学习导航",
+                items=_learning_nav_items(section, plan, points, task_evidence_ids, chunk_map),
+                evidence_chunk_ids=task_evidence_ids,
+            ),
+            DigitalBookBlock(
                 block_id=f"p{project_index:02d}_t{task_index:02d}_scenario",
                 type="scenario",
                 title="情境导入",
-                markdown=f"本节围绕“{_section_display_title(section, plan)}”展开学习，结合教材正文、示范视频和课堂任务理解关键知识。",
+                markdown=f"本任务围绕“{_section_display_title(section, plan)}”展开学习，结合教材正文、示范视频和课堂任务理解关键知识。",
                 evidence_chunk_ids=task_evidence_ids,
-            )
+            ),
         ]
-
-        task_blocks.append(
-            DigitalBookBlock(
-                block_id=f"p{project_index:02d}_t{task_index:02d}_learning_nav",
-                type="learning_nav",
-                title="任务导学",
-                items=_learning_nav_items(section, plan, points, task_evidence_ids, chunk_map),
-                evidence_chunk_ids=task_evidence_ids,
-            )
-        )
 
         key_terms: list[str] = []
         used_video_sources: set[str] = set()
@@ -1387,7 +1384,7 @@ def _build_chapter_tasks(
                 DigitalBookBlock(
                     block_id=f"p{project_index:02d}_t{task_index:02d}_kp{point_index:02d}_text",
                     type="implementation",
-                    title=point_title,
+                    title=f"任务实施：{point_title}",
                     markdown=implementation_text,
                     evidence_chunk_ids=[chunk.chunk_id for chunk in point_chunks],
                     metadata={
@@ -1433,7 +1430,7 @@ def _build_chapter_tasks(
                 DigitalBookBlock(
                     block_id=f"p{project_index:02d}_t{task_index:02d}_assessment",
                     type="assessment",
-                    title="学习评价",
+                    title="任务评价",
                     items=_assessment_items_for_points(points),
                     evidence_chunk_ids=task_evidence_ids,
                 ),
@@ -2080,7 +2077,7 @@ def _cases_for_points(
 def _section_task_title(chapter_no: int, task_index: int, section: BookSectionPlan | None, plan: ChapterPlan) -> str:
     title = _section_display_title(section, plan)
     section_no = section.section_no if section and section.section_no else f"{chapter_no}.{task_index}"
-    return f"{section_no} {title}"
+    return f"任务{section_no} {title}"
 
 
 def _section_display_title(section: BookSectionPlan | None, plan: ChapterPlan) -> str:

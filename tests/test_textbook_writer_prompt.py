@@ -43,3 +43,5 @@ def test_textbook_writer_prompt_requires_strict_evidence() -> None:
     assert "Case example" in combined
     assert "Brake case" in combined
     assert "requiring review" in combined
+    for required in ["项目导学", "能力图谱", "学习目标", "学习导航", "情境导入", "任务实施", "任务评价", "思考与练习", "项目小结", "本项目素材缺口"]:
+        assert required in combined
