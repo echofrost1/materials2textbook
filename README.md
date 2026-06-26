@@ -4,14 +4,34 @@ DTextbooks 用于把本地教学素材整理、规划并生成项目化数字教
 
 推荐试用流程：
 
-1. 解压素材包，例如 `work_material1` 或 `work_material_panjunyi`。
+1. 解压素材包，例如 `work_material1`。
 2. 把原始大文件放入试用根目录下的 `raw` 目录。
 3. 根据需要选择“复用已有中间结果生成教材”或“重新处理原始素材后生成教材”。
 4. 通过本地 HTTP 服务打开生成的数字教材。
 
 ## 1. 环境准备
 
-打开 PowerShell，进入项目仓库根目录：
+建议把项目代码和试用素材分开存放：
+
+```text
+D:\DTextbooks\          项目代码目录，放本仓库代码
+D:\DTextbooksTrial\     试用素材和生成结果目录
+```
+
+项目代码目录解压或克隆后应包含：
+
+```text
+D:\DTextbooks\
+├── README.md
+├── requirements.txt
+├── scripts\
+├── src\
+└── tests\
+```
+
+后续所有 `python scripts\...` 命令都在项目代码目录 `D:\DTextbooks` 下运行；命令中的 `--material-root` 再指向 `D:\DTextbooksTrial` 里的素材工作目录。
+
+打开 PowerShell，进入项目代码目录：
 
 ```powershell
 cd "D:\DTextbooks"
@@ -74,34 +94,28 @@ python scripts/run_topic_textbook.py `
 ```text
 D:\DTextbooksTrial\
 ├── raw\
-│   ├── 潘俊屹工作整理\
-│   └── 谢志怡工作整理\
-├── work_material1\
-└── work_material_panjunyi\
+│   └── 原始素材\
+└── work_material1\
 ```
 
-也就是说，试用根目录里直接放我们处理好的两个工作目录：
+也就是说，试用根目录里直接放我们处理好的工作目录：
 
 ```text
 D:\DTextbooksTrial\
-├── work_material1\
-└── work_material_panjunyi\
+└── work_material1\
 ```
 
 同时在同级 `raw` 目录下放用户已有的原始文件：
 
 ```text
 D:\DTextbooksTrial\raw\
-├── 潘俊屹工作整理\
-└── 谢志怡工作整理\
+└── 原始素材\
 ```
 
 其中：
 
-- `raw\潘俊屹工作整理`：放潘俊屹工作整理对应的原始视频、PPT、Word、PDF、表格、音频等。
-- `raw\谢志怡工作整理`：放谢志怡工作整理对应的原始视频、PPT、Word、PDF、表格、音频等。
+- `raw\原始素材`：放用户已有的原始视频、PPT、Word、PDF、表格、音频等。
 - `work_material1`：直接放我们提供的已处理工作目录。
-- `work_material_panjunyi`：直接放我们提供的已处理工作目录。
 
 `work_material1` 的目录结构示例：
 
@@ -115,20 +129,10 @@ D:\DTextbooksTrial\work_material1\
 └── 05_final_deliverables\
 ```
 
-`work_material_panjunyi` 同理：
-
-```text
-D:\DTextbooksTrial\work_material_panjunyi\
-├── 01_manifest_inventory\
-├── 02_working_processing\
-│   └── json\
-└── 05_final_deliverables\
-```
-
 `raw` 下可以继续按课程、章节或来源嵌套：
 
 ```text
-raw\潘俊屹工作整理\
+raw\原始素材\
 ├── 第1部分\
 │   ├── 001.mp4
 │   └── 课件.pptx
@@ -149,7 +153,7 @@ raw\潘俊屹工作整理\
 
 不会重新切视频、解析 PPT 或抽取文档，速度更快，也更稳定。
 
-### 示例 A：work_material1
+### 示例：work_material1
 
 ```powershell
 python scripts/run_topic_textbook.py `
@@ -157,16 +161,6 @@ python scripts/run_topic_textbook.py `
   --title "work_material1试用数字教材" `
   --use-llm true `
   --llm-cache-path D:\DTextbooksTrial\work_material1\05_final_deliverables\agent_workflow\llm_cache.json
-```
-
-### 示例 B：work_material_panjunyi
-
-```powershell
-python scripts/run_topic_textbook.py `
-  --material-root D:\DTextbooksTrial\work_material_panjunyi `
-  --title "work_material_panjunyi试用数字教材" `
-  --use-llm true `
-  --llm-cache-path D:\DTextbooksTrial\work_material_panjunyi\05_final_deliverables\agent_workflow\llm_cache.json
 ```
 
 第一次使用 LLM 生成教材时，`ResourceAnalystAgent` 会对 evidence 进行逐条增强分析，耗时较长，也会消耗较多 token。上面命令中的 `--llm-cache-path` 会把 LLM 调用结果保存到固定缓存文件。后续用同一批素材、同一模型和相近参数再次运行时，会优先复用缓存，能明显减少等待时间和 token 消耗。
@@ -208,13 +202,6 @@ python scripts/run_topic_textbook.py `
 
 ```powershell
 $env:DTEXTBOOKS_WORK = "D:\DTextbooksTrial\work_material1"
-$env:DTEXTBOOKS_RAW = "D:\DTextbooksTrial\raw"
-```
-
-如果处理 `work_material_panjunyi`，改成：
-
-```powershell
-$env:DTEXTBOOKS_WORK = "D:\DTextbooksTrial\work_material_panjunyi"
 $env:DTEXTBOOKS_RAW = "D:\DTextbooksTrial\raw"
 ```
 
@@ -392,13 +379,6 @@ python scripts/run_topic_textbook.py `
 ```powershell
 python scripts/open_digital_book.py `
   --material-root D:\DTextbooksTrial\work_material1
-```
-
-或：
-
-```powershell
-python scripts/open_digital_book.py `
-  --material-root D:\DTextbooksTrial\work_material_panjunyi
 ```
 
 脚本会打开类似下面的本地 HTTP 地址：
