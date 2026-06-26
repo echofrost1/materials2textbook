@@ -1,64 +1,39 @@
 # DTextbooks
 
-把一组本地教学素材自动整理成可审校、可导出的数字教材。
+DTextbooks 用于把本地教学素材整理、规划并生成项目化数字教材。本文档面向 Windows 试用环境：试用方会收到已经处理好的工作素材包，同时本地保存有对应的原始视频、PPT、Word、PDF、表格、音频等大文件。
 
-## 功能概览
+推荐试用流程：
 
-- 扫描本地素材，生成 `assets_manifest.xlsx` 和素材索引。
-- 从视频、PPT、文档、音频、表格中生成 evidence JSONL。
-- 使用 LLM 自动识别领域配置，不要求人工预写主题参数。
-- 使用 LLM 自动生成全书大纲，失败时自动回退规则规划。
-- 校验并修正大纲：默认至少 3 章，每章至少 3 节。
-- 运行多智能体教材生成流程，产出 Markdown、Docx 和数字教材前端。
-- 导出学生可用的 `digital_book.zip`。
-- 保留人工覆盖入口：可传入外部 `domain_config.yml` 或 `book_plan.json`。
+1. 解压素材包，例如 `work_material1` 或 `work_material_panjunyi`。
+2. 把对应原始大文件放入该素材包自己的 `raw` 目录。
+3. 根据需要选择“复用已有中间结果生成教材”或“重新处理原始素材后生成教材”。
+4. 通过本地 HTTP 服务打开生成的数字教材。
 
-## 快速开始
+## 1. 环境准备
 
-进入仓库根目录：
+打开 PowerShell，进入项目仓库根目录：
 
 ```powershell
-cd "<本仓库路径>"
+cd "D:\DTextbooks"
 ```
 
-安装依赖：
+安装 Python 依赖：
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-准备素材目录：
+如果需要重新处理原始素材，建议同时准备：
 
-```text
-D:\textbook_runs\new_topic\
-├── raw\                         原始素材
-└── work_material1\              处理结果和最终输出
-```
+- FFmpeg：用于视频、音频处理。
+- Microsoft Office 或 LibreOffice：用于 PPT、Word 等文件转换。
+- OpenAI-compatible 大模型服务：用于高质量的大纲规划、正文生成、审校、能力图谱和练习题生成。
 
-运行一键生成：
+如果只是复用随包提供的 JSONL 中间结果生成教材，一般不需要重新跑视频/PPT/文档处理。
 
-```powershell
-python scripts/run_topic_textbook.py `
-  --material-root D:\textbook_runs\new_topic\work_material1 `
-  --raw-root D:\textbook_runs\new_topic\raw `
-  --title "新主题数字教材" `
-  --use-llm true `
-  --student-package-output D:\textbook_runs\new_topic\work_material1\05_final_deliverables\digital_book.zip
-```
+## 2. LLM 配置
 
-只验证本地链路时可以不用 LLM：
-
-```powershell
-python scripts/run_topic_textbook.py `
-  --material-root D:\textbook_runs\new_topic\work_material1 `
-  --raw-root D:\textbook_runs\new_topic\raw `
-  --title "新主题数字教材" `
-  --use-llm false
-```
-
-## LLM 配置
-
-启用 `--use-llm true` 前，需要配置 OpenAI-compatible Chat Completions 接口。
+启用 `--use-llm` 前，需要配置 OpenAI-compatible Chat Completions 接口。
 
 复制环境变量模板：
 
@@ -66,10 +41,10 @@ python scripts/run_topic_textbook.py `
 copy .env.example .env
 ```
 
-在 `.env` 中填写：
+编辑 `.env`：
 
 ```text
-OPENAI_API_KEY=...
+OPENAI_API_KEY=your_api_key
 OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
 OPENAI_MODEL=your_model
 OPENAI_TEMPERATURE=0.2
@@ -77,53 +52,41 @@ OPENAI_MAX_TOKENS=4096
 OPENAI_TIMEOUT_SECONDS=120
 ```
 
-也可以直接通过命令行传入：
+也可以在命令行中直接传入：
 
 ```powershell
-python scripts/run_topic_textbook.py `
-  --material-root D:\textbook_runs\new_topic\work_material1 `
-  --title "新主题数字教材" `
-  --use-llm true `
+python scripts/run_full_digital_textbook.py `
+  --material-root D:\DTextbooksTrial\work_material1 `
+  --title "试用数字教材" `
+  --book-mode `
+  --use-llm `
   --llm-base-url "https://your-openai-compatible-endpoint/v1" `
   --llm-api-key "your_api_key" `
   --llm-model "your_model"
 ```
 
-LLM 调用默认缓存到：
+如果只是快速检查本地流程，可以先不加 `--use-llm`。不使用 LLM 时，教材质量和自动规划能力会下降，但可以验证目录、JSONL 和导出链路是否正常。
+
+## 3. 试用目录怎么放
+
+建议建立一个试用根目录，例如：
 
 ```text
-05_final_deliverables\agent_workflow\llm_cache.json
+D:\DTextbooksTrial\
+├── work_material1\
+└── work_material_panjunyi\
 ```
 
-相关参数：
+每个素材包都独立放置自己的原始文件和中间文件。以 `work_material1` 为例：
 
 ```text
---llm-cache-path path\to\llm_cache.json
---no-llm-cache
---llm-max-retries 2
---llm-retry-backoff 1.0
-```
-
-## 本地目录约定
-
-推荐每个主题单独建目录：
-
-```text
-D:\textbook_runs\new_topic\
+D:\DTextbooksTrial\work_material1\
 ├── raw\
-└── work_material1\
-```
-
-`raw\` 存放原始素材，可以包含：
-
-```text
-视频、音频、PPT、PDF、Word、Markdown、TXT、Excel、CSV
-```
-
-`work_material1\` 是处理和输出目录，最终结构通常为：
-
-```text
-work_material1\
+│   ├── video\
+│   ├── ppt\
+│   ├── docs\
+│   ├── audio\
+│   └── structured\
 ├── 01_manifest_inventory\
 ├── 02_working_processing\
 │   └── json\
@@ -132,29 +95,58 @@ work_material1\
 └── 05_final_deliverables\
 ```
 
-## 完整流程
-
-### 1. 建立素材台账
-
-如果只有原始素材，先扫描 `raw\`：
-
-```powershell
-python scripts/build_material_inventory.py `
-  --material-root D:\textbook_runs\new_topic\work_material1 `
-  --raw-root D:\textbook_runs\new_topic\raw
-```
-
-主要输出：
+`work_material_panjunyi` 同理：
 
 ```text
-01_manifest_inventory\assets_manifest.xlsx
-02_working_processing\json\assets_manifest.json
-04_assets_by_course\
+D:\DTextbooksTrial\work_material_panjunyi\
+├── raw\
+├── 01_manifest_inventory\
+├── 02_working_processing\
+│   └── json\
+└── 05_final_deliverables\
 ```
 
-### 2. 生成 Evidence JSONL
+`raw` 下面的子目录名不是强制要求，只是推荐分类。原始文件也可以按课程、章节或来源继续嵌套：
 
-教材生成读取 `02_working_processing\json\` 下的 evidence 文件：
+```text
+raw\
+├── 第1部分\
+│   ├── 001.mp4
+│   └── 课件.pptx
+└── 参考资料\
+    ├── 教案.docx
+    └── 标准.pdf
+```
+
+尽量保持原始文件名和准备素材包时使用的文件名一致。如果文件名或相对目录变化很大，建议重新生成素材台账和 evidence JSONL。
+
+## 4. 各目录含义
+
+```text
+raw\
+```
+
+存放试用方本地原始素材，可以包括视频、PPT、Word、PDF、Markdown、TXT、Excel、CSV、音频等。
+
+```text
+01_manifest_inventory\
+```
+
+素材台账和规划相关文件，通常包括：
+
+```text
+assets_manifest.xlsx
+asset_block_map.xlsx
+material_blocks.xlsx
+domain_config.generated.yml
+book_plan.generated.json
+```
+
+```text
+02_working_processing\json\
+```
+
+教材生成读取的 evidence 中间文件，通常包括：
 
 ```text
 video_segments.jsonl
@@ -164,258 +156,391 @@ audio_segments.jsonl
 structured_assets.jsonl
 ```
 
-处理视频和 PPT：
-
-```powershell
-python scripts/process_material_block_mvp.py `
-  --target-block automotive_repair `
-  --limit-videos 20 `
-  --limit-ppt 50 `
-  --merge-main
-```
-
-处理参考文档：
-
-```powershell
-python scripts/process_reference_docs_mvp.py `
-  --target-block automotive_repair `
-  --limit-docs 100
-```
-
-处理音频和结构化素材：
-
-```powershell
-python scripts/process_audio_structured_mvp.py `
-  --target-block automotive_repair `
-  --limit-audio 20 `
-  --limit-structured 50
-```
-
-### 3. 一键生成教材
-
-```powershell
-python scripts/run_topic_textbook.py `
-  --material-root D:\textbook_runs\new_topic\work_material1 `
-  --raw-root D:\textbook_runs\new_topic\raw `
-  --title "新主题数字教材" `
-  --use-llm true `
-  --student-package-output D:\textbook_runs\new_topic\work_material1\05_final_deliverables\digital_book.zip
-```
-
-小样本 smoke test 可临时降低阈值：
-
-```powershell
-python scripts/run_topic_textbook.py `
-  --material-root D:\textbook_runs\new_topic\work_material1 `
-  --title "Smoke Topic" `
-  --use-llm false `
-  --min-evidence-chunks 2 `
-  --min-candidate-chapters 1
-```
-
-生产运行不建议降低阈值。
-
-## 自动规划机制
-
-`run_topic_textbook.py` 会自动执行：
-
-1. 检查或生成素材台账。
-2. 读取 evidence JSONL。
-3. 统计 evidence 数量和候选章节数量。
-4. 自动生成领域配置。
-5. 自动生成全书大纲。
-6. 校验并修正大纲。
-7. LLM 大纲失败时使用规则 fallback。
-8. 运行 `TextbookWorkflow`。
-9. 导出 `digital_book\`。
-10. 可选打包 `digital_book.zip`。
-
-大纲校验规则：
+如果这些 JSONL 文件已经随包提供，可以不重新处理原始视频/PPT/文档，直接生成教材。
 
 ```text
-至少 3 章
-默认最多 12 章
-每章至少 3 节
-每节至少 1 个知识点
-引用的 chunk_id 必须存在
-知识点尽量能映射到 evidence
-素材不足时标记缺口，不硬编不存在的内容
+05_final_deliverables\
 ```
 
-自动领域配置输出：
+最终输出目录：
 
 ```text
-01_manifest_inventory\domain_config.generated.yml
-01_manifest_inventory\domain_config_review.md
+agent_workflow\
+digital_book\
+digital_book.zip
 ```
 
-自动大纲输出：
+## 5. 推荐试用方式：不重新处理素材，只重新生成教材
+
+首次试用推荐这种方式。它直接复用素材包里的：
 
 ```text
-01_manifest_inventory\book_plan.generated.json
-01_manifest_inventory\book_plan_review.md
-05_final_deliverables\agent_workflow\book_plan.json
+02_working_processing\json\*.jsonl
 ```
 
-## 人工覆盖
+不会重新切视频、解析 PPT 或抽取文档，速度更快，也更稳定。
 
-传入外部大纲：
-
-```powershell
-python scripts/run_topic_textbook.py `
-  --material-root D:\textbook_runs\new_topic\work_material1 `
-  --title "新主题数字教材" `
-  --book-plan-input D:\textbook_runs\new_topic\book_plan.json `
-  --use-llm true
-```
-
-传入外部领域配置：
-
-```powershell
-python scripts/run_topic_textbook.py `
-  --material-root D:\textbook_runs\new_topic\work_material1 `
-  --title "新主题数字教材" `
-  --domain-config D:\textbook_runs\new_topic\domain_config.yml `
-  --use-llm true
-```
-
-也可以使用完整流程脚本：
+### 示例 A：work_material1
 
 ```powershell
 python scripts/run_full_digital_textbook.py `
+  --material-root D:\DTextbooksTrial\work_material1 `
+  --title "work_material1试用数字教材" `
   --book-mode `
-  --material-root D:\textbook_runs\new_topic\work_material1 `
-  --title "新主题数字教材" `
-  --domain-config D:\textbook_runs\new_topic\domain_config.yml `
-  --book-plan-input D:\textbook_runs\new_topic\book_plan.json `
-  --student-package-output D:\textbook_runs\new_topic\work_material1\05_final_deliverables\digital_book.zip
+  --use-llm `
+  --manifest-xlsx D:\DTextbooksTrial\work_material1\01_manifest_inventory\assets_manifest.xlsx `
+  --student-package-output D:\DTextbooksTrial\work_material1\05_final_deliverables\digital_book.zip
 ```
 
-## 主要输出
+### 示例 B：work_material_panjunyi
+
+```powershell
+python scripts/run_full_digital_textbook.py `
+  --material-root D:\DTextbooksTrial\work_material_panjunyi `
+  --title "work_material_panjunyi试用数字教材" `
+  --book-mode `
+  --use-llm `
+  --manifest-xlsx D:\DTextbooksTrial\work_material_panjunyi\01_manifest_inventory\assets_manifest.xlsx `
+  --student-package-output D:\DTextbooksTrial\work_material_panjunyi\05_final_deliverables\digital_book.zip
+```
+
+输出会写入：
 
 ```text
-01_manifest_inventory\
-├── assets_manifest.xlsx
-├── domain_config.generated.yml
-├── domain_config_review.md
-├── book_plan.generated.json
-└── book_plan_review.md
-
-02_working_processing\json\
-├── video_segments.jsonl
-├── ppt_assets.jsonl
-├── reference_text_assets.jsonl
-├── audio_segments.jsonl
-└── structured_assets.jsonl
-
-03_review_manual_check\
-└── pipeline_warnings.json
-
-05_final_deliverables\
-├── agent_workflow\
-│   ├── book_plan.json
-│   ├── textbook_final.md
-│   ├── textbook_final.docx
-│   ├── evidence_chunks.jsonl
-│   ├── review_report.md
-│   ├── workflow_summary.json
-│   └── artifact_manifest.json
-├── digital_book\
-│   ├── index.html
-│   ├── digital_book.json
-│   ├── app.js
-│   ├── styles.css
-│   └── ask_config.js
-└── digital_book.zip
+<work_material>\05_final_deliverables\agent_workflow\
+<work_material>\05_final_deliverables\digital_book\
+<work_material>\05_final_deliverables\digital_book.zip
 ```
 
-打开电子教材需要通过本地 HTTP 服务预览。不要直接双击 `index.html`，多数浏览器会因为 `file://` 限制而无法加载 `digital_book.json` 或媒体资源。
+如果希望把视频、关键帧等媒体文件复制进 `digital_book\assets`，可以额外加：
+
+```powershell
+--copy-media-assets
+```
+
+只有在原始大文件已经放好、且 evidence 中的媒体路径能被解析时，才建议使用 `--copy-media-assets`。否则教材正文可以正常生成，但视频资源可能无法完整打进 zip 包。
+
+## 6. 重新处理素材后再生成教材
+
+以下情况建议重新处理素材：
+
+- 新增或替换了原始视频、PPT、Word/PDF、表格、音频文件。
+- `02_working_processing\json` 下缺少 JSONL。
+- 原始文件路径或文件名变化，导致媒体无法显示。
+- 希望从原始文件重新抽取 evidence。
+
+处理脚本会读取下面两个环境变量：
+
+```powershell
+$env:DTEXTBOOKS_WORK = "D:\DTextbooksTrial\work_material1"
+$env:DTEXTBOOKS_RAW = "D:\DTextbooksTrial\work_material1\raw"
+```
+
+如果处理 `work_material_panjunyi`，改成：
+
+```powershell
+$env:DTEXTBOOKS_WORK = "D:\DTextbooksTrial\work_material_panjunyi"
+$env:DTEXTBOOKS_RAW = "D:\DTextbooksTrial\work_material_panjunyi\raw"
+```
+
+### 第一步：重建素材台账
+
+```powershell
+python scripts/build_material_inventory.py `
+  --material-root $env:DTEXTBOOKS_WORK `
+  --raw-root $env:DTEXTBOOKS_RAW
+```
+
+主要更新：
+
+```text
+01_manifest_inventory\assets_manifest.xlsx
+02_working_processing\json\assets_manifest.json
+04_assets_by_course\
+```
+
+### 第二步：找到素材板块编码
+
+打开：
+
+```text
+<work_material>\01_manifest_inventory\asset_block_map.xlsx
+```
+
+或：
+
+```text
+<work_material>\01_manifest_inventory\material_blocks.xlsx
+```
+
+找到需要处理的 `material_block_code`，下面命令中的 `<target_block_code>` 就替换为这个值。
+
+### 第三步：先 dry run 检查会处理哪些素材
+
+```powershell
+python scripts/process_material_block_mvp.py `
+  --target-block <target_block_code> `
+  --limit-videos 10 `
+  --limit-ppt 10 `
+  --dry-run
+```
+
+### 第四步：处理视频和 PPT
+
+`--limit-videos 0` 和 `--limit-ppt 0` 表示处理该板块下全部视频/PPT：
+
+```powershell
+python scripts/process_material_block_mvp.py `
+  --target-block <target_block_code> `
+  --limit-videos 0 `
+  --limit-ppt 0 `
+  --merge-main
+```
+
+主要写入：
+
+```text
+02_working_processing\json\video_segments.jsonl
+02_working_processing\json\ppt_assets.jsonl
+```
+
+### 第五步：处理参考文档
+
+```powershell
+python scripts/process_reference_docs_mvp.py `
+  --target-block <target_block_code> `
+  --limit-docs 0
+```
+
+主要写入：
+
+```text
+02_working_processing\json\reference_text_assets.jsonl
+```
+
+### 第六步：处理音频和结构化文件
+
+```powershell
+python scripts/process_audio_structured_mvp.py `
+  --target-block <target_block_code> `
+  --limit-audio 0 `
+  --limit-structured 0
+```
+
+主要写入：
+
+```text
+02_working_processing\json\audio_segments.jsonl
+02_working_processing\json\structured_assets.jsonl
+```
+
+如果有多个 `material_block_code` 需要进入教材，对每个板块重复第三步到第六步。
+
+### 第七步：生成教材
+
+JSONL 准备好后运行：
+
+```powershell
+python scripts/run_topic_textbook.py `
+  --material-root $env:DTEXTBOOKS_WORK `
+  --raw-root $env:DTEXTBOOKS_RAW `
+  --title "试用数字教材" `
+  --use-llm true `
+  --student-package-output "$env:DTEXTBOOKS_WORK\05_final_deliverables\digital_book.zip"
+```
+
+如果需要把媒体也复制到数字教材包中：
+
+```powershell
+python scripts/run_topic_textbook.py `
+  --material-root $env:DTEXTBOOKS_WORK `
+  --raw-root $env:DTEXTBOOKS_RAW `
+  --title "试用数字教材" `
+  --use-llm true `
+  --copy-media-assets `
+  --student-package-output "$env:DTEXTBOOKS_WORK\05_final_deliverables\digital_book.zip"
+```
+
+## 7. 两种方式的区别
+
+| 方式 | 做什么 | 什么时候用 |
+| --- | --- | --- |
+| 不重新处理素材 | 直接读取已有 `02_working_processing\json\*.jsonl`，重新规划和生成教材。 | 首次试用推荐；速度快，最稳定。 |
+| 重新处理素材 | 从 `raw` 原始文件重建台账和 evidence JSONL，然后生成教材。 | 原始文件变了、JSONL 缺失、媒体路径失效、需要重新抽取素材时使用。 |
+
+无论使用哪种方式，教材生成阶段都可以自动生成：
+
+- 领域配置
+- 项目/任务式教材大纲
+- 项目导学
+- 能力图谱
+- 学习目标
+- 任务正文
+- 任务评价
+- 填空题和思考题
+- 数字教材前端
+- 可选的 `digital_book.zip`
+
+## 8. 生成教材的结构
+
+生成结果采用项目化教材结构：
+
+```text
+总序
+前言
+项目1
+  项目导学
+  能力图谱
+  学习目标
+  任务1.1
+    学习导航
+    情境导入
+    任务实施
+    任务评价
+    思考与练习
+  任务1.2
+  任务1.3
+  项目小结
+项目2
+...
+```
+
+只要素材证据足够，每个项目默认至少 3 个任务。素材不足时，系统会记录素材缺口，不会硬编不存在的内容。
+
+## 9. 打开数字教材
+
+不要直接双击 `index.html`。多数浏览器会限制 `file://` 页面读取 `digital_book.json` 和媒体资源。
+
+使用脚本打开：
 
 ```powershell
 python scripts/open_digital_book.py `
-  --material-root D:\textbook_runs\new_topic\work_material1
+  --material-root D:\DTextbooksTrial\work_material1
 ```
 
-脚本会自动打开类似这样的地址：
+或：
+
+```powershell
+python scripts/open_digital_book.py `
+  --material-root D:\DTextbooksTrial\work_material_panjunyi
+```
+
+脚本会打开类似下面的本地 HTTP 地址：
 
 ```text
 http://127.0.0.1:8767/05_final_deliverables/digital_book/index.html
 ```
 
-## 常见失败处理
+## 10. 生成后检查哪些文件
 
-### LLM 主题识别失败
+成功生成后，至少检查：
 
-系统会使用素材标题、目录名和 evidence 样本生成保守领域配置，然后继续进入规则大纲。
+```text
+<work_material>\01_manifest_inventory\domain_config.generated.yml
+<work_material>\01_manifest_inventory\book_plan.generated.json
+<work_material>\01_manifest_inventory\book_plan_review.md
+
+<work_material>\05_final_deliverables\agent_workflow\book_plan.json
+<work_material>\05_final_deliverables\agent_workflow\textbook_final.md
+<work_material>\05_final_deliverables\agent_workflow\textbook_final.docx
+
+<work_material>\05_final_deliverables\digital_book\index.html
+<work_material>\05_final_deliverables\digital_book\digital_book.json
+<work_material>\05_final_deliverables\digital_book\app.js
+<work_material>\05_final_deliverables\digital_book\styles.css
+
+<work_material>\05_final_deliverables\digital_book.zip
+```
+
+## 11. 常见问题
+
+### 找不到 evidence JSONL
 
 检查：
 
 ```text
-01_manifest_inventory\domain_config_review.md
+<work_material>\02_working_processing\json\
 ```
 
-### LLM 大纲失败
-
-系统会使用规则大纲，并在 review 中标记：
+至少应存在下面任意一个：
 
 ```text
-planning_mode: rule_fallback
+video_segments.jsonl
+ppt_assets.jsonl
+reference_text_assets.jsonl
+audio_segments.jsonl
+structured_assets.jsonl
 ```
 
-检查：
+如果没有，请使用“重新处理素材后再生成教材”。
+
+### Evidence 数量不足
+
+默认最低要求：
 
 ```text
-01_manifest_inventory\book_plan_review.md
-05_final_deliverables\agent_workflow\book_plan.json
+20 条 evidence chunks
+3 个候选项目/章节
 ```
 
-### 部分素材处理失败
+小样本 smoke test 可以临时降低阈值：
 
-失败不会中断全流程。告警写入：
-
-```text
-03_review_manual_check\pipeline_warnings.json
+```powershell
+python scripts/run_topic_textbook.py `
+  --material-root $env:DTEXTBOOKS_WORK `
+  --title "Smoke Test" `
+  --use-llm false `
+  --min-evidence-chunks 2 `
+  --min-candidate-chapters 1
 ```
 
-只要有效 evidence 达到阈值，仍会继续生成教材。
+正式试用输出不建议降低阈值。
 
-### Evidence 不足
+### LLM 已启用但未配置
 
-系统不会硬编教材，会停止并输出：
+检查 `.env`，或在命令中传入：
 
-```text
-05_final_deliverables\insufficient_material_report.md
+```powershell
+--llm-base-url
+--llm-api-key
+--llm-model
 ```
 
-处理方式：
+### 媒体不能显示
 
-- 增加原始素材。
-- 处理更多 target block。
-- 检查 JSONL 是否生成到正确目录。
-- 检查 review_status 或 teaching_value 是否导致 evidence 被过滤。
+常见原因：
 
-## 验收清单
+- 原始视频/PPT 没有放到对应素材包的 `raw` 目录。
+- 原始文件名发生变化。
+- JSONL 中的媒体路径来自旧机器。
 
-生成完成后至少确认：
+建议处理：
 
-```text
-05_final_deliverables\agent_workflow\book_plan.json 存在
-book_plan.json 中每章 sections 数量 >= 3
-05_final_deliverables\agent_workflow\textbook_final.md 存在
-05_final_deliverables\digital_book\digital_book.json 存在
-05_final_deliverables\digital_book\index.html 存在
-如指定 --student-package-output，digital_book.zip 存在
-03_review_manual_check\pipeline_warnings.json 中没有阻断性错误
+1. 把原始文件放到正确的 `raw` 目录。
+2. 重建素材台账。
+3. 重新处理受影响的素材板块。
+4. 如果要生成自包含教材包，生成时加 `--copy-media-assets`。
+
+### 数字教材页面空白
+
+请用：
+
+```powershell
+python scripts/open_digital_book.py --material-root <work_material>
 ```
 
-运行测试：
+不要从文件管理器直接打开 `index.html`。
+
+## 12. 验证项目代码
+
+在仓库根目录运行：
 
 ```powershell
 python -m pytest
 ```
 
-当前实现已验证：
+当前本地分支已验证：
 
 ```text
-150 passed
+151 passed
 ```
