@@ -88,7 +88,7 @@ D:\DTextbooksTrial\
 └── work_material_panjunyi\
 ```
 
-同时在同级 `raw` 目录下放甲方已有的原始文件：
+同时在同级 `raw` 目录下放用户已有的原始文件：
 
 ```text
 D:\DTextbooksTrial\raw\
