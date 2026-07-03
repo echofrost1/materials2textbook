@@ -1,0 +1,43 @@
+services:
+  dtextbooks:
+    build:
+      context: .
+      args:
+        INSTALL_OFFICE: ${INSTALL_OFFICE:-true}
+    image: dtextbooks:local
+    working_dir: /app
+    volumes:
+      - ${DTEXTBOOKS_TRIAL_DIR:-./local_runs}:/data
+    environment:
+      DTEXTBOOKS_DATA: /data
+      DTEXTBOOKS_RAW: /data/raw
+      DTEXTBOOKS_WORK: /data/work_material1
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-0.2}
+      OPENAI_MAX_TOKENS: ${OPENAI_MAX_TOKENS:-4096}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-120}
+    command: ["python", "scripts/run_topic_textbook.py", "--help"]
+
+  preview:
+    image: dtextbooks:local
+    working_dir: /app
+    volumes:
+      - ${DTEXTBOOKS_TRIAL_DIR:-./local_runs}:/data
+    ports:
+      - "8767:8767"
+    environment:
+      DTEXTBOOKS_DATA: /data
+      DTEXTBOOKS_RAW: /data/raw
+      DTEXTBOOKS_WORK: /data/work_material1
+    command:
+      - python
+      - scripts/open_digital_book.py
+      - --material-root
+      - /data/work_material1
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8767"
+      - --no-browser

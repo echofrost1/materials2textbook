@@ -22,6 +22,8 @@ D:\DTextbooksTrial\     试用素材和生成结果目录
 
 ```text
 D:\DTextbooks\
+├── Dockerfile
+├── docker-compose.yml
 ├── README.md
 ├── requirements.txt
 ├── scripts\
@@ -87,7 +89,88 @@ python scripts/run_topic_textbook.py `
 
 如果只是快速检查本地流程，可以先不加 `--use-llm`。不使用 LLM 时，教材质量和自动规划能力会下降，但可以验证目录、JSONL 和导出链路是否正常。
 
-## 3. 试用目录怎么放
+## 3. Docker 运行方式（可选）
+
+如果希望减少 Windows 本机 Python、FFmpeg、Office/LibreOffice 等环境差异，可以使用 Docker Desktop 运行。Docker 方式仍然建议把项目代码和试用素材分开：
+
+```text
+D:\DTextbooks\          项目代码目录，放本仓库代码
+D:\DTextbooksTrial\     试用素材和生成结果目录
+```
+
+第一次运行前，先复制环境变量模板：
+
+```powershell
+copy .env.example .env
+```
+
+编辑 `.env`，至少确认：
+
+```text
+DTEXTBOOKS_TRIAL_DIR=D:\DTextbooksTrial
+OPENAI_API_KEY=your_api_key
+OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
+OPENAI_MODEL=your_model
+INSTALL_OFFICE=true
+```
+
+构建镜像：
+
+```powershell
+docker compose build
+```
+
+复用已有 JSONL 中间结果生成教材：
+
+```powershell
+docker compose run --rm dtextbooks python scripts/run_topic_textbook.py `
+  --material-root /data/work_material1 `
+  --title "work_material1试用数字教材" `
+  --use-llm true `
+  --llm-cache-path /data/work_material1/05_final_deliverables/agent_workflow/llm_cache.json
+```
+
+如果只是快速验证链路，可以先不用 LLM：
+
+```powershell
+docker compose run --rm dtextbooks python scripts/run_topic_textbook.py `
+  --material-root /data/work_material1 `
+  --title "Smoke Test" `
+  --use-llm false `
+  --min-evidence-chunks 2 `
+  --min-candidate-chapters 1
+```
+
+重新处理素材时，容器内路径固定使用：
+
+```text
+/data/raw
+/data/work_material1
+```
+
+例如重建素材台账：
+
+```powershell
+docker compose run --rm dtextbooks python scripts/build_material_inventory.py `
+  --material-root /data/work_material1 `
+  --raw-root /data/raw
+```
+
+打开生成后的数字教材：
+
+```powershell
+docker compose up preview
+```
+
+然后在浏览器访问：
+
+```text
+http://127.0.0.1:8767
+```
+
+Docker 镜像默认包含 FFmpeg、LibreOffice、poppler 和中文字体，可以支持复用 JSONL 生成教材，也可以支持重新处理视频、音频、PPT、Word/PDF 等素材。大模型服务仍然需要通过 `.env` 或命令参数配置为可访问的 OpenAI-compatible 接口。
+
+## 4. 试用目录怎么放
 
 建议建立一个试用根目录，例如：
 
@@ -143,7 +226,7 @@ raw\原始素材\
 
 尽量保持原始文件名和准备素材包时使用的文件名一致。如果文件名或相对目录变化很大，建议重新生成素材台账和 evidence JSONL。
 
-## 4. 推荐试用方式：不重新处理素材，只重新生成教材
+## 5. 推荐试用方式：不重新处理素材，只重新生成教材
 
 首次试用推荐这种方式。它直接复用素材包里的：
 
@@ -189,7 +272,7 @@ python scripts/run_topic_textbook.py `
 
 只有在原始大文件已经放好、且 evidence 中的媒体路径能被解析时，才建议打包 zip。否则教材正文和 `digital_book\` 可以正常生成，但 zip 校验可能因为媒体资源缺失而失败。
 
-## 5. 重新处理素材后再生成教材
+## 6. 重新处理素材后再生成教材
 
 以下情况建议重新处理素材：
 
@@ -324,7 +407,7 @@ python scripts/run_topic_textbook.py `
   --student-package-output "$env:DTEXTBOOKS_WORK\05_final_deliverables\digital_book.zip"
 ```
 
-## 6. 两种方式的区别
+## 7. 两种方式的区别
 
 | 方式 | 做什么 | 什么时候用 |
 | --- | --- | --- |
@@ -344,7 +427,7 @@ python scripts/run_topic_textbook.py `
 - 数字教材前端
 - 可选的 `digital_book.zip`
 
-## 7. 生成教材的结构
+## 8. 生成教材的结构
 
 生成结果采用项目化教材结构：
 
@@ -370,7 +453,7 @@ python scripts/run_topic_textbook.py `
 
 只要素材证据足够，每个项目默认至少 3 个任务。素材不足时，系统会记录素材缺口，不会硬编不存在的内容。
 
-## 8. 打开数字教材
+## 9. 打开数字教材
 
 不要直接双击 `index.html`。多数浏览器会限制 `file://` 页面读取 `digital_book.json` 和媒体资源。
 
@@ -387,7 +470,7 @@ python scripts/open_digital_book.py `
 http://127.0.0.1:8767/05_final_deliverables/digital_book/index.html
 ```
 
-## 9. 生成后检查哪些文件
+## 10. 生成后检查哪些文件
 
 成功生成后，至少检查：
 
@@ -408,7 +491,7 @@ http://127.0.0.1:8767/05_final_deliverables/digital_book/index.html
 <work_material>\05_final_deliverables\digital_book.zip
 ```
 
-## 10. 常见问题
+## 11. 常见问题
 
 ### 找不到 evidence JSONL
 
@@ -487,7 +570,7 @@ python scripts/open_digital_book.py --material-root <work_material>
 
 不要从文件管理器直接打开 `index.html`。
 
-## 11. 验证项目代码
+## 12. 验证项目代码
 
 在仓库根目录运行：
 
