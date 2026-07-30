@@ -2,6 +2,8 @@
 
 from scripts.material_paths import (  # noqa: F401
     default_data_root,
+    default_generated_root,
+    default_generated_output_dir,
     default_models_root,
     default_raw_root,
     default_work_root,

@@ -418,10 +418,7 @@ def _parse_review_issues(raw_response: str, default_location: str) -> list[Revie
 
 
 def _parse_json_array(raw_response: str) -> list[Any]:
-    text = raw_response.strip()
-    fenced = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, flags=re.DOTALL)
-    if fenced:
-        text = fenced.group(1)
+    text = _extract_json_array_text(raw_response)
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -429,6 +426,50 @@ def _parse_json_array(raw_response: str) -> list[Any]:
     if not isinstance(payload, list):
         raise RuntimeError("Reviewer LLM response must be a JSON array.")
     return payload
+
+
+def _extract_json_array_text(raw_response: str) -> str:
+    text = str(raw_response or "").strip()
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
+    if text.startswith("["):
+        balanced = _balanced_json_array_prefix(text)
+        if balanced:
+            return balanced
+    start = text.find("[")
+    if start >= 0:
+        balanced = _balanced_json_array_prefix(text[start:])
+        if balanced:
+            return balanced
+        end = text.rfind("]")
+        if end > start:
+            return text[start : end + 1]
+    return text
+
+
+def _balanced_json_array_prefix(text: str) -> str:
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return text[: index + 1]
+    return ""
 
 
 def _normalize_severity(value: Any) -> str:
