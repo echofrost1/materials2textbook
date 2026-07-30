@@ -74,6 +74,22 @@ class FakeReviewerLLM:
         return '[{"severity":"low","location":"chapter_01","message":"学习活动缺少难度递进。","suggestion":"按观察、复述、分析三个层级改写活动。"}]'
 
 
+class FakeFencedReviewerLLM:
+    def generate(self, messages: list[dict[str, str]]) -> str:
+        return """Here is the review:
+```json
+[
+  {
+    "severity": "high",
+    "location": "C1",
+    "message": "Needs support.",
+    "suggestion": "Add a citation."
+  }
+]
+```
+"""
+
+
 def test_evidence_reviewer_appends_llm_issues() -> None:
     issues = EvidenceReviewerAgent(llm_provider=FakeReviewerLLM(), use_llm=True).run(
         [make_plan()],
@@ -82,6 +98,16 @@ def test_evidence_reviewer_appends_llm_issues() -> None:
     )
 
     assert any(issue.message == "正文断言需要更明确的证据支撑。" for issue in issues["chapter_01"])
+
+
+def test_evidence_reviewer_accepts_fenced_json_with_surrounding_text() -> None:
+    issues = EvidenceReviewerAgent(llm_provider=FakeFencedReviewerLLM(), use_llm=True).run(
+        [make_plan()],
+        [make_chunk("C1")],
+        "Evidence: C1",
+    )
+
+    assert any(issue.message == "Needs support." for issue in issues["chapter_01"])
 
 
 def test_pedagogy_reviewer_appends_llm_issues() -> None:

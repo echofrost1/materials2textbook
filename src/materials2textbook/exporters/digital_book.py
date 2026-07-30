@@ -131,32 +131,44 @@ def build_digital_book(
             task_titles=task_titles,
             knowledge_points=knowledge_points,
         )
+        default_ability_map = [
+            "示范观察与要点提取",
+            "知识点理解与复述",
+            "操作过程分析与质量判断",
+        ]
+        ability_map, ability_map_method = _generate_ability_map(
+            llm_provider=llm_provider,
+            use_llm=use_llm,
+            project_title=project_title,
+            learning_goals=plan.learning_goals,
+            task_titles=task_titles,
+            knowledge_points=knowledge_points,
+            fallback_ability_map=default_ability_map,
+        )
+        ability_graph = _build_ability_graph(
+            project_id=plan.chapter_id,
+            project_title=project_title,
+            learning_goals=plan.learning_goals,
+            ability_map=ability_map,
+            tasks=tasks,
+            llm_provider=llm_provider,
+            use_llm=use_llm,
+            domain_config=domain_config,
+        )
+        graph_ability_map = _ability_map_from_graph(ability_graph)
+        if graph_ability_map and ability_graph.get("generation_method") == "llm":
+            ability_map = graph_ability_map
+        elif ability_map_method == "llm" and ability_graph.get("generation_method") != "llm":
+            ability_graph["generation_method"] = "llm_ability_map_rule_graph"
         projects.append(
             DigitalBookProject(
                 project_id=plan.chapter_id,
                 title=project_title,
                 project_intro=project_intro,
-                ability_map=[
-                    "示范观察与要点提取",
-                    "知识点理解与复述",
-                    "操作过程分析与质量判断",
-                ],
+                ability_map=ability_map,
                 learning_goals=plan.learning_goals,
                 tasks=tasks,
-                ability_graph=_build_ability_graph(
-                    project_id=plan.chapter_id,
-                    project_title=project_title,
-                    learning_goals=plan.learning_goals,
-                    ability_map=[
-                        "示范观察与要点提取",
-                        "知识点理解与复述",
-                        "操作过程分析与质量判断",
-                    ],
-                    tasks=tasks,
-                    llm_provider=llm_provider,
-                    use_llm=use_llm,
-                    domain_config=domain_config,
-                ),
+                ability_graph=ability_graph,
                 project_summary=project_summary,
             )
         )
@@ -745,6 +757,18 @@ def _render_textbook_style_markdown(
     if not readable:
         readable.append(f"本节围绕“{title}”展开学习，需要结合示范素材理解关键概念、操作要求和常见注意事项。")
     return "\n\n".join(readable).strip()
+
+
+def _fallback_implementation_markdown(task_title: str, chunks: list[EvidenceChunk]) -> str:
+    title = _student_display_title(task_title)
+    sections = _student_learning_sections(chunks, title=title)
+    markdown = _render_textbook_style_markdown(title, "", sections, chunks)
+    if _is_usable_student_markdown(markdown):
+        return markdown
+    return (
+        f"本任务围绕“{title}”展开。学习时先确认作业目标、设备与材料状态，再结合示范资源观察关键操作，"
+        "重点记录参数设置、操作顺序、工件状态和质量判断依据。完成任务后，应能说明主要风险点、操作要点以及常见问题的处理方法。"
+    )
 
 
 def _compose_concept_paragraph(title: str, summary_text: str, concept_items: list[str]) -> str:
@@ -1425,6 +1449,45 @@ def _build_chapter_tasks(
                 )
             )
 
+        if not any(block.type == "video" for block in task_blocks):
+            for media_index, chunk in enumerate(
+                _fallback_video_chunks_for_task(
+                    section=section,
+                    points=points,
+                    plan=plan,
+                    task_evidence_ids=task_evidence_ids,
+                    chunk_map=chunk_map,
+                ),
+                start=1,
+            ):
+                video_source_key = _video_source_key(chunk)
+                if video_source_key in used_video_sources:
+                    continue
+                media_block = _build_video_block(
+                    chunk=chunk,
+                    output_dir=output_dir,
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_fallback_media{media_index:02d}",
+                    assets=assets,
+                    copy_media_assets=copy_media_assets,
+                )
+                if media_block:
+                    used_video_sources.add(video_source_key)
+                    task_blocks.append(media_block)
+                    break
+
+        if not any(block.type == "implementation" for block in task_blocks):
+            fallback_chunks = [chunk_map[chunk_id] for chunk_id in task_evidence_ids if chunk_id in chunk_map]
+            task_blocks.append(
+                DigitalBookBlock(
+                    block_id=f"p{project_index:02d}_t{task_index:02d}_fallback_text",
+                    type="implementation",
+                    title="任务实施",
+                    markdown=_fallback_implementation_markdown(task_title, fallback_chunks),
+                    evidence_chunk_ids=task_evidence_ids,
+                    metadata={"teacher_evidence": _teacher_evidence_refs(fallback_chunks)},
+                )
+            )
+
         task_blocks.extend(
             [
                 DigitalBookBlock(
@@ -1667,6 +1730,79 @@ def _build_ability_graph(
         return fallback
 
 
+def _generate_ability_map(
+    *,
+    llm_provider: LLMProvider | None,
+    use_llm: bool,
+    project_title: str,
+    learning_goals: list[str],
+    task_titles: list[str],
+    knowledge_points: list[str],
+    fallback_ability_map: list[str],
+) -> tuple[list[str], str]:
+    if not use_llm or llm_provider is None:
+        return fallback_ability_map, "rule"
+    payload = {
+        "project_title": project_title,
+        "learning_goals": learning_goals,
+        "task_titles": task_titles,
+        "knowledge_points": knowledge_points[:20],
+    }
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是职业教育数字教材的能力图谱设计专家。"
+                "请根据项目任务生成学生可见的能力节点，只输出 JSON 对象。"
+                "不要输出 Markdown，不要输出素材编号、文件名、路径、时间码或 agent 痕迹。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "生成 4 到 6 个能力节点。能力节点应具体、可观察、面向职业任务，"
+                "例如“能完成焊前安全检查”“能调节焊接参数并判断熔池状态”。"
+                "返回格式：{\"abilities\":[\"能力1\",\"能力2\"]}\n"
+                f"输入：{json.dumps(payload, ensure_ascii=False)}"
+            ),
+        },
+    ]
+    try:
+        raw = llm_provider.generate(messages)
+        values = _parse_json_object(raw).get("abilities") or []
+        if not isinstance(values, list):
+            return fallback_ability_map, "rule_fallback"
+        labels: list[str] = []
+        for value in values:
+            label = _clean_student_text(str(value), max_chars=32)
+            if not label or _contains_student_forbidden_trace(label):
+                continue
+            if label not in labels:
+                labels.append(label)
+            if len(labels) >= 6:
+                break
+        if len(labels) >= 3:
+            return labels, "llm"
+    except Exception:
+        pass
+    return fallback_ability_map, "rule_fallback"
+
+
+def _ability_map_from_graph(graph: dict) -> list[str]:
+    labels: list[str] = []
+    for node in graph.get("nodes", []) if isinstance(graph, dict) else []:
+        if not isinstance(node, dict) or node.get("column") not in {"ability", "ability_domain", "action"}:
+            continue
+        label = _clean_student_text(str(node.get("label", "")), max_chars=32)
+        if not label or _contains_student_forbidden_trace(label):
+            continue
+        if label not in labels:
+            labels.append(label)
+        if len(labels) >= 6:
+            break
+    return labels
+
+
 def _build_rule_ability_graph(
     *,
     project_id: str,
@@ -1676,10 +1812,10 @@ def _build_rule_ability_graph(
 ) -> dict:
     columns = [
         {"id": "project", "title": "项目"},
-        {"id": "task", "title": "任务"},
-        {"id": "ability", "title": "能力目标"},
-        {"id": "knowledge", "title": "知识点"},
-        {"id": "content", "title": "学习内容"},
+        {"id": "ability_domain", "title": "能力域"},
+        {"id": "task", "title": "典型任务"},
+        {"id": "action", "title": "关键动作"},
+        {"id": "assessment", "title": "评价证据"},
     ]
     nodes: list[dict[str, str]] = []
     edges: list[dict[str, str]] = []
@@ -1687,29 +1823,25 @@ def _build_rule_ability_graph(
     project_node_id = f"{project_id}_project"
     nodes.append({"id": project_node_id, "column": "project", "label": project_title})
 
-    for task_index, task in enumerate(tasks, start=1):
-        task_node_id = f"{task.task_id}_task"
-        nodes.append({"id": task_node_id, "column": "task", "label": task.title})
-        edges.append({"from": project_node_id, "to": task_node_id})
+    domains = _ability_domains_for_project(project_title, ability_map, tasks)
+    domain_node_ids: dict[str, str] = {}
+    for domain_index, domain in enumerate(domains, start=1):
+        domain_node_id = f"{project_id}_domain_{domain_index:02d}"
+        domain_node_ids[domain["id"]] = domain_node_id
+        nodes.append({"id": domain_node_id, "column": "ability_domain", "label": domain["label"]})
+        edges.append({"from": project_node_id, "to": domain_node_id})
 
-        knowledge_labels = _ability_graph_knowledge_labels(task)
-        content_nodes = _ability_graph_content_nodes(task)
-        for point_index, point_title in enumerate(knowledge_labels, start=1):
-            ability_node_id = f"{task.task_id}_ability_{point_index:02d}"
-            point_node_id = f"{task.task_id}_knowledge_{point_index:02d}"
-            content_node_id = f"{task.task_id}_content_{point_index:02d}"
-            nodes.append({"id": ability_node_id, "column": "ability", "label": _ability_goal_label(point_title)})
-            nodes.append({"id": point_node_id, "column": "knowledge", "label": point_title})
-            nodes.append(
-                {
-                    "id": content_node_id,
-                    "column": "content",
-                    "label": _content_label_for_knowledge(point_title, content_nodes) or f"{point_title}学习要点",
-                }
-            )
-            edges.append({"from": task_node_id, "to": ability_node_id})
-            edges.append({"from": ability_node_id, "to": point_node_id})
-            edges.append({"from": point_node_id, "to": content_node_id})
+    for task_index, task in enumerate(tasks, start=1):
+        domain = _select_ability_domain(task.title, domains)
+        task_node_id = f"{task.task_id}_task"
+        action_node_id = f"{task.task_id}_action"
+        assessment_node_id = f"{task.task_id}_assessment"
+        nodes.append({"id": task_node_id, "column": "task", "label": _compact_task_label(task.title)})
+        nodes.append({"id": action_node_id, "column": "action", "label": _task_action_label(task)})
+        nodes.append({"id": assessment_node_id, "column": "assessment", "label": _task_assessment_label(task)})
+        edges.append({"from": domain_node_ids[domain["id"]], "to": task_node_id})
+        edges.append({"from": task_node_id, "to": action_node_id})
+        edges.append({"from": action_node_id, "to": assessment_node_id})
 
     return {
         "schema": "materials2textbook.ability_graph.v1",
@@ -1717,6 +1849,89 @@ def _build_rule_ability_graph(
         "nodes": nodes,
         "edges": _dedupe_edges(edges),
     }
+
+
+def _ability_domains_for_project(
+    project_title: str,
+    ability_map: list[str],
+    tasks: list[DigitalBookTask],
+) -> list[dict[str, str]]:
+    title = project_title or ""
+    task_text = " ".join(task.title for task in tasks)
+    if any(term in title for term in ("气焊", "气割")) or ("火焰" in task_text and "气" in title):
+        labels = ["设备安全与气路检查", "火焰与参数调节", "焊割操作控制", "成形质量与缺陷处理"]
+    elif any(term in title for term in ("钨极", "氩弧")):
+        labels = ["设备材料准备", "工艺参数选择", "引弧与焊枪控制", "熔池成形与质量检验"]
+    elif any(term in title for term in ("焊条", "电弧焊")):
+        labels = ["焊前准备与焊条选用", "电流参数与引弧控制", "运条焊道成形", "焊后检查与缺陷处理"]
+    elif any(term in title for term in ("设备", "安全", "防护")):
+        labels = ["安全防护意识", "设备识别与检查", "作业风险防控", "维护保养规范"]
+    else:
+        labels = ["焊前准备", "参数与工艺判断", "规范操作", "质量检查与改进"]
+
+    return [{"id": f"domain_{index:02d}", "label": label} for index, label in enumerate(labels[:4], start=1)]
+
+
+def _select_ability_domain(task_title: str, domains: list[dict[str, str]]) -> dict[str, str]:
+    title = task_title or ""
+    scored: list[tuple[int, dict[str, str]]] = []
+    for domain in domains:
+        label = domain["label"]
+        score = len(set(title) & set(label)) // 2
+        if any(term in title for term in ("安全", "防护", "风险", "检查", "准备")) and any(
+            term in label for term in ("安全", "准备", "检查", "防护", "设备")
+        ):
+            score += 3
+        if any(term in title for term in ("参数", "工艺", "火焰", "电流", "焊条", "材料")) and any(
+            term in label for term in ("参数", "工艺", "调节", "选用", "材料")
+        ):
+            score += 3
+        if any(term in title for term in ("操作", "引弧", "运条", "焊枪", "熔池", "切割", "成形")) and any(
+            term in label for term in ("操作", "控制", "引弧", "成形", "运条", "焊割")
+        ):
+            score += 3
+        if any(term in title for term in ("质量", "缺陷", "检查", "维护", "处理")) and any(
+            term in label for term in ("质量", "缺陷", "维护", "处理", "检验")
+        ):
+            score += 3
+        scored.append((score, domain))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored[0][1] if scored else {"id": "domain_01", "label": "综合能力"}
+
+
+def _compact_task_label(title: str) -> str:
+    clean = _student_display_title(title)
+    return re.sub(r"^任务\s*\d+(?:\.\d+)?\s*", "", clean).strip() or clean
+
+
+def _task_action_label(task: DigitalBookTask) -> str:
+    title = _compact_task_label(task.title)
+    if any(term in title for term in ("安全", "防护", "风险")):
+        return "识别风险，选用防护用品并完成安全确认"
+    if any(term in title for term in ("检查", "准备", "设备", "材料")):
+        return f"按清单完成{title}并确认可操作状态"
+    if any(term in title for term in ("参数", "工艺", "火焰", "电流")):
+        return "依据工件与工艺要求选择参数并完成试调"
+    if any(term in title for term in ("引弧", "运条", "焊枪", "熔池", "操作", "切割")):
+        return f"控制姿态、速度和热输入，稳定完成{title}"
+    if any(term in title for term in ("质量", "缺陷", "检查", "处理")):
+        return "观察成形结果，判断缺陷并提出修正措施"
+    return f"按照工艺流程完成{title}"
+
+
+def _task_assessment_label(task: DigitalBookTask) -> str:
+    title = _compact_task_label(task.title)
+    if any(term in title for term in ("安全", "防护", "风险")):
+        return "安全检查记录、防护用品选用结果、风险处置说明"
+    if any(term in title for term in ("设备", "材料", "准备", "维护")):
+        return "设备材料检查清单、准备确认记录、维护保养记录"
+    if any(term in title for term in ("参数", "工艺", "火焰", "电流")):
+        return "参数设置表、试焊记录、调整依据说明"
+    if any(term in title for term in ("操作", "引弧", "运条", "焊枪", "熔池", "切割", "成形")):
+        return "操作过程观察、焊缝或切口成形质量"
+    if any(term in title for term in ("质量", "缺陷", "检查", "处理")):
+        return "外观检查结果、缺陷判断与整改记录"
+    return "任务成果、操作记录与自评互评结果"
 
 
 def _ability_graph_prompt_tasks(tasks: list[DigitalBookTask]) -> list[dict]:
@@ -1989,6 +2204,59 @@ def _task_evidence_ids(section: BookSectionPlan | None, points: list[KnowledgePo
     return _dedupe(ids) or plan.evidence_chunk_ids
 
 
+def _fallback_video_chunks_for_task(
+    *,
+    section: BookSectionPlan | None,
+    points: list[KnowledgePoint],
+    plan: ChapterPlan,
+    task_evidence_ids: list[str],
+    chunk_map: dict[str, EvidenceChunk],
+) -> list[EvidenceChunk]:
+    candidate_ids = _dedupe([*task_evidence_ids, *plan.evidence_chunk_ids])
+    candidates = [
+        chunk_map[chunk_id]
+        for chunk_id in candidate_ids
+        if chunk_id in chunk_map and chunk_map[chunk_id].source_type in {"video_segment", "video", "audio_segment"}
+    ]
+    playable = [
+        chunk
+        for chunk in candidates
+        if _resolve_video_source_path(chunk.locator.path, asset_id=chunk.asset_id)
+    ]
+    if not playable:
+        return []
+    terms = _task_match_terms(section, points, plan)
+    playable.sort(key=lambda chunk: _fallback_video_score(chunk, terms), reverse=True)
+    return _select_video_chunks(playable)
+
+
+def _task_match_terms(section: BookSectionPlan | None, points: list[KnowledgePoint], plan: ChapterPlan) -> set[str]:
+    raw_terms: list[str] = [plan.title]
+    if section:
+        raw_terms.append(section.title)
+    for point in points:
+        raw_terms.append(point.title)
+        raw_terms.extend(getattr(point, "keywords", []) or [])
+    return {term for term in (_match_key(term) for term in raw_terms if term) if term}
+
+
+def _fallback_video_score(chunk: EvidenceChunk, terms: set[str]) -> tuple[int, float, float, int]:
+    text_key = _match_key(" ".join([chunk.title, chunk.content, chunk.metadata.get("source_video", "")]))
+    match_score = sum(1 for term in terms if term and (term in text_key or text_key in term))
+    quality = _float_metadata(chunk, "teaching_value")
+    relevance = _float_metadata(chunk, "relevance")
+    approved = 1 if "approved" in chunk.review_status.lower() else 0
+    return (match_score, quality, relevance, approved)
+
+
+def _float_metadata(chunk: EvidenceChunk, key: str) -> float:
+    value = chunk.metadata.get(key, 0)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _valid_chunk_ids(ids: list[str], chunk_map: dict[str, EvidenceChunk]) -> list[str]:
     return _dedupe([chunk_id for chunk_id in ids if chunk_id in chunk_map])
 
@@ -2159,8 +2427,25 @@ def _generate_exercise_items(
             task_title=task_title,
         )
         if items:
-            return items
+            cleaned_items = _sanitize_exercise_items(items)
+            if cleaned_items:
+                return cleaned_items
     return _exercise_items_for_points(points)
+
+
+def _sanitize_exercise_items(items: list[str]) -> list[str]:
+    cleaned_items: list[str] = []
+    for item in items:
+        cleaned = str(item or "").strip()
+        if not cleaned:
+            continue
+        cleaned = re.sub(r"\s*\(Answer:\s*([^)]+)\)", r"（参考答案：\1）", cleaned)
+        cleaned = re.sub(r"\b[A-Za-z]{1,5}[-_]?\d{3,}(?:-\d+)?\b", "相应设备型号", cleaned)
+        cleaned = _clean_student_text(cleaned, max_chars=180)
+        if not cleaned or _contains_student_forbidden_trace(cleaned):
+            continue
+        cleaned_items.append(cleaned)
+    return cleaned_items
 
 
 def _match_key(value: str) -> str:
@@ -2274,10 +2559,8 @@ def _build_video_block(
 ) -> DigitalBookBlock | None:
     if chunk.source_type not in {"video_segment", "video", "audio_segment"}:
         return None
-    source_path = _resolve_source_path(chunk.locator.path, asset_id=chunk.asset_id)
+    source_path = _resolve_video_source_path(chunk.locator.path, asset_id=chunk.asset_id)
     if not source_path:
-        return None
-    if source_path.suffix.lower() not in {".mp4", ".webm", ".ogg", ".mov", ".m4v"}:
         return None
 
     video_rel = _copy_asset(source_path, output_dir / "assets" / "videos") if copy_media_assets else _relative_asset_path(source_path, output_dir)
@@ -2347,6 +2630,33 @@ def _video_display_title(chunk: EvidenceChunk) -> str:
     return f"示范视频：{title}"
 
 
+_BROWSER_VIDEO_SUFFIXES = {".mp4", ".webm", ".ogg", ".mov", ".m4v"}
+
+
+def _converted_video_dirs() -> list[Path]:
+    work_root = Path(os.environ.get("DTEXTBOOKS_WORK", "local_runs/work_material1"))
+    return [
+        work_root / "02_working_processing" / "converted_mp4",
+        Path.cwd() / "work_materials" / "work_material1" / "02_working_processing" / "converted_mp4",
+        Path.cwd() / "work_material1" / "02_working_processing" / "converted_mp4",
+    ]
+
+
+def _resolve_video_source_path(path_value: str, asset_id: str = "") -> Path | None:
+    if asset_id:
+        for converted_dir in _converted_video_dirs():
+            if not converted_dir.exists():
+                continue
+            for candidate in sorted(converted_dir.glob(f"{asset_id}_*.mp4")):
+                if candidate.is_file():
+                    return candidate.resolve()
+
+    source_path = _resolve_source_path(path_value, asset_id=asset_id)
+    if source_path and source_path.suffix.lower() in _BROWSER_VIDEO_SUFFIXES:
+        return source_path
+    return None
+
+
 def _resolve_source_path(path_value: str, asset_id: str = "") -> Path | None:
     if not path_value:
         return None
@@ -2362,12 +2672,7 @@ def _resolve_source_path(path_value: str, asset_id: str = "") -> Path | None:
         candidates.append(Path.cwd() / "work_material1" / path)
         candidates.append(Path.cwd() / "work_material1" / "02_working_processing" / "converted_mp4" / path.name)
         if asset_id:
-            converted_dirs = [
-                work_root / "02_working_processing" / "converted_mp4",
-                Path.cwd() / "work_materials" / "work_material1" / "02_working_processing" / "converted_mp4",
-                Path.cwd() / "work_material1" / "02_working_processing" / "converted_mp4",
-            ]
-            for converted_dir in converted_dirs:
+            for converted_dir in _converted_video_dirs():
                 candidates.extend(sorted(converted_dir.glob(f"{asset_id}_*.mp4")))
     for candidate in candidates:
         if candidate.exists() and candidate.is_file():
@@ -3290,6 +3595,19 @@ body {
   gap: 10px;
   min-height: 64px;
 }
+.ability-map-column-title {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  min-height: 26px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
 .ability-map-node {
   min-height: 38px;
   display: flex;
@@ -3309,8 +3627,14 @@ body {
 .ability-map-node.task-node {
   border-color: #344054;
 }
-.ability-map-node.content-node {
+.ability-map-node.action-node {
+  border-color: #2274a5;
+  background: #f8fbff;
+}
+.ability-map-node.content-node,
+.ability-map-node.assessment-node {
   border-color: #e4a83a;
+  background: #fffaf0;
 }
 .ability-map-svg {
   position: absolute;
@@ -3539,22 +3863,47 @@ function renderToc(book) {
   if (book.preface) {
     toc.appendChild(tocLink('前言', 'preface', 'front-matter'));
   }
-  const plan = book.metadata?.book_plan;
-  if (plan?.chapters?.length) {
-    for (const [index, chapter] of plan.chapters.entries()) {
-      toc.appendChild(tocChapter(chapter, index === 0));
-    }
-  } else {
-    for (const project of book.projects || []) {
-      toc.appendChild(tocLink(project.title, project.project_id, 'project'));
-      for (const task of project.tasks || []) {
-        toc.appendChild(tocLink(task.title, task.task_id, 'task'));
-      }
-    }
+  for (const [index, project] of (book.projects || []).entries()) {
+    toc.appendChild(tocProject(project, index, index === 0));
   }
   if (book.references && book.references.length) {
     toc.appendChild(tocLink('参考文献', 'references', 'back-matter'));
   }
+}
+
+function tocProject(project, index, expanded) {
+  const wrap = el('div', `toc-chapter${expanded ? '' : ' collapsed'}`);
+  const button = el('button', 'toc-chapter-toggle');
+  button.type = 'button';
+  button.dataset.target = project.project_id;
+  const icon = el('span', 'toc-chapter-icon');
+  const label = el('span', '');
+  label.textContent = `项目${index + 1} ${cleanTitle(project.title)}`;
+  button.appendChild(icon);
+  button.appendChild(label);
+  const sectionList = el('div', 'toc-section-list');
+  sectionList.appendChild(tocLink('项目导学', `${project.project_id}_intro`, 'project-module toc-section-link'));
+  sectionList.appendChild(tocLink('能力图谱', `${project.project_id}_ability`, 'project-module toc-section-link'));
+  sectionList.appendChild(tocLink('学习目标', `${project.project_id}_goals`, 'project-module toc-section-link'));
+  for (const task of project.tasks || []) {
+    sectionList.appendChild(tocLink(task.title, task.task_id, 'task toc-section-link'));
+  }
+  if (project.project_summary) {
+    sectionList.appendChild(tocLink('项目小结', `${project.project_id}_summary`, 'project-module toc-section-link'));
+  }
+  const syncIcon = () => {
+    icon.textContent = wrap.classList.contains('collapsed') ? '▶' : '▼';
+  };
+  button.addEventListener('click', () => {
+    wrap.classList.toggle('collapsed');
+    syncIcon();
+    setActiveSection(project.project_id);
+    document.getElementById(project.project_id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  syncIcon();
+  wrap.appendChild(button);
+  wrap.appendChild(sectionList);
+  return wrap;
 }
 
 function tocChapter(chapter, expanded) {
@@ -3631,8 +3980,6 @@ function renderContent(book) {
   if (book.preface) {
     root.appendChild(renderMarkdownSection('preface', 'h2', '前言', book.preface));
   }
-  const outline = renderBookOutline(book);
-  if (outline) root.appendChild(outline);
   const bookChapters = book.metadata?.book_plan?.chapters || [];
   for (const project of book.projects || []) {
     const chapterPlan = bookChapters.find((chapter) => chapter.chapter_id === project.project_id);
@@ -3640,9 +3987,13 @@ function renderContent(book) {
     const section = el('section', 'project');
     section.id = project.project_id;
     section.appendChild(heading('h2', project.title));
-    section.appendChild(renderMarkdownSection(null, 'h3', '项目导学', project.project_intro));
-    section.appendChild(renderAbilityMap(project));
-    section.appendChild(listBlock('学习目标', project.learning_goals || []));
+    section.appendChild(renderMarkdownSection(`${project.project_id}_intro`, 'h3', '项目导学', project.project_intro));
+    const abilityMap = renderAbilityMap(project);
+    abilityMap.id = `${project.project_id}_ability`;
+    section.appendChild(abilityMap);
+    const goals = listBlock('学习目标', project.learning_goals || []);
+    goals.id = `${project.project_id}_goals`;
+    section.appendChild(goals);
     root.appendChild(section);
 
     for (const task of project.tasks || []) {
@@ -3650,13 +4001,7 @@ function renderContent(book) {
       taskEl.id = task.task_id;
       taskEl.appendChild(heading('h3', task.title));
       taskEl.appendChild(tagRow('知识点', task.knowledge_points || []));
-      for (const block of task.blocks || []) {
-        for (const sectionPlan of matchingChapterSections(chapterPlan, block, anchoredSections)) {
-          taskEl.appendChild(sectionAnchor(sectionPlan.section_id));
-          anchoredSections.add(sectionPlan.section_id);
-        }
-        taskEl.appendChild(renderBlock(block));
-      }
+      renderStructuredTaskBlocks(taskEl, task.blocks || [], chapterPlan, anchoredSections);
       root.appendChild(taskEl);
     }
 
@@ -3695,6 +4040,64 @@ function renderReferencesSection(references) {
   }
   section.appendChild(list);
   return section;
+}
+
+function renderStructuredTaskBlocks(taskEl, blocks, chapterPlan, anchoredSections) {
+  const byType = (type) => blocks.filter((block) => (block.type || block.block_type) === type);
+  const renderWithAnchor = (block) => {
+    for (const sectionPlan of matchingChapterSections(chapterPlan, block, anchoredSections)) {
+      taskEl.appendChild(sectionAnchor(sectionPlan.section_id));
+      anchoredSections.add(sectionPlan.section_id);
+    }
+    taskEl.appendChild(renderBlock(block));
+  };
+
+  const learningNav = byType('learning_nav')[0];
+  const scenario = byType('scenario')[0];
+  const assessment = byType('assessment')[0];
+  const exercises = byType('exercises')[0];
+  if (learningNav) renderWithAnchor(learningNav);
+  if (scenario) renderWithAnchor(scenario);
+
+  const implementationBlocks = byType('implementation');
+  const resourceBlocks = blocks.filter((block) => ['video', 'case_example', 'image'].includes(block.type || block.block_type));
+  const implementationModule = renderImplementationModule(implementationBlocks, resourceBlocks);
+  if (implementationModule) {
+    const anchorSource = implementationBlocks[0] || resourceBlocks[0];
+    if (anchorSource) {
+      for (const sectionPlan of matchingChapterSections(chapterPlan, anchorSource, anchoredSections)) {
+        taskEl.appendChild(sectionAnchor(sectionPlan.section_id));
+        anchoredSections.add(sectionPlan.section_id);
+      }
+    }
+    taskEl.appendChild(implementationModule);
+  }
+
+  if (assessment) renderWithAnchor(assessment);
+  if (exercises) renderWithAnchor(exercises);
+}
+
+function renderImplementationModule(implementationBlocks, resourceBlocks) {
+  if (!implementationBlocks.length && !resourceBlocks.length) return null;
+  const node = el('article', 'block block-implementation task-implementation-module');
+  node.id = implementationBlocks[0]?.block_id || resourceBlocks[0]?.block_id || '';
+  node.appendChild(blockHeading('任务实施'));
+  for (const block of implementationBlocks) {
+    if (block.markdown) {
+      const markdown = el('div', 'markdown');
+      markdown.innerHTML = renderMarkdown(block.markdown);
+      node.appendChild(markdown);
+    }
+    if (block.items && block.items.length) {
+      node.appendChild(list(block.items));
+    }
+  }
+  for (const block of resourceBlocks) {
+    const resource = renderBlock(block);
+    resource.classList.add('nested-resource-block');
+    node.appendChild(resource);
+  }
+  return node;
 }
 
 function renderAbilityMap(project) {
@@ -3750,15 +4153,25 @@ function renderGeneratedAbilityMap(graphData) {
   const canvas = el('div', 'ability-map-canvas');
   const svg = createSvg('svg', 'ability-map-svg');
   const grid = el('div', 'ability-map-grid');
-  const columnIds = graphData.columns?.map((column) => column.id) || ['project', 'task', 'ability', 'knowledge', 'content'];
+  const columns = graphData.columns?.length ? graphData.columns : [
+    { id: 'project', title: '项目' },
+    { id: 'ability_domain', title: '能力域' },
+    { id: 'task', title: '典型任务' },
+    { id: 'action', title: '关键动作' },
+    { id: 'assessment', title: '评价证据' },
+  ];
   const edgeTargets = new Map();
   for (const edge of graphData.edges || []) {
     if (!edge?.from || !edge?.to) continue;
     if (!edgeTargets.has(edge.from)) edgeTargets.set(edge.from, []);
     edgeTargets.get(edge.from).push(edge.to);
   }
-  for (const columnId of columnIds) {
+  for (const columnDef of columns) {
+    const columnId = columnDef.id;
     const column = el('div', 'ability-map-column');
+    const columnTitle = el('div', 'ability-map-column-title');
+    columnTitle.textContent = columnDef.title || columnId;
+    column.appendChild(columnTitle);
     const nodes = (graphData.nodes || []).filter((node) => node.column === columnId);
     for (const node of nodes) {
       column.appendChild(abilityNode(node.label || '', node.id, edgeTargets.get(node.id) || [], abilityNodeClass(columnId)));
@@ -3782,33 +4195,85 @@ function applyAbilityMapDensity(canvas) {
 function buildFallbackAbilityGraph(project) {
   const columns = [
     { id: 'project', title: '项目' },
-    { id: 'task', title: '任务' },
-    { id: 'ability', title: '能力目标' },
-    { id: 'knowledge', title: '知识点' },
-    { id: 'content', title: '学习内容' },
+    { id: 'ability_domain', title: '能力域' },
+    { id: 'task', title: '典型任务' },
+    { id: 'action', title: '关键动作' },
+    { id: 'assessment', title: '评价证据' },
   ];
   const nodes = [];
   const edges = [];
   const projectId = abilityNodeId('project', 0, 0);
   nodes.push({ id: projectId, column: 'project', label: project.title || '项目' });
+  const domains = browserAbilityDomains(project);
+  for (const [domainIndex, domain] of domains.entries()) {
+    const domainId = abilityNodeId('ability_domain', domainIndex, 0);
+    domain.nodeId = domainId;
+    nodes.push({ id: domainId, column: 'ability_domain', label: domain.label });
+    edges.push({ from: projectId, to: domainId });
+  }
   for (const [taskIndex, task] of (project.tasks || []).entries()) {
+    const domain = browserSelectAbilityDomain(task.title || '', domains);
     const taskId = abilityNodeId('task', taskIndex, 0);
-    nodes.push({ id: taskId, column: 'task', label: task.title || `任务 ${taskIndex + 1}` });
-    edges.push({ from: projectId, to: taskId });
-    const knowledge = knowledgeLabels(task);
-    for (const [pointIndex, point] of knowledge.entries()) {
-      const abilityId = abilityNodeId('ability', taskIndex, pointIndex);
-      const pointId = abilityNodeId('knowledge', taskIndex, pointIndex);
-      const contentId = abilityNodeId('content', taskIndex, pointIndex);
-      nodes.push({ id: abilityId, column: 'ability', label: fallbackAbilityLabel(point) });
-      nodes.push({ id: pointId, column: 'knowledge', label: point });
-      nodes.push({ id: contentId, column: 'content', label: fallbackContentLabel(task, point) });
-      edges.push({ from: taskId, to: abilityId });
-      edges.push({ from: abilityId, to: pointId });
-      edges.push({ from: pointId, to: contentId });
-    }
+    const actionId = abilityNodeId('action', taskIndex, 0);
+    const assessmentId = abilityNodeId('assessment', taskIndex, 0);
+    nodes.push({ id: taskId, column: 'task', label: compactTaskLabel(task.title || `任务 ${taskIndex + 1}`) });
+    nodes.push({ id: actionId, column: 'action', label: browserTaskActionLabel(task.title || '') });
+    nodes.push({ id: assessmentId, column: 'assessment', label: browserTaskAssessmentLabel(task.title || '') });
+    edges.push({ from: domain.nodeId, to: taskId });
+    edges.push({ from: taskId, to: actionId });
+    edges.push({ from: actionId, to: assessmentId });
   }
   return { schema: 'materials2textbook.ability_graph.v1', columns, nodes, edges, generation_method: 'viewer_fallback' };
+}
+
+function browserAbilityDomains(project) {
+  const text = `${project.title || ''} ${(project.tasks || []).map((task) => task.title || '').join(' ')}`;
+  const title = project.title || '';
+  let labels;
+  if (/气焊|气割/.test(title) || (/火焰/.test(text) && /气/.test(title))) labels = ['设备安全与气路检查', '火焰与参数调节', '焊割操作控制', '成形质量与缺陷处理'];
+  else if (/钨极|氩弧/.test(title)) labels = ['设备材料准备', '工艺参数选择', '引弧与焊枪控制', '熔池成形与质量检验'];
+  else if (/焊条|电弧焊/.test(title)) labels = ['焊前准备与焊条选用', '电流参数与引弧控制', '运条焊道成形', '焊后检查与缺陷处理'];
+  else if (/设备|安全|防护/.test(title)) labels = ['安全防护意识', '设备识别与检查', '作业风险防控', '维护保养规范'];
+  else labels = ['焊前准备', '参数与工艺判断', '规范操作', '质量检查与改进'];
+  return labels.map((label) => ({ label }));
+}
+
+function browserSelectAbilityDomain(title, domains) {
+  const scores = domains.map((domain) => {
+    let score = 0;
+    const label = domain.label || '';
+    if (/安全|防护|风险|检查|准备/.test(title) && /安全|准备|检查|防护|设备/.test(label)) score += 3;
+    if (/参数|工艺|火焰|电流|焊条|材料/.test(title) && /参数|工艺|调节|选用|材料/.test(label)) score += 3;
+    if (/操作|引弧|运条|焊枪|熔池|切割|成形/.test(title) && /操作|控制|引弧|成形|运条|焊割/.test(label)) score += 3;
+    if (/质量|缺陷|检查|维护|处理/.test(title) && /质量|缺陷|维护|处理|检验/.test(label)) score += 3;
+    return { domain, score };
+  });
+  scores.sort((a, b) => b.score - a.score);
+  return scores[0]?.domain || domains[0];
+}
+
+function compactTaskLabel(title) {
+  return cleanTitle(title).replace(/^任务\\s*\\d+(?:\\.\\d+)?\\s*/, '').trim();
+}
+
+function browserTaskActionLabel(title) {
+  const clean = compactTaskLabel(title);
+  if (/安全|防护|风险/.test(clean)) return '识别风险，选用防护用品并完成安全确认';
+  if (/检查|准备|设备|材料/.test(clean)) return `按清单完成${clean}并确认可操作状态`;
+  if (/参数|工艺|火焰|电流/.test(clean)) return '依据工件与工艺要求选择参数并完成试调';
+  if (/引弧|运条|焊枪|熔池|操作|切割/.test(clean)) return `控制姿态、速度和热输入，稳定完成${clean}`;
+  if (/质量|缺陷|检查|处理/.test(clean)) return '观察成形结果，判断缺陷并提出修正措施';
+  return `按照工艺流程完成${clean}`;
+}
+
+function browserTaskAssessmentLabel(title) {
+  const clean = compactTaskLabel(title);
+  if (/安全|防护|风险/.test(clean)) return '安全检查记录、防护用品选用结果、风险处置说明';
+  if (/设备|材料|准备|维护/.test(clean)) return '设备材料检查清单、准备确认记录、维护保养记录';
+  if (/参数|工艺|火焰|电流/.test(clean)) return '参数设置表、试焊记录、调整依据说明';
+  if (/操作|引弧|运条|焊枪|熔池|切割|成形/.test(clean)) return '操作过程观察、焊缝或切口成形质量';
+  if (/质量|缺陷|检查|处理/.test(clean)) return '外观检查结果、缺陷判断与整改记录';
+  return '任务成果、操作记录与自评互评结果';
 }
 
 function fallbackAbilityLabel(point) {
@@ -3827,7 +4292,10 @@ function fallbackContentLabel(task, point) {
 
 function abilityNodeClass(columnId) {
   if (columnId === 'project') return 'project-node';
+  if (columnId === 'ability_domain') return 'ability-node';
   if (columnId === 'task') return 'task-node';
+  if (columnId === 'action') return 'action-node';
+  if (columnId === 'assessment') return 'assessment-node';
   if (columnId === 'content') return 'content-node';
   if (columnId === 'knowledge') return 'knowledge-node';
   return 'ability-node';

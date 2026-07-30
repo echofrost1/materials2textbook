@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 import json
 from typing import Any
 
@@ -16,7 +17,7 @@ def build_book_plan_messages(
     max_chars: int = 14000,
 ) -> list[dict[str, str]]:
     samples = []
-    for chunk in chunks[:160]:
+    for chunk in _select_planning_samples(chunks, limit=220):
         samples.append(
             {
                 "chunk_id": chunk.chunk_id,
@@ -33,6 +34,7 @@ def build_book_plan_messages(
     payload: dict[str, Any] = {
         "title": title,
         "domain_config": domain_config.to_dict(),
+        "material_block_summary": _material_block_summary(chunks),
         "evidence_chunks": samples,
     }
     clipped = json.dumps(payload, ensure_ascii=False, indent=2)[:max_chars]
@@ -94,9 +96,108 @@ def build_book_plan_messages(
             "- Do not create projects from individual filenames.",
             "- Do not invent a project unrelated to the evidence.",
             "- Prefer balanced projects with enough evidence to support writing.",
+            "- Treat material_block_summary as the coverage map for the whole textbook.",
+            "- Cover every major material_block that has substantial evidence unless max project count prevents it.",
+            "- Prefer one project per major material_block; merge only very small or closely related blocks.",
+            "- For each project, include both video_segment and document/PPT evidence when available.",
+            "- Populate recommended_video_ids when video evidence exists for a task.",
+            "- Do not let a single early PPT or filename dominate the whole plan.",
             "",
             "Planning input:",
             clipped,
         ]
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def _select_planning_samples(chunks: list[EvidenceChunk], *, limit: int) -> list[EvidenceChunk]:
+    by_block: dict[str, list[EvidenceChunk]] = defaultdict(list)
+    for chunk in chunks:
+        by_block[_block_name(chunk)].append(chunk)
+
+    selected: list[EvidenceChunk] = []
+    seen: set[str] = set()
+    ordered_blocks = sorted(by_block.items(), key=lambda item: (-len(item[1]), item[0]))
+    for _, block_chunks in ordered_blocks:
+        ranked_chunks = sorted(block_chunks, key=_quality_key, reverse=True)
+        for source_type in ("video_segment", "ppt_slide", "reference_text", "audio_segment", "structured_asset"):
+            for chunk in ranked_chunks:
+                if len(selected) >= limit:
+                    return selected
+                if chunk.chunk_id in seen:
+                    continue
+                if chunk.source_type != source_type:
+                    continue
+                selected.append(chunk)
+                seen.add(chunk.chunk_id)
+                break
+
+    block_index = 0
+    while len(selected) < limit and ordered_blocks:
+        _, block_chunks = ordered_blocks[block_index % len(ordered_blocks)]
+        ranked_chunks = sorted(block_chunks, key=_quality_key, reverse=True)
+        added = False
+        for chunk in ranked_chunks:
+            if chunk.chunk_id and chunk.chunk_id not in seen:
+                selected.append(chunk)
+                seen.add(chunk.chunk_id)
+                added = True
+                break
+        if not added and all(all(chunk.chunk_id in seen for chunk in chunks) for _, chunks in ordered_blocks):
+            break
+        block_index += 1
+    return selected
+
+
+def _material_block_summary(chunks: list[EvidenceChunk], *, examples_per_block: int = 8) -> list[dict[str, Any]]:
+    by_block: dict[str, list[EvidenceChunk]] = defaultdict(list)
+    for chunk in chunks:
+        by_block[_block_name(chunk)].append(chunk)
+
+    summary = []
+    for block, block_chunks in sorted(by_block.items(), key=lambda item: (-len(item[1]), item[0])):
+        source_counts = Counter(chunk.source_type or "unknown" for chunk in block_chunks)
+        examples = []
+        for chunk in _select_planning_samples(block_chunks, limit=examples_per_block):
+            examples.append(
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "title": chunk.title,
+                    "source_type": chunk.source_type,
+                    "summary": chunk.summary,
+                }
+            )
+        summary.append(
+            {
+                "material_block": block,
+                "chunk_count": len(block_chunks),
+                "source_type_counts": dict(source_counts),
+                "examples": examples,
+            }
+        )
+    return summary
+
+
+def _block_name(chunk: EvidenceChunk) -> str:
+    return chunk.material_block or chunk.recommended_chapter or chunk.subject or "Unassigned"
+
+
+def _quality_key(chunk: EvidenceChunk) -> tuple[float, float, float, int, int, int]:
+    review_bonus = 1 if chunk.review_status in {"Agent_Keep", "Reviewed_Keep", "keep"} else 0
+    source_bonus = {
+        "video_segment": 3,
+        "ppt_slide": 2,
+        "reference_text": 2,
+        "audio_segment": 1,
+        "structured_asset": 1,
+    }.get(chunk.source_type, 0)
+    content_len = min(len(chunk.content or "") + len(chunk.summary or ""), 2000)
+    title_len = min(len(chunk.title or ""), 80)
+    return (
+        chunk.score.teaching_value,
+        chunk.score.confidence,
+        chunk.score.relevance,
+        review_bonus,
+        source_bonus,
+        content_len + title_len,
+    )

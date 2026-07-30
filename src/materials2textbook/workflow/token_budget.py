@@ -350,7 +350,8 @@ def _dedupe(values: list[str]) -> list[str]:
     return result
 
 
-def _chunk_priority(chunk: EvidenceChunk) -> tuple[float, float, int]:
+def _chunk_priority(chunk: EvidenceChunk) -> tuple[float, float, float, int]:
     approved_bonus = 1.0 if "approved" in chunk.review_status.lower() else 0.0
+    source_bonus = 0.5 if chunk.source_type == "video_segment" else 0.0
     score = chunk.score.teaching_value * 0.6 + chunk.score.relevance * 0.3 + chunk.score.confidence * 0.1
-    return approved_bonus, score, len(chunk.content)
+    return approved_bonus, source_bonus, score, len(chunk.content)

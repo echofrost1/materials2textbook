@@ -225,6 +225,7 @@ def main() -> None:
     args = parser.parse_args()
 
     material_root = args.material_root.resolve()
+    os.environ.setdefault("DTEXTBOOKS_WORK", str(material_root))
     json_dir = material_root / "02_working_processing" / "json"
     video_segments_path = (args.segments or json_dir / "video_segments.jsonl").resolve()
     ppt_assets_path = (args.ppt_assets or json_dir / "ppt_assets.jsonl").resolve()
