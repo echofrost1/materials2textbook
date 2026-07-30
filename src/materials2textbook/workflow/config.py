@@ -35,7 +35,7 @@ class WorkflowConfig:
         return value >= self.min_teaching_value
 
     def normalized_review_rounds(self) -> int:
-        return max(1, self.review_rounds)
+        return max(0, self.review_rounds)
 
     def token_budget_enabled(self) -> bool:
         return self.max_input_tokens > 0

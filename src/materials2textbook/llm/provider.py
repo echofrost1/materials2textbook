@@ -61,6 +61,7 @@ class OpenAICompatibleProvider:
             "messages": messages,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         request = urllib.request.Request(
             url=f"{self.config.base_url.rstrip('/')}/chat/completions",
