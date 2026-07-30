@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from material_paths import default_raw_root, default_work_root
+from material_paths import default_generated_output_dir, default_raw_root, default_work_root
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -228,7 +228,7 @@ def main() -> None:
     json_dir = material_root / "02_working_processing" / "json"
     video_segments_path = (args.segments or json_dir / "video_segments.jsonl").resolve()
     ppt_assets_path = (args.ppt_assets or json_dir / "ppt_assets.jsonl").resolve()
-    output_dir = (args.output_dir or material_root / "05_final_deliverables" / "agent_workflow").resolve()
+    output_dir = (args.output_dir or default_generated_output_dir(material_root, args.title)).resolve()
 
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"[runner] material_root={material_root}", flush=True)
