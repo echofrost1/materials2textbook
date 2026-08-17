@@ -24,7 +24,10 @@ from materials2textbook.agents.book_planner import (
 from materials2textbook.agents.book_plan_llm import (
     BookPlanLLMAgent,
     book_plan_from_dict,
+    enrich_chapter_evidence,
+    enforce_material_block_coverage,
     enforce_minimum_sections,
+    expand_tasks_by_material_density,
     plan_has_blocking_issues,
 )
 from materials2textbook.agents.case_designer import CaseDesignerAgent
@@ -41,10 +44,10 @@ from materials2textbook.exporters.docx import markdown_to_docx
 from materials2textbook.io_utils import read_jsonl, write_json, write_jsonl, write_text
 from materials2textbook.llm.cache import CachingLLMProvider, LLMCacheStats
 from materials2textbook.llm.provider import LLMProvider
-from materials2textbook.schemas import ChapterPlan, EvidenceChunk, ReviewReport, WorkflowOutputs
+from materials2textbook.schemas import ChapterPlan, EvidenceChunk, ReviewIssue, ReviewReport, WorkflowOutputs
 from materials2textbook.workflow.config import WorkflowConfig
 from materials2textbook.workflow.reporting import build_workflow_summary, render_evidence_markdown, render_review_markdown
-from materials2textbook.workflow.token_budget import apply_evidence_token_budget
+from materials2textbook.workflow.token_budget import TokenBudgetReport, apply_evidence_token_budget, estimate_chunks_tokens
 
 
 def _progress(message: str) -> None:
@@ -120,18 +123,34 @@ class TextbookWorkflow:
         ]
         filter_skipped_chunks = len(raw_chunks) - len(chunks)
         _progress(f"resource chunks ready: kept={len(chunks)}, skipped_by_filter={filter_skipped_chunks}")
-        _progress("applying evidence token budget")
-        chunks, token_budget_report = apply_evidence_token_budget(
-            chunks,
-            max_input_tokens=config.max_input_tokens,
-            max_tokens_per_evidence_chunk=config.normalized_max_tokens_per_evidence_chunk(),
-            summarize_over_budget=config.summarize_over_budget,
-            summary_token_reserve_ratio=config.normalized_summary_token_reserve_ratio(),
-            max_tokens_per_summary_chunk=config.normalized_max_tokens_per_summary_chunk(),
-            max_summary_source_chunks=config.normalized_max_summary_source_chunks(),
-            llm_provider=self.resource_analyst.llm_provider,
-            use_llm=self.resource_analyst.use_llm,
-        )
+        if book_mode:
+            _progress("book mode: keeping full evidence pool for planning; applying token budgets per chapter")
+            estimated_tokens = estimate_chunks_tokens(chunks)
+            token_budget_report = TokenBudgetReport(
+                enabled=False,
+                max_input_tokens=0,
+                max_tokens_per_evidence_chunk=config.normalized_max_tokens_per_evidence_chunk(),
+                original_chunks=len(chunks),
+                kept_chunks=len(chunks),
+                kept_source_chunks=len(chunks),
+                dropped_chunks=0,
+                original_estimated_tokens=estimated_tokens,
+                kept_estimated_tokens=estimated_tokens,
+                truncated_chunks=0,
+            )
+        else:
+            _progress("applying evidence token budget")
+            chunks, token_budget_report = apply_evidence_token_budget(
+                chunks,
+                max_input_tokens=config.max_input_tokens,
+                max_tokens_per_evidence_chunk=config.normalized_max_tokens_per_evidence_chunk(),
+                summarize_over_budget=config.summarize_over_budget,
+                summary_token_reserve_ratio=config.normalized_summary_token_reserve_ratio(),
+                max_tokens_per_summary_chunk=config.normalized_max_tokens_per_summary_chunk(),
+                max_summary_source_chunks=config.normalized_max_summary_source_chunks(),
+                llm_provider=self.resource_analyst.llm_provider,
+                use_llm=self.resource_analyst.use_llm,
+            )
         book_plan = None
         book_plan_review = []
         planning_mode = "chapter"
@@ -168,6 +187,14 @@ class TextbookWorkflow:
                 )
                 planning_mode = "rule_fallback" if auto_plan_issues else "rule"
             book_plan, section_issues = enforce_minimum_sections(book_plan, chunks)
+            book_plan, coverage_issues = enforce_material_block_coverage(
+                book_plan,
+                chunks,
+                max_chapters=max_chapters,
+                chapter_token_budget=max_chapter_input_tokens,
+            )
+            book_plan, density_issues = expand_tasks_by_material_density(book_plan, chunks)
+            book_plan = enrich_chapter_evidence(book_plan, chunks)
             metadata = dict(book_plan.metadata)
             metadata.update(
                 {
@@ -178,7 +205,7 @@ class TextbookWorkflow:
                 }
             )
             book_plan = replace(book_plan, metadata=metadata)
-            book_plan_review = auto_plan_issues + section_issues + review_book_plan(book_plan, chunks)
+            book_plan_review = auto_plan_issues + section_issues + coverage_issues + density_issues + review_book_plan(book_plan, chunks)
             plans = book_plan_to_chapter_plans(book_plan, chunks)
         else:
             _progress("organizing selected evidence into chapter plans")
@@ -229,15 +256,25 @@ class TextbookWorkflow:
             reports = []
             for round_index in range(1, config.normalized_review_rounds() + 1):
                 _progress(f"review round {round_index}: checking evidence support")
-                fact_issues = self.evidence_reviewer.run(plans, chunks, current_markdown)
+                review_warnings: list[str] = []
+                try:
+                    fact_issues = self.evidence_reviewer.run(plans, chunks, current_markdown)
+                except Exception as exc:
+                    fact_issues = _reviewer_failure_issues(plans, "evidence", exc)
+                    review_warnings.append(f"evidence reviewer failed; kept draft: {type(exc).__name__}: {exc}")
                 _progress(f"review round {round_index}: checking pedagogy")
-                pedagogy_issues = self.pedagogy_reviewer.run(plans, current_markdown)
+                try:
+                    pedagogy_issues = self.pedagogy_reviewer.run(plans, current_markdown)
+                except Exception as exc:
+                    pedagogy_issues = _reviewer_failure_issues(plans, "pedagogy", exc)
+                    review_warnings.append(f"pedagogy reviewer failed; kept draft: {type(exc).__name__}: {exc}")
                 reports = self.review_composer.run(plans, fact_issues, pedagogy_issues)
                 issue_count = sum(len(report.fact_issues) + len(report.pedagogy_issues) for report in reports)
                 review_history.append(
                     {
                         "round": round_index,
                         "issue_count": issue_count,
+                        "warnings": review_warnings,
                         "reports": reports,
                     }
                 )
@@ -473,7 +510,7 @@ class TextbookWorkflow:
             draft_path = chapter_dir / "textbook_draft.md"
             final_path = chapter_dir / "textbook_final.md"
 
-            chapter_chunks = _chunks_for_plan(plan, chunks)
+            chapter_chunks = _chunks_for_plan(plan, chunks, book_plan=book_plan)
             if resume_chapters and _reusable_chapter(status_path, final_path):
                 _progress(f"chapter {chapter_index}/{len(plans)}: reusing completed output for {plan.title}")
                 prepared_plans = self._prepare_chapter_plans([plan], chapter_chunks)
@@ -507,11 +544,22 @@ class TextbookWorkflow:
                     chapter_current = chapter_draft
                     chapter_reports: list[ReviewReport] = []
                     chapter_review_history: list[dict[str, Any]] = []
+                    chapter_review_warnings: list[str] = []
 
                     for round_index in range(1, config.normalized_review_rounds() + 1):
                         _progress(f"chapter {chapter_index}: review round {round_index}")
-                        fact_issues = self.evidence_reviewer.run(prepared_plans, budgeted_chunks, chapter_current)
-                        pedagogy_issues = self.pedagogy_reviewer.run(prepared_plans, chapter_current)
+                        review_warnings: list[str] = []
+                        try:
+                            fact_issues = self.evidence_reviewer.run(prepared_plans, budgeted_chunks, chapter_current)
+                        except Exception as exc:
+                            fact_issues = _reviewer_failure_issues(prepared_plans, "evidence", exc)
+                            review_warnings.append(f"evidence reviewer failed; kept chapter draft: {type(exc).__name__}: {exc}")
+                        try:
+                            pedagogy_issues = self.pedagogy_reviewer.run(prepared_plans, chapter_current)
+                        except Exception as exc:
+                            pedagogy_issues = _reviewer_failure_issues(prepared_plans, "pedagogy", exc)
+                            review_warnings.append(f"pedagogy reviewer failed; kept chapter draft: {type(exc).__name__}: {exc}")
+                        chapter_review_warnings.extend(review_warnings)
                         chapter_reports = self.review_composer.run(prepared_plans, fact_issues, pedagogy_issues)
                         issue_count = sum(len(report.fact_issues) + len(report.pedagogy_issues) for report in chapter_reports)
                         chapter_review_history.append(
@@ -520,6 +568,7 @@ class TextbookWorkflow:
                                 "chapter_title": chapter_title,
                                 "round": round_index,
                                 "issue_count": issue_count,
+                                "warnings": review_warnings,
                                 "reports": chapter_reports,
                             }
                         )
@@ -528,7 +577,14 @@ class TextbookWorkflow:
                         else:
                             break
 
-                    chapter_final = self.revision.run(chapter_current, chapter_reports)
+                    chapter_revision_warnings: list[str] = []
+                    try:
+                        chapter_final = self.revision.run(chapter_current, chapter_reports)
+                    except Exception as exc:
+                        chapter_final = chapter_current
+                        chapter_revision_warnings.append(
+                            f"final revision failed; kept reviewed draft as final: {type(exc).__name__}: {exc}"
+                        )
                     chapter_cache_stats = _llm_cache_record(chapter_cache)
                 chapter_summary = build_workflow_summary(
                     title=chapter_title,
@@ -549,7 +605,7 @@ class TextbookWorkflow:
                 write_json(chapter_dir / "review_history.json", chapter_review_history)
                 write_json(chapter_dir / "workflow_summary.json", chapter_summary)
                 write_json(chapter_dir / "token_budget_report.json", chapter_token_budget_report)
-                chapter_artifact_warnings = []
+                chapter_artifact_warnings = [*chapter_review_warnings, *chapter_revision_warnings]
                 chapter_artifact_warnings.extend(_try_markdown_to_docx(chapter_draft, chapter_dir / "textbook_draft.docx"))
                 chapter_artifact_warnings.extend(_try_markdown_to_docx(chapter_final, chapter_dir / "textbook_final.docx"))
 
@@ -620,15 +676,49 @@ def _portable_path(path: Path) -> str:
         return str(resolved)
 
 
-def _chunks_for_plan(plan: ChapterPlan, chunks: list[EvidenceChunk]) -> list[EvidenceChunk]:
+def _chunks_for_plan(plan: ChapterPlan, chunks: list[EvidenceChunk], book_plan: Any = None) -> list[EvidenceChunk]:
     expected_ids: list[str] = []
     expected_ids.extend(plan.evidence_chunk_ids)
     for point in plan.knowledge_points:
         expected_ids.extend(point.chunk_ids)
+    expected_ids.extend(_book_project_evidence_ids(book_plan, plan.chapter_id))
     expected = {chunk_id for chunk_id in expected_ids if chunk_id}
     if not expected:
         return []
     return [chunk for chunk in chunks if chunk.chunk_id in expected]
+
+
+def _reviewer_failure_issues(plans: list[ChapterPlan], reviewer_name: str, exc: Exception) -> dict[str, list[ReviewIssue]]:
+    message = f"{reviewer_name} reviewer failed: {type(exc).__name__}: {exc}"
+    return {
+        plan.chapter_id: [
+            ReviewIssue(
+                severity="medium",
+                location=plan.chapter_id,
+                message=message,
+                suggestion="保留当前章节草稿继续导出；后续应检查审稿模型输出格式或重跑本章审稿。",
+            )
+        ]
+        for plan in plans
+    }
+
+
+def _book_project_evidence_ids(book_plan: Any, chapter_id: str) -> list[str]:
+    if not book_plan:
+        return []
+    for chapter in getattr(book_plan, "chapters", []) or []:
+        if getattr(chapter, "chapter_id", "") != chapter_id:
+            continue
+        ids: list[str] = []
+        ids.extend(getattr(chapter, "primary_material_ids", []) or [])
+        ids.extend(getattr(chapter, "reference_material_ids", []) or [])
+        ids.extend(getattr(chapter, "recommended_video_ids", []) or [])
+        for section in getattr(chapter, "sections", []) or []:
+            ids.extend(getattr(section, "primary_material_ids", []) or [])
+            ids.extend(getattr(section, "reference_material_ids", []) or [])
+            ids.extend(getattr(section, "recommended_video_ids", []) or [])
+        return list(dict.fromkeys(chunk_id for chunk_id in ids if chunk_id))
+    return []
 
 
 def _dedupe_chunks(chunks: list[EvidenceChunk]) -> list[EvidenceChunk]:

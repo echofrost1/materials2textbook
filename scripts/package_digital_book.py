@@ -18,14 +18,26 @@ from materials2textbook.exporters.digital_book import (
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Package a student-facing digital book zip.")
-    parser.add_argument("source_dir", type=Path, help="Directory containing index.html and digital_book.json.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Package a student-facing/offline delivery digital book zip. "
+            "Use this only when preparing a book to send or hand off; normal generation should not copy media."
+        )
+    )
+    parser.add_argument(
+        "source_dir",
+        type=Path,
+        help="Directory containing index.html and digital_book.json, ideally with media under assets/.",
+    )
     parser.add_argument("--output", type=Path, default=Path("digital_book.zip"), help="Output zip path.")
     parser.add_argument(
         "--asset-fallback-zip",
         type=Path,
         default=None,
-        help="Optional existing zip to reuse digital_book/assets when source_dir has no copied media.",
+        help=(
+            "Optional existing zip to reuse digital_book/assets when source_dir has no copied media. "
+            "Package validation requires media references to resolve under digital_book/assets/."
+        ),
     )
     parser.add_argument(
         "--skip-validation",

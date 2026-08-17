@@ -26,6 +26,7 @@ from materials2textbook.exporters.digital_book import (
 from materials2textbook.io_utils import read_jsonl, write_json, write_jsonl, write_text
 from materials2textbook.workflow.config import WorkflowConfig
 from materials2textbook.workflow.orchestrator import TextbookWorkflow
+from material_paths import default_generated_output_dir
 from run_full_digital_textbook import ProgressLLMProvider, load_dotenv
 from materials2textbook.llm.cache import CachingLLMProvider
 from materials2textbook.llm.provider import OpenAICompatibleConfig, OpenAICompatibleProvider
@@ -74,7 +75,7 @@ def main() -> None:
     manifest_dir = material_root / "01_manifest_inventory"
     review_dir = material_root / "03_review_manual_check"
     deliverables_dir = material_root / "05_final_deliverables"
-    output_dir = (args.output_dir or deliverables_dir / "agent_workflow").resolve()
+    output_dir = (args.output_dir or default_generated_output_dir(material_root, args.title)).resolve()
     warnings: list[dict[str, str]] = []
 
     manifest_dir.mkdir(parents=True, exist_ok=True)

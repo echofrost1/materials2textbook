@@ -18,7 +18,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from material_paths import default_raw_root, default_work_root
+from material_paths import default_generated_output_dir, default_raw_root, default_work_root
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
@@ -92,7 +92,7 @@ def main() -> int:
 
     material_root = args.material_root.resolve()
     chapter_code, chapter_title = resolve_chapter(args.chapter_code, args.chapter)
-    chapter_root = material_root / "05_final_deliverables" / "chapter_work" / chapter_code
+    chapter_root = default_generated_output_dir(material_root, args.title or chapter_title) / "chapter_work" / chapter_code
     output_dir = chapter_root / "agent_workflow"
     writer_input_root = chapter_root / "writer_inputs"
     package_output = chapter_root / "digital_book.zip"
