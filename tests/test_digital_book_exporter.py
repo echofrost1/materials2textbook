@@ -170,12 +170,12 @@ def test_export_digital_book_writes_json_viewer_and_assets(tmp_path: Path) -> No
     assert ability_graph["generation_method"] == "rule"
     assert [column["id"] for column in ability_graph["columns"]] == [
         "project",
+        "ability_domain",
         "task",
-        "ability",
-        "knowledge",
-        "content",
+        "action",
+        "assessment",
     ]
-    assert any(node["column"] == "knowledge" and node["label"] == "送丝" for node in ability_graph["nodes"])
+    assert any(node["column"] == "action" for node in ability_graph["nodes"])
     assert ability_graph["edges"]
     assert (tmp_path / "digital_book" / "assets" / "videos" / "demo.mp4").exists()
     assert (tmp_path / "digital_book" / "assets" / "keyframes" / "frame.jpg").exists()
@@ -197,23 +197,23 @@ def test_export_digital_book_can_use_llm_generated_ability_graph(tmp_path: Path)
             "schema": "materials2textbook.ability_graph.v1",
             "columns": [
                 {"id": "project", "title": "项目"},
+                {"id": "ability_domain", "title": "能力域"},
                 {"id": "task", "title": "任务"},
-                {"id": "ability", "title": "能力目标"},
-                {"id": "knowledge", "title": "知识点"},
-                {"id": "content", "title": "学习内容"},
+                {"id": "action", "title": "关键动作"},
+                {"id": "assessment", "title": "评价证据"},
             ],
             "nodes": [
                 {"id": "project_01", "column": "project", "label": "数字化装备学习项目"},
+                {"id": "ability_domain_01", "column": "ability_domain", "label": "设备识别与应用"},
                 {"id": "task_01", "column": "task", "label": "认识数字化装备"},
-                {"id": "ability_01", "column": "ability", "label": "能说明数字化测量设备"},
-                {"id": "knowledge_01", "column": "knowledge", "label": "数字化测量设备"},
-                {"id": "content_01", "column": "content", "label": "数字化测量设备学习要点"},
+                {"id": "action_01", "column": "action", "label": "识别数字化测量设备"},
+                {"id": "assessment_01", "column": "assessment", "label": "设备识别记录"},
             ],
             "edges": [
-                {"from": "project_01", "to": "task_01"},
-                {"from": "task_01", "to": "ability_01"},
-                {"from": "ability_01", "to": "knowledge_01"},
-                {"from": "knowledge_01", "to": "content_01"},
+                {"from": "project_01", "to": "ability_domain_01"},
+                {"from": "ability_domain_01", "to": "task_01"},
+                {"from": "task_01", "to": "action_01"},
+                {"from": "action_01", "to": "assessment_01"},
             ],
         },
         ensure_ascii=False,
@@ -239,11 +239,11 @@ def test_export_digital_book_can_use_llm_generated_ability_graph(tmp_path: Path)
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     ability_graph = payload["projects"][0]["ability_graph"]
     assert ability_graph["generation_method"] == "llm"
-    assert any(node["label"] == "数字化测量设备" for node in ability_graph["nodes"])
+    assert any(node["label"] == "识别数字化测量设备" for node in ability_graph["nodes"])
     assert_tree_ability_graph(ability_graph)
     assert ability_graph == book.projects[0].ability_graph
     assert provider.messages
-    assert "能力图谱" in provider.messages[-1][0]["content"]
+    assert "competency matrix" in provider.messages[-1][0]["content"]
 
 
 def test_export_digital_book_falls_back_when_llm_ability_graph_is_invalid(tmp_path: Path) -> None:
@@ -637,7 +637,7 @@ def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path:
     assert book.projects[0].title == "基本操作"
     assert book.projects[0].project_id == "chapter_01"
     assert book.projects[0].ability_graph["nodes"]
-    assert any(edge["to"].endswith("_knowledge_01") for edge in book.projects[0].ability_graph["edges"])
+    assert any(edge["to"].endswith("_action") for edge in book.projects[0].ability_graph["edges"])
     assert "renderBookOutline" in app_js
     assert "教材大纲" in app_js
     assert "tocChapter" in app_js

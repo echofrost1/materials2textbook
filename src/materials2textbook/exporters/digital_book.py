@@ -1824,6 +1824,15 @@ def _build_rule_ability_graph(
     nodes.append({"id": project_node_id, "column": "project", "label": project_title})
 
     domains = _ability_domains_for_project(project_title, ability_map, tasks)
+    selected_domain_ids = {
+        _select_ability_domain(task.title, domains)["id"]
+        for task in tasks
+    }
+    # A rule-generated graph must remain a connected tree.  Keeping every
+    # candidate domain creates dangling nodes whenever a project has fewer
+    # tasks than domains, which also makes the fallback graph fail validation.
+    if selected_domain_ids:
+        domains = [domain for domain in domains if domain["id"] in selected_domain_ids]
     domain_node_ids: dict[str, str] = {}
     for domain_index, domain in enumerate(domains, start=1):
         domain_node_id = f"{project_id}_domain_{domain_index:02d}"
