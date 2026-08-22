@@ -29,6 +29,9 @@ from materials2textbook.workflow.config import WorkflowConfig
 from materials2textbook.workflow.orchestrator import TextbookWorkflow
 
 
+DEFAULT_SEMANTIC_BOOK_MODE = True
+
+
 def load_dotenv(path: Path) -> None:
     if not path.exists():
         return
@@ -118,6 +121,15 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=None, help="Override agent workflow output directory.")
     parser.add_argument("--book-mode", action="store_true", help="Enable whole-book planning before chapter generation.")
     parser.add_argument(
+        "--semantic-book-mode",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_SEMANTIC_BOOK_MODE,
+        help=(
+            "Run the verified semantic closed loop after the final BookPlan is generated and frozen "
+            "(default: enabled; use --no-semantic-book-mode only for legacy diagnostics)."
+        ),
+    )
+    parser.add_argument(
         "--manifest-xlsx",
         type=Path,
         default=None,
@@ -125,6 +137,11 @@ def main() -> None:
     )
     parser.add_argument("--book-plan-output", type=Path, default=None, help="Optional output path for book_plan.json.")
     parser.add_argument("--book-plan-input", type=Path, default=None, help="Optional external book_plan.json. Skips automatic planning.")
+    parser.add_argument(
+        "--book-plan-is-frozen",
+        action="store_true",
+        help="Treat --book-plan-input as an already post-processed immutable source BookPlan.",
+    )
     parser.add_argument("--domain-config", type=Path, default=None, help="Optional domain_config YAML/JSON.")
     parser.add_argument("--domain-name", default="", help="Override generated/loaded domain name.")
     parser.add_argument("--audience", default="", help="Override generated/loaded audience.")
@@ -276,6 +293,11 @@ def main() -> None:
         audience=args.audience,
     )
     print(f"[runner] use_llm={args.use_llm}", flush=True)
+    if args.semantic_book_mode and not args.use_llm:
+        print(
+            "[runner] semantic planner mode=deterministic (enable --use-llm for model-backed semantic planning)",
+            flush=True,
+        )
     workflow = TextbookWorkflow(
         llm_provider=provider,
         use_llm=args.use_llm,
@@ -306,7 +328,8 @@ def main() -> None:
         title=args.title,
         config=config,
         document_segments_path=combined_document_path,
-        book_mode=args.book_mode,
+        book_mode=args.book_mode or args.semantic_book_mode,
+        semantic_book_mode=args.semantic_book_mode,
         manifest_xlsx=args.manifest_xlsx.resolve() if args.manifest_xlsx else None,
         book_plan_output=args.book_plan_output.resolve() if args.book_plan_output else None,
         chapter_output_root=args.chapter_output_root.resolve() if args.chapter_output_root else None,
@@ -317,6 +340,7 @@ def main() -> None:
         auto_plan=not args.disable_auto_plan,
         llm_book_planning=not args.disable_llm_book_planning,
         book_plan_input=args.book_plan_input.resolve() if args.book_plan_input else None,
+        book_plan_is_frozen=args.book_plan_is_frozen,
     )
 
     print("Full digital textbook generated:")
@@ -329,7 +353,8 @@ def main() -> None:
     print(f"- max_input_tokens: {args.max_input_tokens}")
     print(f"- max_tokens_per_evidence_chunk: {args.max_tokens_per_evidence_chunk}")
     print(f"- summarize_over_budget: {args.summarize_over_budget}")
-    print(f"- book_mode: {args.book_mode}")
+    print(f"- book_mode: {args.book_mode or args.semantic_book_mode}")
+    print(f"- semantic_book_mode: {args.semantic_book_mode}")
     print(f"- domain_name: {domain_config.domain_name}")
     if args.manifest_xlsx:
         print(f"- manifest_xlsx: {args.manifest_xlsx.resolve()}")

@@ -33,6 +33,9 @@ from materials2textbook.llm.provider import OpenAICompatibleConfig, OpenAICompat
 from materials2textbook.llm.retry import RetryingLLMProvider
 
 
+DEFAULT_SEMANTIC_BOOK_MODE = True
+
+
 EVIDENCE_FILENAMES = [
     "video_segments.jsonl",
     "ppt_assets.jsonl",
@@ -51,6 +54,20 @@ def main() -> None:
     parser.add_argument("--use-llm", nargs="?", const="true", default="false")
     parser.add_argument("--domain-config", type=Path, default=None)
     parser.add_argument("--book-plan-input", type=Path, default=None)
+    parser.add_argument(
+        "--semantic-book-mode",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_SEMANTIC_BOOK_MODE,
+        help=(
+            "Run the verified semantic closed loop after the final BookPlan is generated and frozen "
+            "(default: enabled; use --no-semantic-book-mode only for legacy diagnostics)."
+        ),
+    )
+    parser.add_argument(
+        "--book-plan-is-frozen",
+        action="store_true",
+        help="Treat --book-plan-input as an already post-processed immutable source BookPlan.",
+    )
     parser.add_argument("--manifest-xlsx", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--student-package-output", type=Path, default=None)
@@ -145,6 +162,11 @@ def main() -> None:
         auto_plan=True,
         llm_book_planning=args.use_llm,
     )
+    if args.semantic_book_mode and not args.use_llm:
+        print(
+            "[runner] semantic planner mode=deterministic (enable --use-llm for model-backed semantic planning)",
+            flush=True,
+        )
     if args.skip_resource_analyst_llm:
         workflow.resource_analyst.use_llm = False
 
@@ -155,6 +177,7 @@ def main() -> None:
         config=WorkflowConfig(review_rounds=args.review_rounds, copy_media_assets=args.copy_media_assets),
         document_segments_path=doc_path if document_records else None,
         book_mode=True,
+        semantic_book_mode=args.semantic_book_mode,
         manifest_xlsx=manifest_xlsx if manifest_xlsx.exists() else None,
         book_plan_output=output_dir / "book_plan.json",
         max_chapters=args.max_chapters,
@@ -162,6 +185,7 @@ def main() -> None:
         auto_plan=True,
         llm_book_planning=args.use_llm,
         book_plan_input=args.book_plan_input.resolve() if args.book_plan_input else None,
+        book_plan_is_frozen=args.book_plan_is_frozen,
     )
     _copy_if_exists(output_dir / "book_plan.json", manifest_dir / "book_plan.generated.json")
     _copy_if_exists(output_dir / "book_plan_review.md", manifest_dir / "book_plan_review.md")
@@ -182,6 +206,7 @@ def main() -> None:
     print(f"- domain_name: {domain_config.domain_name}")
     print(f"- evidence_records: {len(all_records)}")
     print(f"- candidate_chapters: {candidate_chapters}")
+    print(f"- semantic_book_mode: {args.semantic_book_mode}")
     print(f"- agent_outputs: {outputs.manifest_path}")
     print(f"- digital_book_json: {outputs.digital_book_path}")
     print(f"- digital_book_index: {outputs.digital_book_index_path}")

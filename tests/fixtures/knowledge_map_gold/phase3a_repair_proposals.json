@@ -1,0 +1,68 @@
+{
+  "fixture_version": "phase-3a.v1",
+  "source_fixture": "phase2b5_real_trajectories.json",
+  "cases": [
+    {
+      "id": "high_frequency_arc_intro_missing_anchor",
+      "trajectory_id": "high_frequency_arc_intro_teach_apply",
+      "role": "INTRO",
+      "anchor": false,
+      "body": "Initial intuition only.",
+      "expected_actions": ["MANUAL_REVIEW"]
+    },
+    {
+      "id": "thin_plate_extend_missing_extension",
+      "trajectory_id": "thin_plate_teach_extend",
+      "role": "EXTEND",
+      "must_teach": ["ANALYZE"],
+      "extensions": ["constraint:thin_plate_current_limit"],
+      "body": "Use the known method carefully in this task. Evidence: C002",
+      "expected_actions": ["ADD_REQUIRED_FACET", "ADD_EXTENSION"]
+    },
+    {
+      "id": "arc_decay_recall_reteaches",
+      "trajectory_id": "arc_decay_teach_recall_apply",
+      "role": "RECALL",
+      "available": ["EXPLAIN"],
+      "avoid": ["definition", "complete procedure", "parameter/method rule"],
+      "recap_limit": 1,
+      "body": "Arc decay is defined as a current reduction method. Step 1 reduce current. Adjust current according to material thickness. Evidence: C003",
+      "expected_actions": ["REMOVE_RETEACH", "RESTORE_MINIMAL_RECALL"]
+    },
+    {
+      "id": "left_hand_wire_duplicate_reteaches",
+      "trajectory_id": "left_hand_wire_duplicate_teach",
+      "role": "TEACH",
+      "available": ["EXPLAIN"],
+      "avoid": ["definition", "parameter/method rule"],
+      "recap_limit": 1,
+      "body": "Left-hand wire feeding is defined as a coordinated wire method. Adjust current according to material thickness. Evidence: C004",
+      "expected_actions": ["REMOVE_RETEACH", "REWRITE_TO_ROLE"]
+    },
+    {
+      "id": "bevel_apply_reteaches",
+      "trajectory_id": "bevel_and_grinding_decomposition",
+      "role": "APPLY",
+      "available": ["EXPLAIN"],
+      "avoid": ["definition"],
+      "body": "Bevel processing is defined as preparing the joint edge. Evidence: C005",
+      "expected_actions": ["REMOVE_RETEACH", "REWRITE_TO_ROLE", "ADD_CONTRIBUTION"]
+    },
+    {
+      "id": "high_frequency_alias_apply_missing_contribution",
+      "trajectory_id": "high_frequency_arc_alias_same",
+      "role": "APPLY",
+      "available": ["EXPLAIN"],
+      "body": "Observe the welding setup. Evidence: C006",
+      "expected_actions": ["ADD_CONTRIBUTION", "REWRITE_TO_ROLE"]
+    },
+    {
+      "id": "related_distinct_teach_missing_facet",
+      "trajectory_id": "arc_ignition_related_but_distinct",
+      "role": "TEACH",
+      "must_teach": ["EXPLAIN"],
+      "body": "Observe the arc source. Evidence: C007",
+      "expected_actions": ["ADD_REQUIRED_FACET"]
+    }
+  ]
+}

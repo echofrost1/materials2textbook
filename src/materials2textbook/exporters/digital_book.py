@@ -6,12 +6,29 @@ import re
 import shutil
 import tempfile
 import zipfile
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from materials2textbook.io_utils import write_json, write_text
 from materials2textbook.domain_config import DomainConfig, default_domain_config
 from materials2textbook.llm.provider import LLMProvider
+from materials2textbook.knowledge_map.rendered_conformance import (
+    RenderedOccurrence,
+    check_rendered_occurrence_records,
+)
+from materials2textbook.knowledge_map.downstream_closure import deterministic_requirement_semantic
+from materials2textbook.knowledge_map.writing_briefs import (
+    DroppedOccurrenceGoal,
+    FallbackOccurrence,
+    OccurrenceWritingBrief,
+    ZeroRenderOccurrence,
+)
+from materials2textbook.student_display import (
+    display_metadata_for_outline_node,
+    is_internal_context_label,
+    student_display_title,
+)
 from materials2textbook.prompts.ability_graph import build_ability_graph_messages
 from materials2textbook.prompts.book_sections import (
     build_general_preface_messages,
@@ -64,11 +81,24 @@ def build_digital_book(
     use_llm: bool = False,
     book_plan: BookPlan | None = None,
     domain_config: DomainConfig | None = None,
+    occurrence_writing_briefs: list[OccurrenceWritingBrief] | None = None,
+    fallback_occurrences: list[FallbackOccurrence] | None = None,
+    dropped_occurrence_goals: list[DroppedOccurrenceGoal] | None = None,
+    zero_render_occurrences: list[ZeroRenderOccurrence] | None = None,
+    rendered_occurrence_bodies: dict[str, str] | None = None,
+    section_assemblies: list[dict] | None = None,
+    semantic_book_mode: bool = False,
 ) -> DigitalBook:
     domain_config = domain_config or default_domain_config()
     chunk_map = {chunk.chunk_id: chunk for chunk in chunks}
     assets: dict[str, list[dict]] = {"videos": [], "keyframes": [], "images": []}
     projects: list[DigitalBookProject] = []
+    occurrence_writing_briefs = occurrence_writing_briefs or []
+    fallback_occurrences = fallback_occurrences or []
+    dropped_occurrence_goals = dropped_occurrence_goals or []
+    zero_render_occurrences = zero_render_occurrences or []
+    rendered_occurrence_bodies = rendered_occurrence_bodies or {}
+    section_assemblies = section_assemblies or []
 
     project_titles: list[str] = []
 
@@ -76,17 +106,22 @@ def build_digital_book(
         chapter_no = _book_chapter_no(book_plan, plan.chapter_id) or project_index
         project_titles.append(plan.title)
 
+    display_book_title = student_display_title(
+        title,
+        knowledge_titles=project_titles,
+        fallback="数字教材",
+    )
     general_preface = _generate_general_preface(
         llm_provider=llm_provider,
         use_llm=use_llm,
-        book_title=title,
+        book_title=display_book_title,
         project_titles=project_titles,
         chunks=chunks,
     )
     preface = _generate_preface(
         llm_provider=llm_provider,
         use_llm=use_llm,
-        book_title=title,
+        book_title=display_book_title,
         project_titles=project_titles,
     )
 
@@ -105,6 +140,11 @@ def build_digital_book(
             llm_provider=llm_provider,
             use_llm=use_llm,
             domain_config=domain_config,
+            occurrence_writing_briefs=occurrence_writing_briefs,
+            fallback_occurrences=fallback_occurrences,
+            dropped_occurrence_goals=dropped_occurrence_goals,
+            rendered_occurrence_bodies=rendered_occurrence_bodies,
+            semantic_book_mode=semantic_book_mode,
         )
         project_title = plan.title
         project_chunks = [
@@ -131,11 +171,7 @@ def build_digital_book(
             task_titles=task_titles,
             knowledge_points=knowledge_points,
         )
-        default_ability_map = [
-            "示范观察与要点提取",
-            "知识点理解与复述",
-            "操作过程分析与质量判断",
-        ]
+        default_ability_map = _derived_ability_map(project_title, tasks)
         ability_map, ability_map_method = _generate_ability_map(
             llm_provider=llm_provider,
             use_llm=use_llm,
@@ -174,15 +210,41 @@ def build_digital_book(
         )
 
     references = _collect_references(chunks)
+    if semantic_book_mode:
+        content_deduplication = [{
+            "action": "not_called",
+            "reason": "semantic_book_mode_uses_occurrence_writing_briefs",
+        }]
+        continuity_repairs: list[dict[str, str]] = []
+    else:
+        content_deduplication = _replace_exact_cross_project_duplicates(projects)
+        continuity_repairs = _restore_invalid_content_references(projects)
+    rendered_occurrences = _digital_rendered_occurrences(projects)
+    digital_conformance = check_rendered_occurrence_records(
+        occurrence_writing_briefs,
+        rendered_occurrences,
+        zero_render_occurrences=zero_render_occurrences,
+    )
+    semantic_roles = _digital_occurrence_roles(projects)
 
     return DigitalBook(
         book_id=_slugify(title),
-        title=title,
+        title=display_book_title,
         metadata={
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "format": "materials2textbook.digital_book.v1",
             "book_plan": _book_plan_metadata(book_plan),
             "domain_config": domain_config.to_dict(),
+            "content_deduplication": content_deduplication,
+            "content_deduplication_continuity_repairs": continuity_repairs,
+            "semantic_book_mode": semantic_book_mode,
+            "semantic_rendered_occurrences": [asdict(item) for item in rendered_occurrences],
+            "semantic_occurrence_roles": semantic_roles,
+            "semantic_rendered_conformance": digital_conformance.to_dict(),
+            "semantic_section_assemblies": section_assemblies,
+            "semantic_fallback_occurrences": [asdict(item) for item in fallback_occurrences],
+            "semantic_zero_render_occurrences": [asdict(item) for item in zero_render_occurrences],
+            "dropped_goal_reconciliation": _collect_dropped_goal_reconciliation(projects),
         },
         projects=projects,
         assets=assets,
@@ -190,6 +252,90 @@ def build_digital_book(
         preface=preface,
         references=references,
     )
+
+
+def _replace_exact_cross_project_duplicates(projects: list[DigitalBookProject]) -> list[dict[str, str]]:
+    """Keep a full implementation explanation once and cross-reference later copies."""
+    owners: dict[str, tuple[DigitalBookProject, DigitalBookTask, DigitalBookBlock]] = {}
+    changes: list[dict[str, str]] = []
+    for project in projects:
+        for task in project.tasks:
+            for block in task.blocks:
+                if block.type != "implementation" or not block.markdown.strip():
+                    continue
+                text_key = re.sub(r"[\W_]+", "", block.markdown).lower()
+                if len(text_key) < 80:
+                    continue
+                owner = owners.get(text_key)
+                if owner is None:
+                    owners[text_key] = (project, task, block)
+                    continue
+                owner_project, owner_task, owner_block = owner
+                if owner_project.project_id == project.project_id:
+                    continue
+                original_markdown = block.markdown
+                block.markdown = (
+                    f"本任务将“{block.title}”作为关联学习内容。"
+                    f"请先学习“{owner_project.title}—{owner_task.title}”中的完整说明，"
+                    "再结合本任务的情境、素材和练习完成迁移应用。"
+                )
+                block.metadata = {
+                    **block.metadata,
+                    "content_reference": {
+                        "project_id": owner_project.project_id,
+                        "task_id": owner_task.task_id,
+                        "block_id": owner_block.block_id,
+                    },
+                    "original_markdown": original_markdown,
+                }
+                changes.append(
+                    {
+                        "block_id": block.block_id,
+                        "owner_block_id": owner_block.block_id,
+                        "action": "replace_with_cross_reference",
+                    }
+                )
+    return changes
+
+
+def _restore_invalid_content_references(projects: list[DigitalBookProject]) -> list[dict[str, str]]:
+    """Undo a de-duplication replacement when its primary explanation is unusable."""
+    task_order: dict[str, int] = {}
+    blocks: dict[str, DigitalBookBlock] = {}
+    block_task: dict[str, str] = {}
+    position = 0
+    for project in projects:
+        for task in project.tasks:
+            task_order[task.task_id] = position
+            position += 1
+            for block in task.blocks:
+                blocks[block.block_id] = block
+                block_task[block.block_id] = task.task_id
+
+    repairs: list[dict[str, str]] = []
+    for project in projects:
+        for task in project.tasks:
+            for block in task.blocks:
+                reference = block.metadata.get("content_reference") if block.metadata else None
+                if not isinstance(reference, dict):
+                    continue
+                owner_block_id = str(reference.get("block_id", ""))
+                owner_task_id = str(reference.get("task_id", ""))
+                owner = blocks.get(owner_block_id)
+                valid = (
+                    owner is not None
+                    and owner.type == "implementation"
+                    and block_task.get(owner_block_id) == owner_task_id
+                    and task_order.get(owner_task_id, -1) < task_order.get(task.task_id, -1)
+                )
+                if valid:
+                    continue
+                original = str(block.metadata.get("original_markdown", "")).strip()
+                if original:
+                    block.markdown = original
+                    block.metadata.pop("content_reference", None)
+                    repairs.append({"block_id": block.block_id, "action": "restore_original_markdown"})
+    return repairs
 
 
 def export_digital_book(
@@ -203,6 +349,13 @@ def export_digital_book(
     use_llm: bool = False,
     book_plan: BookPlan | None = None,
     domain_config: DomainConfig | None = None,
+    occurrence_writing_briefs: list[OccurrenceWritingBrief] | None = None,
+    fallback_occurrences: list[FallbackOccurrence] | None = None,
+    dropped_occurrence_goals: list[DroppedOccurrenceGoal] | None = None,
+    zero_render_occurrences: list[ZeroRenderOccurrence] | None = None,
+    rendered_occurrence_bodies: dict[str, str] | None = None,
+    section_assemblies: list[dict] | None = None,
+    semantic_book_mode: bool = False,
 ) -> tuple[DigitalBook, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     book = build_digital_book(
@@ -215,6 +368,13 @@ def export_digital_book(
         use_llm=use_llm,
         book_plan=book_plan,
         domain_config=domain_config,
+        occurrence_writing_briefs=occurrence_writing_briefs,
+        fallback_occurrences=fallback_occurrences,
+        dropped_occurrence_goals=dropped_occurrence_goals,
+        zero_render_occurrences=zero_render_occurrences,
+        rendered_occurrence_bodies=rendered_occurrence_bodies,
+        section_assemblies=section_assemblies,
+        semantic_book_mode=semantic_book_mode,
     )
     json_path = output_dir / "digital_book.json"
     index_path = output_dir / "index.html"
@@ -1361,8 +1521,13 @@ def _build_chapter_tasks(
     llm_provider: LLMProvider | None,
     use_llm: bool,
     domain_config: DomainConfig,
+    occurrence_writing_briefs: list[OccurrenceWritingBrief],
+    fallback_occurrences: list[FallbackOccurrence],
+    dropped_occurrence_goals: list[DroppedOccurrenceGoal],
+    rendered_occurrence_bodies: dict[str, str],
+    semantic_book_mode: bool,
 ) -> list[DigitalBookTask]:
-    section_groups = _section_groups_for_plan(plan, chapter_plan)
+    section_groups = _section_groups_for_plan(plan, chapter_plan, preserve_empty_sections=semantic_book_mode)
     tasks: list[DigitalBookTask] = []
     used_case_ids: set[str] = set()
 
@@ -1391,7 +1556,56 @@ def _build_chapter_tasks(
 
         key_terms: list[str] = []
         used_video_sources: set[str] = set()
+        semantic_briefs = _briefs_for_digital_section(
+            occurrence_writing_briefs,
+            chapter_id=plan.chapter_id,
+            section_id=section.section_id if section else "",
+        )
+        semantic_fallbacks = _fallbacks_for_digital_section(
+            fallback_occurrences,
+            chapter_id=plan.chapter_id,
+            section_id=section.section_id if section else "",
+        )
+        task_blocks[0].metadata["requirement_semantics"] = _learning_nav_requirement_semantics(
+            task_blocks[0].items,
+            points=points,
+            semantic_briefs=semantic_briefs,
+        )
+        dropped_goals = _dropped_goals_for_digital_section(
+            dropped_occurrence_goals,
+            chapter_id=plan.chapter_id,
+            section_id=section.section_id if section else "",
+        )
+        if semantic_book_mode and dropped_goals and not semantic_briefs and not semantic_fallbacks:
+            reconciliation = {
+                "status": "DISABLED_NO_REMAINING_GOAL",
+                "dropped_occurrence_ids": [item.occurrence_id for item in dropped_goals],
+                "disabled_components": ["implementation", "assessment", "exercises", "ability_mapping", "cross_reference"],
+                "reason": "No evidence-bounded instructional goal remains for this fixed task.",
+            }
+            task_blocks[0].items = [
+                "本任务不再安排独立学习目标或考核，请继续后续任务。",
+            ]
+            task_blocks[1].markdown = "本任务原学习目标未保留为独立教学内容，已停用正文、评价与练习。"
+            task_blocks[1].metadata = {"dropped_goal_reconciliation": reconciliation}
+            tasks.append(
+                DigitalBookTask(
+                    task_id=f"{plan.chapter_id}_task_{task_index:02d}",
+                    title=task_title,
+                    blocks=task_blocks,
+                    knowledge_points=[],
+                    key_terms=[],
+                    evidence_chunk_ids=task_evidence_ids,
+                    metadata={
+                        "section_id": section.section_id if section else "",
+                        "dropped_goal_reconciliation": reconciliation,
+                    },
+                )
+            )
+            continue
         for point_index, point in enumerate(points, start=1):
+            if semantic_book_mode:
+                continue
             point_title = _student_display_title(point.title)
             point_chunks = _chunks_for_point(point, task_evidence_ids, chunk_map)
             if not point_chunks:
@@ -1432,6 +1646,19 @@ def _build_chapter_tasks(
                 if media_block:
                     used_video_sources.add(video_source_key)
                     task_blocks.append(media_block)
+
+        if semantic_book_mode:
+            _append_semantic_occurrence_blocks(
+                task_blocks=task_blocks,
+                briefs=semantic_briefs,
+                fallbacks=semantic_fallbacks,
+                project_index=project_index,
+                task_index=task_index,
+                task_evidence_ids=task_evidence_ids,
+                chunk_map=chunk_map,
+                key_terms=key_terms,
+                rendered_occurrence_bodies=rendered_occurrence_bodies,
+            )
 
         section_cases = _cases_for_points(plan.case_examples, points, used_case_ids)
         for case_index, case in enumerate(section_cases, start=1):
@@ -1475,7 +1702,7 @@ def _build_chapter_tasks(
                     task_blocks.append(media_block)
                     break
 
-        if not any(block.type == "implementation" for block in task_blocks):
+        if not semantic_book_mode and not any(block.type == "implementation" for block in task_blocks):
             fallback_chunks = [chunk_map[chunk_id] for chunk_id in task_evidence_ids if chunk_id in chunk_map]
             task_blocks.append(
                 DigitalBookBlock(
@@ -1488,28 +1715,43 @@ def _build_chapter_tasks(
                 )
             )
 
+        assessment_items = _assessment_items_for_points(points)
+        exercise_items = _generate_exercise_items(
+            points=points,
+            chunk_map=chunk_map,
+            task_title=task_title,
+            llm_provider=llm_provider,
+            use_llm=use_llm,
+            domain_config=domain_config,
+        )
         task_blocks.extend(
             [
                 DigitalBookBlock(
                     block_id=f"p{project_index:02d}_t{task_index:02d}_assessment",
                     type="assessment",
                     title="任务评价",
-                    items=_assessment_items_for_points(points),
+                    items=assessment_items,
                     evidence_chunk_ids=task_evidence_ids,
+                    metadata={
+                        "requirement_semantics": _assessment_requirement_semantics(
+                            points=points,
+                            semantic_briefs=semantic_briefs,
+                        ),
+                    },
                 ),
                 DigitalBookBlock(
                     block_id=f"p{project_index:02d}_t{task_index:02d}_exercises",
                     type="exercises",
                     title="思考与练习",
-                    items=_generate_exercise_items(
-                        points=points,
-                        chunk_map=chunk_map,
-                        task_title=task_title,
-                        llm_provider=llm_provider,
-                        use_llm=use_llm,
-                        domain_config=domain_config,
-                    ),
+                    items=exercise_items,
                     evidence_chunk_ids=task_evidence_ids,
+                    metadata={
+                        "requirement_semantics": _exercise_requirement_semantics(
+                            items=exercise_items,
+                            points=points,
+                            semantic_briefs=semantic_briefs,
+                        ),
+                    },
                 ),
             ]
         )
@@ -1522,6 +1764,7 @@ def _build_chapter_tasks(
                 knowledge_points=[_student_display_title(point.title) for point in points],
                 key_terms=_dedupe(key_terms),
                 evidence_chunk_ids=task_evidence_ids,
+                metadata={"section_id": section.section_id if section else ""},
             )
         )
 
@@ -1541,6 +1784,191 @@ def _build_chapter_tasks(
                 )
             )
     return tasks
+
+
+def _briefs_for_digital_section(
+    briefs: list[OccurrenceWritingBrief],
+    *,
+    chapter_id: str,
+    section_id: str,
+) -> list[OccurrenceWritingBrief]:
+    selected = [item for item in briefs if item.chapter_id == chapter_id and (not section_id or item.section_id == section_id)]
+    return sorted(selected, key=lambda item: (item.task_ordinal, item.occurrence_ordinal, item.occurrence_id))
+
+
+def _dropped_goals_for_digital_section(
+    dropped_goals: list[DroppedOccurrenceGoal],
+    *,
+    chapter_id: str,
+    section_id: str,
+) -> list[DroppedOccurrenceGoal]:
+    return [
+        item
+        for item in dropped_goals
+        if item.chapter_id == chapter_id and (not section_id or item.section_id == section_id)
+    ]
+
+
+def _fallbacks_for_digital_section(
+    fallbacks: list[FallbackOccurrence],
+    *,
+    chapter_id: str,
+    section_id: str,
+) -> list[FallbackOccurrence]:
+    selected = [item for item in fallbacks if item.chapter_id == chapter_id and (not section_id or item.section_id == section_id)]
+    return sorted(selected, key=lambda item: (item.task_ordinal, item.occurrence_ordinal, item.occurrence_id))
+
+
+def _append_semantic_occurrence_blocks(
+    *,
+    task_blocks: list[DigitalBookBlock],
+    briefs: list[OccurrenceWritingBrief],
+    fallbacks: list[FallbackOccurrence],
+    project_index: int,
+    task_index: int,
+    task_evidence_ids: list[str],
+    chunk_map: dict[str, EvidenceChunk],
+    key_terms: list[str],
+    rendered_occurrence_bodies: dict[str, str],
+) -> None:
+    """Render the same planned occurrence facts as Markdown, without re-planning role."""
+    for local_index, brief in enumerate(briefs, start=1):
+        chunks = [chunk_map[item] for item in brief.source_chunk_ids if item in chunk_map]
+        chunks = chunks or [chunk_map[item] for item in task_evidence_ids if item in chunk_map]
+        title = _student_display_title(brief.canonical_title or brief.source_title)
+        block_id = f"p{project_index:02d}_t{task_index:02d}_occ{brief.occurrence_ordinal:04d}_text"
+        task_blocks.append(
+            DigitalBookBlock(
+                block_id=block_id,
+                type="implementation",
+                # The section/task heading is the single visible title.
+                # Occurrence identity remains in metadata and in the shared
+                # rendered body anchor, but is not exposed as another heading.
+                title="",
+                markdown=rendered_occurrence_bodies.get(
+                    brief.occurrence_id,
+                    _render_semantic_digital_occurrence(brief, title),
+                ),
+                evidence_chunk_ids=[item.chunk_id for item in chunks],
+                metadata={
+                    "teacher_evidence": _teacher_evidence_refs(chunks),
+                    "semantic_occurrence": {
+                        "occurrence_id": brief.occurrence_id,
+                        "role": brief.role,
+                        "mode": "accepted_brief",
+                        "chapter_id": brief.chapter_id,
+                        "section_id": brief.section_id,
+                        "task_ordinal": brief.task_ordinal,
+                        "passage_id": f"{brief.chapter_id}:{brief.section_id}:passage",
+                        "passage_order": brief.occurrence_ordinal,
+                        "block_id": block_id,
+                    },
+                },
+            )
+        )
+        key_terms.append(title)
+    for local_index, fallback in enumerate(fallbacks, start=1):
+        chunks = [chunk_map[item] for item in fallback.source_chunk_ids if item in chunk_map]
+        chunks = chunks or [chunk_map[item] for item in task_evidence_ids if item in chunk_map]
+        title = _student_display_title(fallback.source_title)
+        block_id = f"p{project_index:02d}_t{task_index:02d}_fallback{fallback.occurrence_ordinal:04d}_text"
+        task_blocks.append(
+            DigitalBookBlock(
+                block_id=block_id,
+                type="implementation",
+                title="",
+                markdown=f"Use the supplied material to study {title} in the current task context.",
+                evidence_chunk_ids=[item.chunk_id for item in chunks],
+                metadata={
+                    "teacher_evidence": _teacher_evidence_refs(chunks),
+                    "semantic_occurrence": {
+                        "occurrence_id": fallback.occurrence_id,
+                        "role": "FALLBACK",
+                        "mode": "explicit_fallback",
+                        "reason": fallback.reason,
+                        "chapter_id": fallback.chapter_id,
+                        "section_id": fallback.section_id,
+                        "task_ordinal": fallback.task_ordinal,
+                        "block_id": block_id,
+                    },
+                },
+            )
+        )
+        key_terms.append(title)
+
+
+def _render_semantic_digital_occurrence(brief: OccurrenceWritingBrief, title: str) -> str:
+    """A role projection of the immutable brief, not a second role decision."""
+    if brief.role == "INTRO":
+        return f"Begin by observing {title} and establishing an initial intuition before later theory or procedure."
+    if brief.role == "RECALL":
+        return f"Recall only the previously taught context for {title} that is needed in this task."
+    if brief.role == "APPLY":
+        return f"In the current task, apply the already taught {title} method directly and observe the result."
+    if brief.role == "EXTEND":
+        extension = _student_extension_label(brief.extension_keys)
+        return f"Use the known {title} method, then focus on the new condition or constraint: {extension}."
+    if not brief.must_teach_facets and not brief.extension_keys:
+        return f"For the current task, use the already taught {title} knowledge without repeating its full teaching."
+    return f"Explain {title} using the planned new facet: {', '.join(brief.must_teach_facets)}."
+
+
+def _student_extension_label(extension_keys: list[str]) -> str:
+    text = ", ".join(extension_keys)
+    lowered = text.lower()
+    if "thin" in lowered and "plate" in lowered and "limit" in lowered:
+        return "thin-plate current limit and burn-through prevention"
+    return text.replace("constraint:", "").replace("_", " ") or "the planned extension"
+
+
+def _digital_rendered_occurrences(projects: list[DigitalBookProject]) -> list[RenderedOccurrence]:
+    records: list[RenderedOccurrence] = []
+    for project in projects:
+        for task in project.tasks:
+            for block in task.blocks:
+                semantic = block.metadata.get("semantic_occurrence") if block.metadata else None
+                if not isinstance(semantic, dict) or not semantic.get("occurrence_id"):
+                    continue
+                records.append(
+                    RenderedOccurrence(
+                        occurrence_id=str(semantic["occurrence_id"]),
+                        chapter_id=str(semantic.get("chapter_id") or project.project_id),
+                        section_id=str(semantic.get("section_id") or ""),
+                        task_id=task.task_id,
+                        markdown=block.markdown,
+                        start_offset=0,
+                        end_offset=len(block.markdown),
+                        render_target="digital_book",
+                        block_id=block.block_id,
+                    )
+                )
+    return records
+
+
+def _digital_occurrence_roles(projects: list[DigitalBookProject]) -> dict[str, str]:
+    roles: dict[str, str] = {}
+    for project in projects:
+        for task in project.tasks:
+            for block in task.blocks:
+                semantic = block.metadata.get("semantic_occurrence") if block.metadata else None
+                if isinstance(semantic, dict) and semantic.get("occurrence_id"):
+                    roles[str(semantic["occurrence_id"])] = str(semantic.get("role") or "")
+    return roles
+
+
+def _collect_dropped_goal_reconciliation(projects: list[DigitalBookProject]) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for project in projects:
+        for task in project.tasks:
+            record = task.metadata.get("dropped_goal_reconciliation") if task.metadata else None
+            if isinstance(record, dict):
+                records.append({
+                    "project_id": project.project_id,
+                    "task_id": task.task_id,
+                    "section_id": task.metadata.get("section_id", ""),
+                    **record,
+                })
+    return records
 
 
 def _generate_general_preface(
@@ -1860,11 +2288,29 @@ def _build_rule_ability_graph(
     }
 
 
+def _derived_ability_map(project_title: str, tasks: list[DigitalBookTask]) -> list[str]:
+    labels = [f"Complete {_compact_task_label(task.title)}" for task in tasks if task.title]
+    return _dedupe(labels)[:6] or [f"Understand {project_title or 'this chapter'}"]
+
+
 def _ability_domains_for_project(
     project_title: str,
     ability_map: list[str],
     tasks: list[DigitalBookTask],
 ) -> list[dict[str, str]]:
+    # No competency ontology is available in generic mode.  Derive the visible
+    # domains from this chapter's actual tasks instead of using a profession
+    # specific fallback vocabulary.
+    derived_labels = _dedupe([_compact_task_label(label) for label in ability_map if label])
+    if not derived_labels:
+        derived_labels = [_compact_task_label(task.title) for task in tasks if task.title]
+    if not derived_labels:
+        derived_labels = [project_title or "Learning objectives"]
+    return [
+        {"id": f"domain_{index:02d}", "label": label}
+        for index, label in enumerate(derived_labels[:4], start=1)
+    ]
+
     title = project_title or ""
     task_text = " ".join(task.title for task in tasks)
     if any(term in title for term in ("气焊", "气割")) or ("火焰" in task_text and "气" in title):
@@ -2153,6 +2599,8 @@ def _dedupe_edges(edges: list[dict[str, str]]) -> list[dict[str, str]]:
 def _section_groups_for_plan(
     plan: ChapterPlan,
     chapter_plan: BookChapterPlan | None,
+    *,
+    preserve_empty_sections: bool = False,
 ) -> list[tuple[BookSectionPlan | None, list[KnowledgePoint]]]:
     if not chapter_plan or not chapter_plan.sections:
         return [(None, plan.knowledge_points)]
@@ -2162,10 +2610,22 @@ def _section_groups_for_plan(
     for section in chapter_plan.sections:
         points = _points_for_section(section, remaining)
         if not points:
+            if preserve_empty_sections:
+                # Semantic occurrence blocks are keyed by section_id and then
+                # occurrence_id. A duplicate display title must never cause a
+                # later planned occurrence to disappear merely because an
+                # earlier task consumed the matching chapter-plan point.
+                groups.append((section, []))
             continue
         used_ids = {id(point) for point in points}
         remaining = [point for point in remaining if id(point) not in used_ids]
-        if _is_redundant_project_section(section, plan):
+        # In the ordinary reader, a project-summary section that repeats the
+        # project title may be folded into the preceding task.  Semantic-book
+        # mode cannot do that: each fixed BookPlan section owns a stable
+        # outline_node_id, and that node can have one or more occurrence IDs.
+        # Folding it would leave valid Markdown occurrences without a
+        # DigitalBook target.
+        if _is_redundant_project_section(section, plan) and not preserve_empty_sections:
             if groups:
                 previous_section, previous_points = groups[-1]
                 groups[-1] = (previous_section, previous_points + points)
@@ -2358,9 +2818,19 @@ def _section_task_title(chapter_no: int, task_index: int, section: BookSectionPl
 
 
 def _section_display_title(section: BookSectionPlan | None, plan: ChapterPlan) -> str:
-    if section and section.title:
-        title = _student_display_title(section.title)
-        if len(plan.knowledge_points) == 1 and not _titles_overlap(title, plan.title):
+    if section:
+        overlay = display_metadata_for_outline_node(
+            section.section_id,
+            section.title,
+            knowledge_titles=section.knowledge_point_ids,
+            fallback=plan.title or "本任务",
+        )
+        title = _student_display_title(overlay.title.display_title)
+        if (
+            len(plan.knowledge_points) == 1
+            and not is_internal_context_label(section.title)
+            and not _titles_overlap(title, plan.title)
+        ):
             return _student_display_title(plan.title)
         return title
     return _student_display_title(plan.title)
@@ -2409,6 +2879,113 @@ def _assessment_items_for_points(points: list[KnowledgePoint]) -> list[str]:
         "能结合教材资源说明关键动作、工件状态或质量要求。",
         "能用自己的话概括本节至少一个注意事项或判断依据。",
     ]
+
+
+def _semantic_target_metadata(
+    *,
+    points: list[KnowledgePoint],
+    semantic_briefs: list[OccurrenceWritingBrief],
+) -> dict[str, list[str]]:
+    canonical_ids = list(dict.fromkeys(item.canonical_knowledge_id for item in semantic_briefs if item.canonical_knowledge_id))
+    titles = list(dict.fromkeys(point.title for point in points if point.title))
+    return {
+        "target_knowledge_ids": canonical_ids,
+        "target_knowledge_titles": titles,
+    }
+
+
+def _assessment_requirement_semantics(
+    *,
+    points: list[KnowledgePoint],
+    semantic_briefs: list[OccurrenceWritingBrief],
+) -> list[dict[str, object]]:
+    target = _semantic_target_metadata(points=points, semantic_briefs=semantic_briefs)
+    common = {
+        **target,
+        "requirement_type": "ASSESSMENT_TEMPLATE",
+        "mapping_source": "TEMPLATE_METADATA",
+        "mapping_confidence": 1.0,
+        "extraction_provenance": "_assessment_items_for_points",
+    }
+    return [
+        {
+            **common,
+            "extracted_action": "ORIENTED",
+            "candidate_required_facets": ["ORIENTED"],
+        },
+        {
+            **common,
+            "extracted_action": "EXPLAIN",
+            "candidate_required_facets": ["EXPLAIN"],
+        },
+        {
+            **common,
+            "extracted_action": "ANALYZE",
+            "candidate_required_facets": ["ANALYZE"],
+        },
+    ]
+
+
+def _learning_nav_requirement_semantics(
+    items: list[str],
+    *,
+    points: list[KnowledgePoint],
+    semantic_briefs: list[OccurrenceWritingBrief],
+) -> list[dict[str, object]]:
+    target = _semantic_target_metadata(points=points, semantic_briefs=semantic_briefs)
+    semantics: list[dict[str, object]] = []
+    for index, item in enumerate(items):
+        is_forward = "重点掌握" in item or "本节" in item and ("学习" in item or "掌握" in item)
+        if is_forward:
+            semantics.append({
+                **target,
+                "requirement_type": "FORWARD_LEARNING_TARGET",
+                "candidate_required_facets": ["ORIENTED"],
+                "extracted_action": "ORIENTED",
+                "mapping_source": "TEMPLATE_METADATA",
+                "mapping_confidence": 1.0,
+                "extraction_provenance": "_learning_nav_items",
+            })
+        else:
+            semantics.append({
+                "requirement_type": "NAVIGATION_GUIDANCE",
+                "candidate_required_facets": [],
+                "mapping_source": "TEMPLATE_METADATA",
+                "mapping_confidence": 1.0,
+                "extraction_provenance": "_learning_nav_items",
+            })
+    return semantics
+
+
+def _exercise_requirement_semantics(
+    *,
+    items: list[str],
+    points: list[KnowledgePoint],
+    semantic_briefs: list[OccurrenceWritingBrief],
+) -> list[dict[str, object]]:
+    brief_by_title = [
+        (brief, title)
+        for brief in semantic_briefs
+        for title in (brief.source_title, brief.canonical_title)
+        if title
+    ]
+    result: list[dict[str, object]] = []
+    for item in items:
+        matched_titles = [point.title for point in points if point.title and _titles_overlap(item, point.title)]
+        matched_ids = [
+            brief.canonical_knowledge_id
+            for brief, title in brief_by_title
+            if title and _titles_overlap(item, title)
+        ]
+        semantic = deterministic_requirement_semantic(item)
+        semantic.update({
+            "requirement_type": "EXERCISE",
+            "target_knowledge_titles": list(dict.fromkeys(matched_titles)),
+            "target_knowledge_ids": list(dict.fromkeys(matched_ids)),
+            "extraction_provenance": "exercise_text_deterministic_normalization",
+        })
+        result.append(semantic)
+    return result
 
 
 def _exercise_items_for_points(points: list[KnowledgePoint]) -> list[str]:
@@ -4398,7 +4975,9 @@ function createSvg(tag, className) {
 function renderBlock(block) {
   const node = el('article', `block block-${block.type}`);
   node.id = block.block_id;
-  node.appendChild(blockHeading(block.title));
+  if (String(block.title || '').trim()) {
+    node.appendChild(blockHeading(block.title));
+  }
   if (block.type === 'video') {
     const video = document.createElement('video');
     video.controls = true;

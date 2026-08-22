@@ -1,0 +1,14 @@
+{
+  "cases": [
+    {"id": "same_alias", "input": "焊条电弧焊 / 手工电弧焊", "identity": "SAME"},
+    {"id": "related_distinct", "input": "焊接电流 / 焊接电压", "identity": "RELATED"},
+    {"id": "decomposed_source", "input": "坡口加工与打磨", "identity": "DECOMPOSE"},
+    {"id": "uncertain_identity", "input": "焊缝成形 / 焊缝质量", "identity": "UNCERTAIN"},
+    {"id": "intro_teach", "input": "先认识焊接电流，后讲调节原理", "roles": ["INTRO", "TEACH"]},
+    {"id": "teach_apply", "input": "先讲坡口加工方法，后在装配任务中使用", "roles": ["TEACH", "APPLY"]},
+    {"id": "teach_extend", "input": "先讲引弧，后讲薄板条件下的引弧限制", "roles": ["TEACH", "EXTEND"]},
+    {"id": "duplicate_teach", "input": "两章均完整讲授同一焊接电流定义", "roles": ["TEACH", "TEACH"], "expected_issue": "NO_COGNITIVE_INCREMENT"},
+    {"id": "prerequisite_gap", "input": "先要求按工艺参数操作，后才讲工艺参数", "prerequisites": ["工艺参数:EXPLAIN"], "expected_issue": "PREREQUISITE_GAP"},
+    {"id": "recall_policy", "input": "TEACH 后跨过三个任务才再次应用，未提供回忆", "expected_issue": "RECALL_POLICY_TRIGGERED"}
+  ]
+}

@@ -1,0 +1,44 @@
+[
+  {
+    "case_id": "shared-01",
+    "earlier_title": "工作场地布置",
+    "later_title": "风险识别",
+    "relation": "RELATED_WITH_SHARED_FACTS",
+    "disposition": "CONTEXTUAL_RESTATEMENT_REQUIRED"
+  },
+  {
+    "case_id": "shared-02",
+    "earlier_title": "安全防护用品",
+    "later_title": "风险识别",
+    "relation": "RELATED_WITH_SHARED_FACTS",
+    "disposition": "CONTEXTUAL_RESTATEMENT_REQUIRED"
+  },
+  {
+    "case_id": "shared-03",
+    "earlier_title": "风险识别",
+    "later_title": "防控",
+    "relation": "RELATED_WITH_SHARED_FACTS",
+    "disposition": "CONTEXTUAL_RESTATEMENT_REQUIRED"
+  },
+  {
+    "case_id": "shared-04",
+    "earlier_title": "熔池",
+    "later_title": "焊枪控制",
+    "relation": "RELATED_WITH_SHARED_FACTS",
+    "disposition": "CONTEXTUAL_RESTATEMENT_REQUIRED"
+  },
+  {
+    "case_id": "shared-05",
+    "earlier_title": "焊缝外观检查",
+    "later_title": "质量判断",
+    "relation": "RELATED_WITH_SHARED_FACTS",
+    "disposition": "CONTEXTUAL_RESTATEMENT_REQUIRED"
+  },
+  {
+    "case_id": "shared-06",
+    "earlier_title": "气焊操作过程",
+    "later_title": "焊缝成形控制",
+    "relation": "RELATED_WITH_SHARED_FACTS",
+    "disposition": "COMPRESSIBLE"
+  }
+]

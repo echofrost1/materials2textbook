@@ -219,6 +219,7 @@ class DigitalBookTask:
     knowledge_points: list[str] = field(default_factory=list)
     key_terms: list[str] = field(default_factory=list)
     evidence_chunk_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -267,6 +268,30 @@ class WorkflowOutputs:
     digital_book_index_path: str = ""
     digital_book_review_path: str = ""
     digital_book_review_markdown_path: str = ""
+    semantic_book_conformance_path: str = ""
+    semantic_book_conformance_markdown_path: str = ""
+    publication_quality_path: str = ""
+    publication_quality_markdown_path: str = ""
+    repair_history_audit_path: str = ""
+    repair_history_markdown_path: str = ""
+    semantic_closed_loop_status: str = ""
+    publication_quality_status: str = ""
+    final_publication_status: str = ""
+    source_book_plan_snapshot_path: str = ""
+    source_book_plan_invariant_path: str = ""
+    semantic_execution_path: str = ""
+    rendered_claim_evidence_audit_path: str = ""
+    rendered_claim_evidence_audit_markdown_path: str = ""
+    materialization_audit_path: str = ""
+    materialization_audit_markdown_path: str = ""
+    downstream_closure_path: str = ""
+    downstream_closure_markdown_path: str = ""
+    shared_fact_proposals_path: str = ""
+    shared_fact_proposals_markdown_path: str = ""
+    shared_fact_compression_plans_path: str = ""
+    shared_fact_compression_plans_markdown_path: str = ""
+    shared_fact_materialization_path: str = ""
+    shared_fact_materialization_markdown_path: str = ""
 
 
 @dataclass

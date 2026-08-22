@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 import re
 
@@ -74,6 +75,74 @@ class DigitalBookReviewerAgent:
                         )
                 for block in task.blocks:
                     issues.extend(self._review_block(block, known_chunk_ids, package_dir))
+        issues.extend(self._review_cross_project_duplicates(book))
+        issues.extend(self._review_post_dedup_continuity(book))
+        return issues
+
+    def _review_post_dedup_continuity(self, book: DigitalBook) -> list[ReviewIssue]:
+        """Ensure a de-duplicated block still has a usable learning path to its owner."""
+        issues: list[ReviewIssue] = []
+        task_order: dict[str, int] = {}
+        blocks: dict[str, DigitalBookBlock] = {}
+        block_task: dict[str, str] = {}
+        position = 0
+        for project in book.projects:
+            for task in project.tasks:
+                task_order[task.task_id] = position
+                position += 1
+                for block in task.blocks:
+                    blocks[block.block_id] = block
+                    block_task[block.block_id] = task.task_id
+
+        for project in book.projects:
+            for task in project.tasks:
+                for block in task.blocks:
+                    reference = block.metadata.get("content_reference") if block.metadata else None
+                    if not isinstance(reference, dict):
+                        continue
+                    owner_block_id = str(reference.get("block_id", ""))
+                    owner_task_id = str(reference.get("task_id", ""))
+                    owner_block = blocks.get(owner_block_id)
+                    if not owner_block or owner_block.type != "implementation":
+                        issues.append(ReviewIssue("high", block.block_id, "dedup_reference_target_missing", "The de-duplicated block has no valid primary explanation.", "Restore the primary block or keep a concise local explanation before delivery."))
+                        continue
+                    if owner_task_id != block_task.get(owner_block_id, ""):
+                        issues.append(ReviewIssue("high", block.block_id, "dedup_reference_target_mismatch", "The cross-reference task does not own the referenced block.", "Regenerate this cross-reference from the current book structure."))
+                        continue
+                    if task_order.get(owner_task_id, -1) >= task_order.get(task.task_id, -1):
+                        issues.append(ReviewIssue("medium", block.block_id, "dedup_reference_not_prior", "The primary explanation is not earlier in the book than its reference.", "Keep a minimal local prerequisite explanation or change the reference to an earlier primary task."))
+        return issues
+
+    def _review_cross_project_duplicates(self, book: DigitalBook) -> list[ReviewIssue]:
+        """Flag exact cross-chapter repeats for the whole-book revision pass."""
+        issues: list[ReviewIssue] = []
+        title_owner: dict[str, tuple[str, str]] = {}
+        text_owner: dict[str, tuple[str, str]] = {}
+        for project in book.projects:
+            for task in project.tasks:
+                title_key = re.sub(r"[\W_]+", "", task.title).lower()
+                if title_key and title_key in title_owner and title_owner[title_key][0] != project.project_id:
+                    owner_project, owner_task = title_owner[title_key]
+                    issues.append(ReviewIssue("medium", task.task_id, "duplicate_task_title", f"Task title duplicates {owner_project}/{owner_task}", "Keep one primary task and rename or cross-reference the other."))
+                elif title_key:
+                    title_owner[title_key] = (project.project_id, task.task_id)
+                for block in task.blocks:
+                    if block.type != "implementation":
+                        continue
+                    text_key = re.sub(r"[\W_]+", "", block.markdown or "").lower()
+                    if len(text_key) < 80:
+                        continue
+                    if text_key in text_owner and text_owner[text_key][0] != project.project_id:
+                        owner_project, owner_block = text_owner[text_key]
+                        issues.append(ReviewIssue("medium", block.block_id, "duplicate_implementation_text", f"Implementation text duplicates {owner_project}/{owner_block}", "Keep the detailed explanation once; replace the duplicate with a short cross-reference."))
+                    else:
+                        text_owner[text_key] = (project.project_id, block.block_id)
+                    for known_text, (owner_project, owner_block) in text_owner.items():
+                        if owner_project == project.project_id or known_text == text_key:
+                            continue
+                        if difflib.SequenceMatcher(None, text_key, known_text, autojunk=False).ratio() >= 0.88:
+                            issues.append(ReviewIssue("medium", block.block_id, "similar_implementation_text", f"Implementation text is highly similar to {owner_project}/{owner_block}", "Keep the detailed explanation once; rewrite the other occurrence as a short cross-reference."))
+                            break
         return issues
 
     def _review_block(

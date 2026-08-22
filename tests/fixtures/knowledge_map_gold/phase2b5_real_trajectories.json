@@ -1,0 +1,73 @@
+{
+  "fixture_version": "phase-2b5.v1",
+  "evidence_origin": "Existing welding evidence chunks C000001-C000018; the outline positions below are an isolated read-only evaluation plan.",
+  "trajectories": [
+    {
+      "id": "high_frequency_arc_intro_teach_apply",
+      "canonical_identity": {"canonical_title": "高频引弧原理", "mapping": "SAME", "relationship": "SAME"},
+      "source_titles": ["高频引弧原理", "高频引弧原理", "高频引弧原理"],
+      "expected_roles": ["INTRO", "TEACH", "APPLY"],
+      "expected_self_requirements": [[], ["ORIENTED"], ["EXPLAIN"]],
+      "expected_cross_prerequisites": [[], [], []],
+      "expected_grants": [["ORIENTED"], ["EXPLAIN"], []],
+      "expected_extension_keys": [[], [], []],
+      "expected_conformance": "MATCH"
+    },
+    {
+      "id": "thin_plate_teach_extend",
+      "canonical_identity": {"canonical_title": "薄板焊接", "mapping": "SAME", "relationship": "SAME"},
+      "source_titles": ["薄板焊接", "薄板焊接"],
+      "expected_roles": ["TEACH", "EXTEND"],
+      "expected_self_requirements": [[], ["EXPLAIN"]],
+      "expected_cross_prerequisites": [[], []],
+      "expected_grants": [["EXPLAIN"], ["ANALYZE"]],
+      "expected_extension_keys": [[], ["constraint:thin_plate_limit"]],
+      "expected_conformance": "MATCH"
+    },
+    {
+      "id": "arc_decay_teach_recall_apply",
+      "canonical_identity": {"canonical_title": "电流衰减法收弧", "mapping": "SAME", "relationship": "SAME"},
+      "source_titles": ["电流衰减法收弧", "电流衰减法收弧", "电流衰减法收弧"],
+      "expected_roles": ["TEACH", "RECALL", "APPLY"],
+      "expected_self_requirements": [[], ["EXPLAIN"], ["EXPLAIN"]],
+      "expected_cross_prerequisites": [[], [], []],
+      "expected_grants": [["EXPLAIN"], [], []],
+      "expected_extension_keys": [[], [], []],
+      "expected_conformance": "MATCH"
+    },
+    {
+      "id": "left_hand_wire_duplicate_teach",
+      "canonical_identity": {"canonical_title": "左手送丝法", "mapping": "SAME", "relationship": "SAME"},
+      "source_titles": ["左手送丝法", "左手送丝法"],
+      "expected_roles": ["TEACH", "TEACH"],
+      "expected_self_requirements": [[], ["EXPLAIN"]],
+      "expected_cross_prerequisites": [[], []],
+      "expected_grants": [["EXPLAIN"], []],
+      "expected_extension_keys": [[], []],
+      "expected_conformance": "MATCH"
+    },
+    {
+      "id": "bevel_and_grinding_decomposition",
+      "canonical_identity": {"canonical_titles": ["坡口加工", "打磨"], "mapping": "DECOMPOSED", "relationship": "DECOMPOSE"},
+      "source_titles": ["坡口加工与打磨", "坡口加工", "打磨"],
+      "expected_roles": {"坡口加工": ["TEACH", "APPLY"], "打磨": ["TEACH", "EXTEND"]},
+      "expected_self_requirements": {"坡口加工": [[], ["EXPLAIN"]], "打磨": [[], ["EXPLAIN"]]},
+      "expected_cross_prerequisites": {"坡口加工": [[], []], "打磨": [[], []]},
+      "expected_conformance": "MATCH"
+    },
+    {
+      "id": "high_frequency_arc_alias_same",
+      "canonical_identity": {"source_titles": ["高频引弧原理", "高频引弧的原理"], "mapping": "SAME", "relationship": "SAME"},
+      "expected_roles": ["TEACH", "APPLY"],
+      "expected_cross_prerequisites": [[], []],
+      "expected_conformance": "MATCH"
+    },
+    {
+      "id": "arc_ignition_related_but_distinct",
+      "canonical_identity": {"source_titles": ["高频引弧原理", "引弧参数设置"], "mapping": "DISTINCT", "relationship": "RELATED"},
+      "expected_roles": ["TEACH", "TEACH"],
+      "expected_cross_prerequisites": [[], []],
+      "expected_conformance": "MATCH"
+    }
+  ]
+}

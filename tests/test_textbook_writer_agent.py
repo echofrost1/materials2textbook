@@ -155,7 +155,7 @@ def test_llm_writer_keeps_usable_markdown() -> None:
     assert markdown == llm_markdown.rstrip() + "\n"
 
 
-def test_llm_writer_requires_multiple_citations_when_many_chunks_exist() -> None:
+def test_llm_writer_keeps_evidence_identifiers_out_of_student_text_when_many_chunks_exist() -> None:
     chunk, plan = _sample_chunk_and_plan()
     extra_chunks = [
         EvidenceChunk(
@@ -187,8 +187,8 @@ def test_llm_writer_requires_multiple_citations_when_many_chunks_exist() -> None
 
     markdown = writer.run([plan], [chunk, *extra_chunks], "样章")
 
-    assert writer.last_generation_mode == "rule_fallback"
-    assert "本节证据覆盖：C1、C2、C3、C4" in markdown
+    assert writer.last_generation_mode == "llm"
+    assert "本节证据覆盖：C1、C2、C3、C4" not in markdown
 
 
 def _sample_chunk_and_plan() -> tuple[EvidenceChunk, ChapterPlan]:

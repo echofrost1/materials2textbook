@@ -1,0 +1,40 @@
+{
+  "baseline_id": "phase3e-publication-remediation-20260818",
+  "kind": "real_full_book_publication_snapshot",
+  "invariants": {
+    "semantic_closed_loop_status": "PASS",
+    "publication_quality_status": "PASS",
+    "final_publication_status": "PASS",
+    "publication_gate_publishable": true,
+    "blocker_count": 0,
+    "high_count": 0,
+    "fallback_count": 0,
+    "markdown_digital_alignment": 1.0,
+    "outline_signature_unchanged": true,
+    "source_book_plan_unchanged": true,
+    "semantic_objects_unchanged": true,
+    "no_accepted_partial": true,
+    "no_silent_fallback": true,
+    "unresolved_high_severity_issues": 0
+  },
+  "expected_occurrence_states": {
+    "VERIFIED_ORIGINAL": 18,
+    "VERIFIED_REPAIRED": 0,
+    "REJECTED_EVIDENCE": 0,
+    "MANUAL_REVIEW": 0,
+    "FAILED_CONFORMANCE": 0
+  },
+  "warning_snapshot": {
+    "DUPLICATED_SENTENCE": 63,
+    "CONTENT_TOO_THIN": 1
+  },
+  "artifact_sha256": {
+    "textbook_materialized.md": "64d38350ddc9a3275dc1f085c55379430f68c53b02a509c55bc7cb7be8632eb6",
+    "digital_book_materialized.json": "5e42ca153ed57b2658c7fd8b1f5a1b096d9fcbd3d618c293655f287522566b28",
+    "full_book_materialization.json": "6ebd1a9591fec0338df22b79810d84f0213063a57f868490ed322a3c69392f57"
+  },
+  "notes": [
+    "This is a read-only regression baseline, not a new source corpus or a golden text to copy.",
+    "Warnings are intentionally retained for diagnosis and are not publication blockers."
+  ]
+}

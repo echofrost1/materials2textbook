@@ -778,7 +778,7 @@ def test_export_digital_book_default_student_copy_is_readable_utf8(tmp_path: Pat
     assert "本章围绕“钨极氩弧焊基本操作”展开学习" in visible_text
     assert "情境导入" in visible_text
     assert "学习路径" not in visible_text
-    assert "示范观察与要点提取" in visible_text
+    assert "Complete 钨极氩弧焊基本操作" in visible_text
     assert "数字教材" in index_path.read_text(encoding="utf-8")
     assert not any(token in visible_text for token in ["鎯", "瀛", "璇", "閽", "鏁", "鈥"])
 
