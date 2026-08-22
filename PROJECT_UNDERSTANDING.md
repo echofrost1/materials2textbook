@@ -1,5 +1,7 @@
 # 项目认知（只读审计初稿）
 
+> **CURRENT STATUS（2026-08-22，Phase 5 开发基线）**：Phase 1–4 的 semantic closed loop、证据门禁、知识轨迹、去重、repair 与 publication gate 视为冻结。当前稳定代码基线为本次 checkpoint 的父提交 `fa10156`（semantic closed-loop branch）；`phase4_standard_fresh_20260822` 是历史真实 benchmark，不代表 Root A/Root B 修复后的新 full-book 结果。当前产品问题已转为 Completeness-First Textbook Authoring：先补齐 BookPlan 冻结前的范围、教学责任和素材支持验收。**next = Phase 5A BookPlan Completeness Optimization**。本状态块只记录当前状态，不改写下方历史审计。
+
 > 状态：2026-08-19。本文是依据当前 `main` 工作树、生产入口、关键测试和 Git 历史（`HEAD=3d2a5f0` 及其前序）形成的认知记录，不是设计方案，也不改变任何代码。  
 > 约束来源：[PROJECT_INTENT.md](PROJECT_INTENT.md) 与 [ARCHITECTURE_GUARDRAILS.md](ARCHITECTURE_GUARDRAILS.md)。二者与本文观察有冲突时，以二者及后续产品确认优先。
 
@@ -770,3 +772,150 @@ writer / DigitalBook 使用 ChapterPlan 标题
 - `UNRESOLVED_PREREQUISITE` 是“当前无法证明”，不是“系统证明不存在”；fresh planner run 需要保存 prompt/model 版本，避免再次出现无法区分历史 contract 缺失与模型遗漏的情况。
 - `supporting_basis` 仍需在后续真实 planning run 中提供可追溯来源（例如 evidence、task requirement 或 knowledge structure），并同时保留 rationale、provenance 和 facet necessity；本次没有用旧 occurrence-level evidence 冒充 prerequisite basis。
 - 本次仅更新项目认知文档和审计产物，没有重新运行 full-book，也没有进入下一语义功能阶段。
+
+### 23.4 真实教材完整性与内容丰富度诊断（2026-08-22）
+
+对 `phase4_standard_fresh_20260822` 标准 production artifact 的只读检查表明，当前系统已经具备较强的语义约束、证据审计和 fail-closed 能力，但尚未形成稳定的“优质完整教材创作能力”。学生感受到的正文缺失和内容单薄是真实产物问题，不是单纯的 DigitalBook 展示问题。
+
+该 artifact 的主要事实如下：
+
+| 指标 | 实际结果 | 产品含义 |
+| --- | ---: | --- |
+| BookPlan | 4 章、14 个 section | 当前规划范围本身偏小；domain configuration 中的部分预期主题没有进入最终 BookPlan。 |
+| Planned occurrences | 25 | 复合 BookPlan knowledge point 被拆为多个可审计 occurrence。 |
+| Rendered occurrences | 12 | 只有不到一半 occurrence 形成学生可见正文。 |
+| Blocked occurrences | 13 | 大量 occurrence 在 writer 前被 prerequisite/semantic gate 阻断。 |
+| 无“任务实施”正文的任务 | 7 / 14 | 一半任务只有结构、导航、视频、评价和练习模块，没有真正任务实施正文。 |
+| 最终 Markdown | 约 5800 字符、约 2800 个汉字、13 个正文段落 | 规模明显不足以支撑一部完整教材。 |
+| EvidenceChunk | 911 | 原始素材数量并不少。 |
+| BookPlan 实际绑定的唯一 evidence | 75（约 8.2%） | 素材检索、覆盖规划和 section 级证据包构建不足。 |
+| Reference material | 0 | 当前 BookPlan 没有形成补充/参考证据层。 |
+| claim semantic audit | 31 SUPPORTED / 17 PARTIAL / 19 UNSUPPORTED | 已渲染正文仍有较高比例的语义证据问题。 |
+| publication status | FAIL；36 blocker | 当前产物是受审计的失败草稿，不是可发布教材。 |
+
+DigitalBook 虽然为 14 个任务都创建了 `学习导航`、`情境导入`、`任务评价`、`思考与练习` 等结构块，但当前 artifact 中不少块只是标题或通用模板：`learning_nav` 的学生可见 markdown 平均只有标题本身，`assessment` 和 `exercises` 也主要依赖 items/template，而不是与本节真实教学充分闭合的丰富内容。BookPlan 中 14 个 section 均标记 `needs_case=true`、`needs_exercises=true`，但成品没有稳定兑现相应的真实案例、练习、参考答案和评价量规。
+
+需要特别区分：`pedagogy_completeness_rate = 1.0` 更接近“规划结构或模块存在”，不能解释为“教材内容已经充分”。当前 publication quality 只识别出一个显式 `CONTENT_TOO_THIN` occurrence，但多个只有约 100～200 字的 TEACH body 仍被标为 `ADEQUATE`，说明现有质量指标对 section/task 级教学充分性的覆盖仍不够。
+
+上述统计来自最新标准 fresh artifact，之后完成的 Root A/Root B 修复尚未通过新的 full-book 运行反映到该教材中；因此这些数值描述的是当前可见产物，不应被误读为修复后代码必然仍产生完全相同的数量。但 affected-chain replay 仍然是 `recovered occurrences = 0`，说明仅修复安全正确性尚不足以自动恢复完整教材。
+
+### 23.5 当前内容质量问题的根因分层
+
+#### 23.5.1 BookPlan 冻结前缺少教材完整性验收
+
+BookPlan freeze 和 semantic overlay 不修改大纲是正确边界，但该边界只保证“后续不篡改规划”，不能保证“被冻结的规划本身已经是一份完整教材大纲”。当前真实 BookPlan 与 domain configuration 之间存在覆盖和顺序不一致，部分 chapter learning goals 还出现通用英文 fallback 文本。
+
+因此应区分：
+
+- semantic optimization 不得修改已冻结 BookPlan；
+- 原有 BookPlan generator 在 freeze 前仍需要接受范围覆盖、章节完整性、知识归属、教学目标和素材支持的质量审查；
+- 冻结低质量 BookPlan 只会稳定保留其缺陷，后续 semantic pipeline 无权补回缺失节点。
+
+#### 23.5.2 素材数量充足，但 section 级 evidence coverage 不足
+
+当前每个 section 平均只绑定约 5.7 个 primary material，且 reference material 为空。Writer 得到的是少量零散 evidence，而不是按“概念、原理、操作步骤、参数、观察现象、常见错误、案例、评价和练习”组织的 section teaching packet。
+
+严格 evidence gate 下，模型不能使用常识补齐缺失内容，这是正确约束；但如果 evidence retrieval/binding 没有先覆盖本节完整教学责任，结果只能是短正文、证据收缩或 block。完整教材需要先在授权范围内进行更好的 knowledge/section 级检索、rerank 和证据分工；真正缺失的部分再显式形成 `SOURCE_GAP`，而不是让 writer 猜测。
+
+#### 23.5.3 当前闭环偏重“阻断”，缺少面向创作完成度的恢复动作
+
+现有系统能够正确执行：
+
+```text
+prerequisite / evidence / conformance 无法验证
+→ fail closed
+→ 不建立 availability
+→ 不让后文消费虚假教学支持
+```
+
+但教材生产还需要：
+
+```text
+失败根因
+├─ prerequisite overclaim → 仅重新规划该 prerequisite
+├─ planner metadata 缺失 → 重新取得可审计 prerequisite proposal
+├─ evidence retrieval miss → 在授权范围内重新检索和绑定
+├─ writer underdelivery → 同 role、同 brief、同 evidence 局部重试
+└─ genuine source gap → 显式要求补充素材或人工确认范围
+```
+
+目前“发现问题”的能力已经强于“把问题恢复到可以安全写作”的能力，所以 fail-closed 会直接表现为学生端空 section。
+
+#### 23.5.4 WritingBrief 是语义约束，不是完整教学设计
+
+当前 WritingBrief 能表达 role、facet、已有知识、禁止重讲和授权 evidence，但 `TEACH + EXPLAIN` 仍不足以规定一节优质教材需要怎样展开。真实 artifact 中出现过内部 facet label 被直接写入学生正文的 fallback 句，说明 writer 可能把抽象教学责任误当成正文内容。
+
+完整写作还需要 section 级教学蓝图，按实际任务选择并明确：
+
+- 学习情境与要解决的问题；
+- 概念、原理和适用边界；
+- 操作步骤、参数与观察点；
+- 正常/异常现象和常见错误；
+- 案例、实训活动、评价点；
+- 练习、参考答案和本节小结；
+- 每项教学内容的 evidence 支持。
+
+Occurrence 继续作为语义审计粒度，但不能独自承担整节教材的教学设计职责。
+
+#### 23.5.5 学生端模块存在结构占位，未稳定形成真实内容
+
+DigitalBook exporter 能创建项目/任务结构，但当前 learning navigation、scenario、assessment 和 exercises 大量由通用模板产生。结构完整不等于教学完整；尤其不能让只有标题或泛化句的模块通过“模块存在”获得高 completeness 评价。
+
+评价与练习除了满足 Phase 3A 的能力闭合，还需要内容质量要求：题目具体、目标明确、与正文和任务对应、难度与已验证教学支持一致，并在需要时提供答案、量规或判断依据。
+
+#### 23.5.6 质量评价仍偏重合规，缺少充分性与编辑质量
+
+现有 gate 已能检查 outline immutability、role/conformance、evidence、alignment、fallback 和 publication hygiene，这些能力应该保留。但“优质教材”还需要单独评价：
+
+- chapter/section 是否完整覆盖预期课程范围；
+- TEACH 是否真正教透，而不是只出现定义/作用模板；
+- procedure 是否包含可执行步骤、条件和判断标准；
+- APPLY/EXTEND 是否具体对应当前任务；
+- section 是否有案例、练习、反馈与小结；
+- 全书是否具有统一体例、语言风格和编辑连续性；
+- 空 section、结构占位和素材缺口是否全部显式阻止发布。
+
+### 23.6 对现有 semantic optimization 的产品判断
+
+现有优化不是无效工作。它已经建立了优质教材所需的安全和审计底座：BookPlan preservation、knowledge trajectory、role-specific writing constraints、verified availability、zero-render、downstream closure、shared-fact 保守压缩、claim semantic evidence audit、Markdown/DigitalBook alignment 以及 fail-closed publication gate。
+
+但这些能力主要回答：
+
+> 这段内容是否应该在这里写、是否重复、是否有证据、后文是否可以依赖？
+
+它们尚未充分回答：
+
+> 为了成为一节优质完整教材，这个 section 必须完整教什么、练什么、评什么，素材是否已经覆盖这些责任？
+
+因此当前系统更接近“教材语义安全与审计引擎”，而不是已经成熟的“完整教材创作引擎”。后续不应删除现有 semantic closed loop，也不应继续把主要精力投入更细的 role taxonomy 或 shared-fact 去重；应将其定位为写作前约束、写作后验证和发布门禁，并优先补齐 completeness-first authoring。
+
+### 23.7 面向优质完整教材的优先方向
+
+推荐的产品级顺序是：
+
+```text
+Materials
+→ 素材覆盖地图与真实缺口报告
+→ 原有 BookPlan generation
+→ BookPlan 完整性/素材支持验收
+→ 确认并 freeze BookPlan
+→ Section Teaching Blueprint
+→ 按教学责任构建 Evidence Packet
+→ section 级完整正文与学生模块生成
+→ occurrence span / knowledge trajectory semantic optimization
+→ conformance + claim evidence
+→ teaching / assessment / exercise closure
+→ 全书编辑审校
+→ publication gate
+```
+
+近期优先级应为：
+
+1. 建立 BookPlan freeze 前的完整性与素材覆盖验收，但不允许 semantic optimization 回写 BookPlan；
+2. 建立 section 级教学蓝图和内容义务，而不是只给 occurrence 一个 facet label；
+3. 改进 knowledge/section evidence retrieval、binding 和 source-gap 报告；
+4. 为 prerequisite、evidence、writer underdelivery 建立受约束的局部恢复动作；
+5. 真正生成案例、任务实施、评价、练习、答案和量规；
+6. 将现有 semantic closed loop 继续用于去重、安全校验、全书闭合和最终发布。
+
+在严格 evidence boundary 下，如果授权素材确实不能支撑完整教材，系统必须要求补充合规的标准、教材、企业工艺文件或公开资料，而不能通过 LLM 常识无证据扩写。优质和完整必须同时满足；“内容丰富”不能以事实不可追溯为代价。
