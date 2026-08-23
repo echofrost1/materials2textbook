@@ -20,6 +20,11 @@ class WorkflowConfig:
     max_summary_source_chunks: int = 8
     review_rounds: int = 1
     copy_media_assets: bool = True
+    # Completeness is a pre-freeze planning gate.  A single bounded retry is
+    # the default; callers may disable enforcement for read-only frozen-plan
+    # comparisons without changing the planner itself.
+    completeness_replan_attempts: int = 1
+    enforce_completeness_gate: bool = True
 
     def allows_review_status(self, status: str) -> bool:
         normalized = status.strip().lower()
@@ -51,3 +56,6 @@ class WorkflowConfig:
 
     def normalized_max_summary_source_chunks(self) -> int:
         return max(1, self.max_summary_source_chunks)
+
+    def normalized_completeness_replan_attempts(self) -> int:
+        return max(0, min(1, int(self.completeness_replan_attempts)))

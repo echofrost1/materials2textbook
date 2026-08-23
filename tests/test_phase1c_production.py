@@ -215,7 +215,7 @@ def test_phase1c_cases_e_and_i_real_workflow_needs_no_external_semantic_json(tmp
         document_segments_path=document_path,
         output_dir=output_dir,
         title="Generic textbook",
-        config=WorkflowConfig(copy_media_assets=False, review_rounds=0),
+        config=WorkflowConfig(copy_media_assets=False, review_rounds=0, enforce_completeness_gate=False),
         book_mode=True,
         semantic_book_mode=True,
         resume_chapters=False,

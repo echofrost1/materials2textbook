@@ -188,6 +188,16 @@ def book_plan_from_dict(
                         primary_material_ids=_string_list(raw_section.get("primary_material_ids")),
                         reference_material_ids=_string_list(raw_section.get("reference_material_ids")),
                         recommended_video_ids=_string_list(raw_section.get("recommended_video_ids")),
+                        section_purpose=_text(raw_section.get("section_purpose")),
+                        expected_learning_outcome=_text(raw_section.get("expected_learning_outcome")),
+                        current_task_action=_text(raw_section.get("current_task_action")),
+                        knowledge_scope=_string_list(raw_section.get("knowledge_scope")) or knowledge_points,
+                        needs_case=_as_bool(raw_section.get("needs_case"), True),
+                        needs_exercises=_as_bool(raw_section.get("needs_exercises"), True),
+                        case_purpose=_module_purpose(raw_section, "case_purpose"),
+                        exercise_purpose=_module_purpose(raw_section, "exercise_purpose"),
+                        assessment_purpose=_module_purpose(raw_section, "assessment_purpose"),
+                        activity_purpose=_module_purpose(raw_section, "activity_purpose"),
                     )
                 )
         chapter_no = int(raw_chapter.get("chapter_no") or chapter_index)
@@ -555,7 +565,20 @@ def _sections_from_raw(
                 title=_text(raw_section.get("title")) or points[0],
                 knowledge_point_ids=points,
                 primary_material_ids=material_ids,
+                reference_material_ids=[
+                    chunk_id for chunk_id in _string_list(raw_section.get("reference_material_ids")) if chunk_id in chunk_map
+                ],
                 recommended_video_ids=_dedupe(recommended_video_ids),
+                section_purpose=_text(raw_section.get("section_purpose")),
+                expected_learning_outcome=_text(raw_section.get("expected_learning_outcome")),
+                current_task_action=_text(raw_section.get("current_task_action")),
+                knowledge_scope=_string_list(raw_section.get("knowledge_scope")) or points,
+                needs_case=_as_bool(raw_section.get("needs_case"), True),
+                needs_exercises=_as_bool(raw_section.get("needs_exercises"), True),
+                case_purpose=_module_purpose(raw_section, "case_purpose"),
+                exercise_purpose=_module_purpose(raw_section, "exercise_purpose"),
+                assessment_purpose=_module_purpose(raw_section, "assessment_purpose"),
+                activity_purpose=_module_purpose(raw_section, "activity_purpose"),
             )
         )
     return sections
@@ -616,6 +639,24 @@ def _string_list(value: Any) -> list[str]:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _module_purpose(raw_section: dict[str, Any], key: str) -> str:
+    direct = _text(raw_section.get(key))
+    if direct:
+        return direct
+    module_intent = raw_section.get("module_intent")
+    if isinstance(module_intent, dict):
+        return _text(module_intent.get(key))
+    return ""
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"", "0", "false", "no", "none", "null"}
 
 
 def _dedupe(values: list[str]) -> list[str]:

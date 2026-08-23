@@ -30,6 +30,11 @@ from materials2textbook.agents.book_plan_llm import (
     expand_tasks_by_material_density,
     plan_has_blocking_issues,
 )
+from materials2textbook.agents.book_plan_completeness import (
+    CompletenessOptimizationResult,
+    optimize_book_plan_completeness,
+    render_completeness_report_markdown,
+)
 from materials2textbook.agents.case_designer import CaseDesignerAgent
 from materials2textbook.agents.knowledge_organizer import KnowledgeOrganizerAgent
 from materials2textbook.agents.outline_planner import OutlinePlannerAgent, render_outline_markdown
@@ -342,6 +347,9 @@ class TextbookWorkflow:
         source_book_plan_fingerprint = ""
         source_book_plan_snapshot_path = output_dir / "source_book_plan_snapshot.json"
         source_book_plan_invariant_path = output_dir / "source_book_plan_invariant.json"
+        book_plan_completeness_path = output_dir / "book_plan_completeness.json"
+        book_plan_completeness_markdown_path = output_dir / "book_plan_completeness.md"
+        book_plan_completeness: CompletenessOptimizationResult | None = None
         book_plan_review = []
         planning_mode = "chapter"
         if book_mode:
@@ -408,6 +416,70 @@ class TextbookWorkflow:
                     }
                 )
                 book_plan = replace(book_plan, metadata=metadata)
+            # Completeness is the last pre-freeze planning step.  It may add
+            # bounded, evidence-backed planning metadata/ownership, but it
+            # cannot alter existing outline identity, order, titles, or
+            # knowledge ownership.  Frozen inputs are diagnosed read-only.
+            replan_callback = None
+            if not book_plan_is_frozen and auto_plan and planning_mode != "external":
+                def _replan_from_original(
+                    current_plan: Any,
+                    _issues: list[Any],
+                ) -> Any:
+                    if planning_mode == "llm" and self.book_plan_llm.use_llm:
+                        candidate, _planner_issues = self.book_plan_llm.run(
+                            title=title,
+                            chunks=chunks,
+                            domain_config=domain_config,
+                            max_chapters=max_chapters,
+                            chapter_token_budget=max_chapter_input_tokens,
+                        )
+                    else:
+                        candidate = self.book_planner.run(
+                            title=title,
+                            chunks=chunks,
+                            manifest_xlsx=manifest_xlsx,
+                            max_chapters=max_chapters,
+                            chapter_token_budget=max_chapter_input_tokens,
+                            domain_config=domain_config,
+                        )
+                    if candidate is None:
+                        return None
+                    candidate, _ = enforce_minimum_sections(candidate, chunks)
+                    candidate, _ = enforce_material_block_coverage(
+                        candidate,
+                        chunks,
+                        max_chapters=max_chapters,
+                        chapter_token_budget=max_chapter_input_tokens,
+                    )
+                    candidate, _ = expand_tasks_by_material_density(candidate, chunks)
+                    return enrich_chapter_evidence(candidate, chunks)
+
+                replan_callback = _replan_from_original
+            book_plan_completeness = optimize_book_plan_completeness(
+                book_plan,
+                chunks,
+                domain_config=domain_config,
+                replanner=replan_callback,
+                max_replan_attempts=config.normalized_completeness_replan_attempts(),
+                allow_replan=not book_plan_is_frozen,
+            )
+            write_json(book_plan_completeness_path, book_plan_completeness.to_dict())
+            write_text(
+                book_plan_completeness_markdown_path,
+                render_completeness_report_markdown(book_plan_completeness),
+            )
+            book_plan = book_plan_completeness.book_plan
+            if (
+                not book_plan_is_frozen
+                and config.enforce_completeness_gate
+                and not book_plan_completeness.final_report.safe_to_freeze
+            ):
+                raise ValueError(
+                    "BookPlan completeness gate blocked freeze: "
+                    f"{book_plan_completeness.final_report.status} "
+                    f"{book_plan_completeness.final_report.counts}"
+                )
             book_plan_review = auto_plan_issues + section_issues + coverage_issues + density_issues + structure_issues + review_book_plan(book_plan, chunks)
             if semantic_book_mode:
                 source_book_plan_snapshot = snapshot_source_book_plan(book_plan)
@@ -1040,6 +1112,11 @@ class TextbookWorkflow:
                     if rendered_claim_audit is not None
                     else {}
                 ),
+                "book_plan_completeness": (
+                    book_plan_completeness.final_report.to_dict()
+                    if book_plan_completeness is not None
+                    else {}
+                ),
             },
             "outputs": {
                 "outline_json": _portable_path(outline_path),
@@ -1085,6 +1162,8 @@ class TextbookWorkflow:
                 "curriculum_order": _portable_path(curriculum_order_path) if book_plan else "",
                 "book_plan_review_json": _portable_path(book_plan_review_path) if book_plan else "",
                 "book_plan_review_markdown": _portable_path(book_plan_review_markdown_path) if book_plan else "",
+                "book_plan_completeness_json": _portable_path(book_plan_completeness_path) if book_plan_completeness is not None else "",
+                "book_plan_completeness_markdown": _portable_path(book_plan_completeness_markdown_path) if book_plan_completeness is not None else "",
                 "source_book_plan_snapshot": _portable_path(source_book_plan_snapshot_path) if semantic_book_mode and source_book_plan_snapshot is not None else "",
                 "source_book_plan_invariant": _portable_path(source_book_plan_invariant_path) if semantic_book_mode and source_book_plan_snapshot is not None else "",
                 "semantic_execution_audit": _portable_path(semantic_execution_path) if semantic_execution is not None else "",
@@ -1156,6 +1235,8 @@ class TextbookWorkflow:
             shared_fact_compression_plans_markdown_path=str(shared_fact_compression_plans_markdown_path) if shared_fact_compression_report is not None else "",
             shared_fact_materialization_path=str(shared_fact_materialization_path) if shared_fact_materialization_result is not None else "",
             shared_fact_materialization_markdown_path=str(shared_fact_materialization_markdown_path) if shared_fact_materialization_result is not None else "",
+            book_plan_completeness_path=str(book_plan_completeness_path) if book_plan_completeness is not None else "",
+            book_plan_completeness_markdown_path=str(book_plan_completeness_markdown_path) if book_plan_completeness is not None else "",
         )
 
     def _run_shared_fact_materialization_request(

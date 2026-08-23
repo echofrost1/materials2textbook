@@ -58,7 +58,7 @@ def test_book_mode_runs_chapters_as_independent_pipeline(tmp_path: Path) -> None
         document_segments_path=document_path,
         output_dir=output_dir,
         title="焊接数字教材",
-        config=WorkflowConfig(copy_media_assets=False, max_input_tokens=0, review_rounds=1),
+        config=WorkflowConfig(copy_media_assets=False, max_input_tokens=0, review_rounds=1, enforce_completeness_gate=False),
         book_mode=True,
         chapter_output_root=chapter_root,
         max_chapter_input_tokens=8000,
@@ -67,6 +67,8 @@ def test_book_mode_runs_chapters_as_independent_pipeline(tmp_path: Path) -> None
 
     manifest = json.loads(Path(outputs.manifest_path).read_text(encoding="utf-8"))
     book = json.loads(Path(outputs.digital_book_path).read_text(encoding="utf-8"))
+    assert Path(outputs.book_plan_completeness_path).exists()
+    assert manifest["outputs"]["book_plan_completeness_json"]
 
     assert manifest["summary"]["chapter_pipeline_enabled"] is True
     assert manifest["summary"]["chapter_pipeline_total"] == 2
@@ -113,7 +115,7 @@ def test_book_mode_reuses_completed_chapter_outputs(tmp_path: Path) -> None:
         document_segments_path=document_path,
         output_dir=output_dir,
         title="焊接数字教材",
-        config=WorkflowConfig(copy_media_assets=False, review_rounds=1),
+        config=WorkflowConfig(copy_media_assets=False, review_rounds=1, enforce_completeness_gate=False),
         book_mode=True,
         chapter_output_root=chapter_root,
         resume_chapters=True,
@@ -124,7 +126,7 @@ def test_book_mode_reuses_completed_chapter_outputs(tmp_path: Path) -> None:
         document_segments_path=document_path,
         output_dir=output_dir,
         title="焊接数字教材",
-        config=WorkflowConfig(copy_media_assets=False, review_rounds=1),
+        config=WorkflowConfig(copy_media_assets=False, review_rounds=1, enforce_completeness_gate=False),
         book_mode=True,
         chapter_output_root=chapter_root,
         resume_chapters=True,

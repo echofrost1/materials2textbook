@@ -97,6 +97,16 @@ class BookSectionPlan:
     recommended_video_ids: list[str] = field(default_factory=list)
     needs_case: bool = True
     needs_exercises: bool = True
+    # Freeze-time completeness overlay fields.  They describe the section's
+    # planned teaching responsibility without changing outline ownership.
+    section_purpose: str = ""
+    expected_learning_outcome: str = ""
+    current_task_action: str = ""
+    knowledge_scope: list[str] = field(default_factory=list)
+    case_purpose: str = ""
+    exercise_purpose: str = ""
+    assessment_purpose: str = ""
+    activity_purpose: str = ""
 
 
 @dataclass
@@ -292,6 +302,8 @@ class WorkflowOutputs:
     shared_fact_compression_plans_markdown_path: str = ""
     shared_fact_materialization_path: str = ""
     shared_fact_materialization_markdown_path: str = ""
+    book_plan_completeness_path: str = ""
+    book_plan_completeness_markdown_path: str = ""
 
 
 @dataclass
