@@ -96,7 +96,7 @@ from materials2textbook.knowledge_map.pipeline import (
 from materials2textbook.knowledge_map.semantic import HeuristicSemanticPlanner
 from materials2textbook.knowledge_map.semantic_evaluation import evaluate_semantic_planning
 from materials2textbook.agents.knowledge_semantic_planner import LLMSemanticPlanningAgent
-from materials2textbook.knowledge_map.execution import execute_verified_occurrences
+from materials2textbook.knowledge_map.execution import execute_verified_occurrences, execute_verified_sections
 from materials2textbook.knowledge_map.rendered_claim_semantic_audit import (
     CALIBRATED_SEMANTIC_ROUTING_CATEGORIES,
     OpenAICompatibleEntailmentJudge,
@@ -124,6 +124,10 @@ from materials2textbook.knowledge_map.shared_fact_materialization import (
 from materials2textbook.knowledge_map.section_discourse import (
     build_section_discourse_bodies,
     complete_section_discourse_audits,
+)
+from materials2textbook.knowledge_map.section_authoring import (
+    build_section_authoring_messages,
+    parse_section_authoring_response,
 )
 from materials2textbook.knowledge_map.writing_briefs import (
     FallbackOccurrence,
@@ -245,6 +249,7 @@ class TextbookWorkflow:
         semantic_evaluation_input: Path | None = None,
         semantic_book_mode: bool = False,
         book_plan_is_frozen: bool = False,
+        completeness_first_authoring: bool = True,
         shared_fact_proposals: list[dict[str, Any]] | None = None,
         shared_fact_materialization_request: Mapping[str, Any] | None = None,
     ) -> WorkflowOutputs:
@@ -255,6 +260,7 @@ class TextbookWorkflow:
         if book_plan_is_frozen and book_plan_input is None:
             raise ValueError("book_plan_is_frozen requires book_plan_input; generated plans freeze only after normal post-processing.")
         semantic_book_mode = bool(semantic_book_mode or semantic_evaluation_input)
+        completeness_first_authoring = bool(completeness_first_authoring)
         # Semantic production execution is defined only for a frozen
         # whole-book plan; callers need not duplicate the book-mode flag.
         book_mode = bool(book_mode or semantic_book_mode)
@@ -623,8 +629,7 @@ class TextbookWorkflow:
             )
             book_plan = book_plan_completeness.book_plan
             if (
-                not book_plan_is_frozen
-                and config.enforce_completeness_gate
+                config.enforce_completeness_gate
                 and not book_plan_completeness.final_report.safe_to_freeze
             ):
                 raise ValueError(
@@ -716,19 +721,34 @@ class TextbookWorkflow:
         semantic_execution = None
         if book_mode:
             if semantic_runtime_mode and semantic_evaluation is not None:
-                _progress(f"semantic mode: sequential verified occurrence execution ({len(plans)} chapter projections)")
-                semantic_execution = self._run_semantic_runtime_execution(
-                    plans=plans,
-                    chunks=chunks,
-                    title=title,
-                    book_plan=book_plan,
-                    semantic_evaluation=semantic_evaluation,
-                    excluded_occurrence_ids={
-                        item.occurrence_id for item in coverage.rejected_plan_occurrences
-                    } | {
-                        item.occurrence_id for item in coverage.dropped_occurrence_goals
-                    },
-                )
+                excluded_ids = {
+                    item.occurrence_id for item in coverage.rejected_plan_occurrences
+                } | {
+                    item.occurrence_id for item in coverage.dropped_occurrence_goals
+                }
+                if completeness_first_authoring:
+                    _progress(f"semantic mode: completeness-first section authoring ({len(plans)} chapter projections)")
+                    if book_plan_completeness is None:
+                        raise RuntimeError("completeness-first authoring requires a BookPlan completeness report")
+                    semantic_execution = self._run_semantic_section_authoring_execution(
+                        plans=plans,
+                        chunks=chunks,
+                        title=title,
+                        book_plan=book_plan,
+                        completeness_report=book_plan_completeness.final_report,
+                        semantic_evaluation=semantic_evaluation,
+                        excluded_occurrence_ids=excluded_ids,
+                    )
+                else:
+                    _progress(f"semantic mode: sequential verified occurrence execution ({len(plans)} chapter projections)")
+                    semantic_execution = self._run_semantic_runtime_execution(
+                        plans=plans,
+                        chunks=chunks,
+                        title=title,
+                        book_plan=book_plan,
+                        semantic_evaluation=semantic_evaluation,
+                        excluded_occurrence_ids=excluded_ids,
+                    )
                 runtime_coverage = semantic_execution.coverage
                 runtime_coverage.rejected_plan_occurrences.extend(coverage.rejected_plan_occurrences)
                 runtime_coverage.dropped_occurrence_goals.extend(coverage.dropped_occurrence_goals)
@@ -1187,6 +1207,13 @@ class TextbookWorkflow:
             "domain_config": domain_config.to_dict(),
             "planning_mode": planning_mode,
             "semantic_execution_mode": semantic_execution_mode,
+            "authoring_mode": (
+                "completeness_first_section"
+                if completeness_first_authoring and semantic_runtime_mode
+                else "legacy_verified_occurrence"
+                if semantic_runtime_mode
+                else "chapter"
+            ),
             "semantic_planner_mode": semantic_planner_mode,
             "rendered_claim_evidence_audit": (
                 {
@@ -1217,6 +1244,7 @@ class TextbookWorkflow:
                 "book_plan_input": _portable_path(book_plan_input) if book_plan_input else "",
                 "book_plan_is_frozen": bool(book_plan_is_frozen),
                 "semantic_book_mode": bool(semantic_book_mode),
+                "completeness_first_authoring": bool(completeness_first_authoring),
                 "semantic_evaluation_input": _portable_path(semantic_evaluation_input) if semantic_evaluation_input else "",
                 "source_records": len(records) + len(document_records),
                 "video_source_records": len(records),
@@ -1523,6 +1551,68 @@ class TextbookWorkflow:
             semantic_entailment_judge=runtime_claim_judge,
         )
 
+    def _run_semantic_section_authoring_execution(
+        self,
+        *,
+        plans: list[ChapterPlan],
+        chunks: list[EvidenceChunk],
+        title: str,
+        book_plan: Any,
+        completeness_report: Any,
+        semantic_evaluation: Any,
+        excluded_occurrence_ids: set[str] | None = None,
+    ):
+        """Run section-level authoring with the existing verified runtime.
+
+        This is the completeness-first production adapter.  It intentionally
+        refuses to use the short occurrence rule writer when no model provider
+        is configured; a section writer failure remains an auditable blocked
+        section instead of becoming fabricated teaching.
+        """
+
+        knowledge_map = semantic_evaluation.knowledge_map
+        sources = {item.source_knowledge_point_id: item for item in knowledge_map.source_knowledge_points}
+        points = {item.knowledge_id: item for item in knowledge_map.knowledge_points}
+        runtime_claim_judge = None
+        if self.writer.use_llm and self.writer.llm_provider is not None:
+            runtime_claim_judge = OpenAICompatibleEntailmentJudge(
+                self.writer.llm_provider,
+                model=str(getattr(getattr(self.writer.llm_provider, "config", None), "model", "")),
+            )
+
+        def render_section(brief, packet, section_chunks):
+            if not self.writer.use_llm or self.writer.llm_provider is None:
+                raise RuntimeError("completeness-first section authoring requires a configured LLM writer")
+            raw = self.writer.llm_provider.generate(
+                build_section_authoring_messages(brief, packet, section_chunks)
+            )
+            draft = parse_section_authoring_response(raw)
+            provenance = draft.get("generation_provenance")
+            if not isinstance(provenance, Mapping):
+                provenance = {}
+            draft["generation_provenance"] = {
+                **dict(provenance),
+                "writer": "qwen-section-authoring",
+                "model": str(getattr(getattr(self.writer.llm_provider, "config", None), "model", "")),
+                "section_id": brief.outline_node_id,
+                "brief_id": brief.brief_id,
+                "packet_id": packet.packet_id,
+            }
+            return draft
+
+        return execute_verified_sections(
+            book_plan=book_plan,
+            completeness_report=completeness_report,
+            occurrences=knowledge_map.planned_occurrences,
+            deltas=semantic_evaluation.semantic_deltas,
+            sources=sources,
+            points=points,
+            chunks=chunks,
+            section_writer=render_section,
+            excluded_occurrence_ids=excluded_occurrence_ids,
+            semantic_entailment_judge=runtime_claim_judge,
+        )
+
     @staticmethod
     def _synchronize_semantic_evaluation_with_payload(evaluation: Any, payload: dict[str, Any]) -> None:
         """Apply an accepted evidence-bounded plan payload to typed runtime inputs.
@@ -1612,7 +1702,24 @@ class TextbookWorkflow:
                 for section in chapter.sections
             ],
         )
-        execution.section_assemblies = [item.to_dict() for item in section_audits]
+        # Preserve the immutable section authoring contracts and rendered
+        # section produced by the completeness-first executor.  The discourse
+        # audit is an additional presentation-layer view; it must not replace
+        # the Blueprint/Packet/Brief/recovery audit that downstream manifests
+        # and replay tooling consume.
+        authoring_assemblies = {
+            str(item.get("section_id") or ""): item
+            for item in execution.section_assemblies
+            if isinstance(item, dict) and item.get("section_id")
+        }
+        merged_assemblies: list[dict[str, Any]] = []
+        for item in section_audits:
+            discourse = item.to_dict()
+            merged = dict(authoring_assemblies.get(item.section_id, {}))
+            merged.update(discourse)
+            merged["discourse_audit"] = discourse
+            merged_assemblies.append(merged)
+        execution.section_assemblies = merged_assemblies
         lines = [f"# {title}", "", "> 本教材按固定 BookPlan 生成；语义正文按运行时验证顺序形成。", ""]
         rows_by_section: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for item in ordered_rows:

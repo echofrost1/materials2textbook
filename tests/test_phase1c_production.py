@@ -229,6 +229,7 @@ def test_phase1c_cases_e_and_i_real_workflow_needs_no_external_semantic_json(tmp
     assert Path(outputs.downstream_closure_path).exists()
     assert Path(outputs.downstream_closure_markdown_path).exists()
     assert manifest["semantic_execution_mode"] == "verified_sequential"
+    assert manifest["authoring_mode"] == "completeness_first_section"
     assert manifest["semantic_planner_mode"] == "deterministic"
     assert manifest["input"]["semantic_book_mode"] is True
     assert manifest["input"]["book_plan_is_frozen"] is False

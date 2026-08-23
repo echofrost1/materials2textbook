@@ -130,6 +130,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--completeness-first-authoring",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use SectionTeachingBlueprint/SectionEvidencePacket and section-level authoring "
+            "in semantic production mode (default: enabled)."
+        ),
+    )
+    parser.add_argument(
         "--manifest-xlsx",
         type=Path,
         default=None,
@@ -341,6 +350,7 @@ def main() -> None:
         llm_book_planning=not args.disable_llm_book_planning,
         book_plan_input=args.book_plan_input.resolve() if args.book_plan_input else None,
         book_plan_is_frozen=args.book_plan_is_frozen,
+        completeness_first_authoring=args.completeness_first_authoring,
     )
 
     print("Full digital textbook generated:")

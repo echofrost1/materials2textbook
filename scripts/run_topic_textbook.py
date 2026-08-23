@@ -64,6 +64,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--completeness-first-authoring",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use section-level authoring contracts in semantic production mode "
+            "(default: enabled)."
+        ),
+    )
+    parser.add_argument(
         "--book-plan-is-frozen",
         action="store_true",
         help="Treat --book-plan-input as an already post-processed immutable source BookPlan.",
@@ -186,6 +195,7 @@ def main() -> None:
         llm_book_planning=args.use_llm,
         book_plan_input=args.book_plan_input.resolve() if args.book_plan_input else None,
         book_plan_is_frozen=args.book_plan_is_frozen,
+        completeness_first_authoring=args.completeness_first_authoring,
     )
     _copy_if_exists(output_dir / "book_plan.json", manifest_dir / "book_plan.generated.json")
     _copy_if_exists(output_dir / "book_plan_review.md", manifest_dir / "book_plan_review.md")

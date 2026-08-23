@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+import json
 import re
 from typing import Any, Callable, Iterable, Mapping
 
@@ -56,6 +57,131 @@ BLOCKED_CORE_SOURCE_GAP = "BLOCKED_CORE_SOURCE_GAP"
 
 class SectionAuthoringError(ValueError):
     """Raised when a draft violates the immutable section authoring contract."""
+
+
+def build_section_authoring_messages(
+    brief: "SectionAuthoringBrief",
+    packet: SectionEvidencePacket,
+    evidence_chunks: Iterable[EvidenceChunk],
+) -> list[dict[str, str]]:
+    """Build the production section-writer contract.
+
+    The model receives only the already-bound packet spans.  It declares
+    ordered semantic blocks; it never owns section fields, character offsets,
+    occurrence anchors, or evidence outside the packet.
+    """
+
+    chunk_by_id = {item.chunk_id: item for item in evidence_chunks}
+    bindings = {item.obligation_id: item for item in packet.obligation_bindings}
+    obligations: list[dict[str, Any]] = []
+    for item in brief.all_obligations:
+        binding = bindings[item.obligation_id]
+        spans = [
+            str(span.get("text") or "").strip()
+            for span in binding.accepted_evidence_spans
+            if str(span.get("text") or "").strip()
+        ]
+        # A packet span is authoritative.  Falling back to the supplied chunk
+        # text is only useful for packets produced by older deterministic
+        # fixtures that did not persist an excerpt; IDs remain the whitelist.
+        if not spans:
+            spans = [
+                str(chunk_by_id[evidence_id].content or chunk_by_id[evidence_id].summary or "").strip()
+                for evidence_id in binding.accepted_evidence_ids
+                if evidence_id in chunk_by_id
+            ]
+        obligations.append(
+            {
+                "obligation_id": item.obligation_id,
+                "kind": item.kind,
+                "required": item.required,
+                "objective": item.objective,
+                "evidence_status": binding.status,
+                "authorized_evidence_ids": list(binding.accepted_evidence_ids),
+                "evidence_spans": spans,
+                "forbidden_scope": (
+                    "all professional claims for this obligation"
+                    if binding.status == SOURCE_GAP
+                    else "unsupported remainder beyond the accepted evidence"
+                    if binding.status == PARTIAL_OBLIGATION
+                    else "claims outside the accepted evidence"
+                ),
+            }
+        )
+    contract = {
+        "section_identity": {
+            "outline_node_id": brief.outline_node_id,
+            "chapter_id": brief.chapter_id,
+            "section_no": brief.section_no,
+            "title": brief.section_title,
+        },
+        "section_purpose": brief.section_purpose,
+        "expected_learning_outcome": brief.expected_learning_outcome,
+        "current_task_action": brief.current_task_action,
+        "prior_verified_support": deepcopy(dict(brief.prior_verified_support)),
+        "must_teach": list(brief.must_teach),
+        "may_recap": list(brief.may_recap),
+        "forbidden_reteach": list(brief.forbidden_reteach),
+        "required_current_contribution": list(brief.required_current_contribution),
+        "occurrence_constraints": [deepcopy(dict(item)) for item in brief.occurrence_constraints],
+        "module_requirements": {
+            "case_activity": brief.case_activity_requirement,
+            "exercise": brief.exercise_requirement,
+            "assessment": brief.assessment_requirement,
+            "summary": brief.summary_requirement,
+        },
+        "obligations": obligations,
+        "source_gaps": [deepcopy(dict(item)) for item in brief.source_gaps],
+    }
+    system = (
+        "You are the section-level author for a vocational digital textbook. "
+        "Write one coherent student-visible section from this immutable contract. "
+        "Use only the evidence spans and IDs supplied in the contract; do not use "
+        "outside knowledge or broaden evidence ownership. Do not replan roles, "
+        "facets, prerequisites, obligations, or module requirements. Internal "
+        "labels such as EXPLAIN, PERFORM, ANALYZE, TEACH, APPLY, RECALL, and "
+        "EXTEND must never appear in student-visible text. Return only one JSON "
+        "object with ordered semantic blocks and no Markdown fences or commentary."
+    )
+    user = (
+        "Return exactly this shape:\n"
+        '{"blocks":[{"block_id":"b01","channel":"body|case_activity|exercise|assessment|summary",'
+        '"text":"student-visible text","intended_obligation_ids":[],"intended_occurrence_ids":[],"evidence_ids":[]}],'
+        '"generation_provenance":{"writer":"section-qwen"}}\n\n'
+        "The blocks array is the complete section in reading order. Every block "
+        "must contain all six block keys. Do not return body/summary/offset/span "
+        "fields outside blocks. Evidence IDs on a block must be authorized for "
+        "every obligation named by that block. For PARTIAL evidence, write only "
+        "the supported portion; for SOURCE_GAP, do not write a professional fact. "
+        "Make the teaching sequence natural and concrete when the evidence "
+        "supports it, including procedures, conditions, observable results, "
+        "case/activity, exercise, assessment, and summary only when required.\n\n"
+        "IMMUTABLE AUTHORING CONTRACT:\n" + json.dumps(contract, ensure_ascii=False, indent=2)
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def parse_section_authoring_response(raw: str) -> dict[str, Any]:
+    """Parse a model response without accepting a second prose representation."""
+
+    cleaned = str(raw or "").strip()
+    if not cleaned:
+        raise SectionAuthoringError("section writer returned empty output")
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        value = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise SectionAuthoringError("section writer returned invalid JSON")
+        try:
+            value = json.loads(cleaned[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise SectionAuthoringError("section writer returned invalid JSON") from exc
+    if not isinstance(value, Mapping):
+        raise SectionAuthoringError("section writer response must be a JSON object")
+    return dict(value)
 
 
 @dataclass(frozen=True)
