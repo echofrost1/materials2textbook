@@ -22,6 +22,11 @@ from materials2textbook.knowledge_map.evidence_packet import (
     SectionEvidencePacket,
 )
 from materials2textbook.knowledge_map.outline import book_plan_fingerprint
+from materials2textbook.knowledge_map.rendered_claim_semantic_audit import (
+    CALIBRATED_SEMANTIC_ROUTING_CATEGORIES,
+    ClaimStatus,
+    audit_rendered_claims,
+)
 from materials2textbook.knowledge_map.teaching_blueprint import (
     CASE_ACTIVITY,
     CONCEPT_PRINCIPLE,
@@ -35,7 +40,13 @@ from materials2textbook.knowledge_map.teaching_blueprint import (
     SectionTeachingBlueprint,
     TeachingObligation,
 )
-from materials2textbook.schemas import BookPlan, BookSectionPlan
+from materials2textbook.schemas import (
+    BookPlan,
+    BookSectionPlan,
+    EvidenceChunk,
+    EvidenceLocator,
+    EvidenceScore,
+)
 
 
 RENDERED = "RENDERED"
@@ -286,6 +297,24 @@ def build_section_authoring_brief(
         "evidence_scope_expansion": False,
         "section_authoring_granularity": True,
         "occurrence_role_decision": "immutable constraint input",
+        "evidence_claim_scope": {
+            item.obligation_id: {
+                "status": item.evidence_status,
+                "allowed_evidence_ids": list(item.authorized_evidence_ids),
+                "supported_spans": [
+                    deepcopy(dict(span))
+                    for span in binding_by_id[item.obligation_id].accepted_evidence_spans
+                ],
+                "forbidden_scope": (
+                    "all professional claims for this obligation"
+                    if item.evidence_status == SOURCE_GAP
+                    else "unsupported remainder beyond accepted evidence"
+                    if item.evidence_status == PARTIAL_OBLIGATION
+                    else "claims outside authorized evidence"
+                ),
+            }
+            for item in obligations
+        },
     }
     return SectionAuthoringBrief(
         brief_id=brief_id,
@@ -326,106 +355,108 @@ def author_section(
     brief: SectionAuthoringBrief,
     packet: SectionEvidencePacket,
     writer: Callable[[SectionAuthoringBrief], Mapping[str, Any]],
+    *,
+    claim_judge: Any | None = None,
 ) -> RenderedSection:
     """Run a fake/wrapped writer and deterministically materialize its draft."""
 
     draft = writer(brief)
     if not isinstance(draft, Mapping):
         raise SectionAuthoringError("section writer must return a mapping draft")
-    return materialize_section_draft(brief, packet, draft)
+    return materialize_section_draft(brief, packet, draft, claim_judge=claim_judge)
 
 
 def materialize_section_draft(
     brief: SectionAuthoringBrief,
     packet: SectionEvidencePacket,
     draft: Mapping[str, Any],
+    *,
+    claim_judge: Any | None = None,
 ) -> RenderedSection:
-    """Validate and materialize a constrained draft; never repair or replan it."""
+    """Validate and materialize a constrained block draft.
+
+    The writer owns only semantic associations.  It never owns character
+    offsets or the final span maps.  ``blocks`` are ordered and code-owned
+    materialization computes every visible span from the resulting body.
+    """
 
     if packet.packet_id != brief.packet_id or packet.blueprint_id != brief.blueprint_id:
         raise SectionAuthoringError("draft inputs do not belong to the SectionAuthoringBrief")
-    body = str(draft.get("body") or draft.get("student_visible_body") or "").strip()
-    case_activity = str(draft.get("case_activity") or "").strip()
-    exercises = tuple(_clean_strings(draft.get("exercises") or ()))
-    assessment = str(draft.get("assessment") or "").strip()
-    summary = str(draft.get("summary") or "").strip()
-    visible_text = "\n\n".join([body, case_activity, *exercises, assessment, summary]).strip()
-    _reject_internal_labels(visible_text)
-    _reject_forbidden_reteach(visible_text, brief.forbidden_reteach)
+    if "obligation_span_map" in draft or "occurrence_span_map" in draft:
+        raise SectionAuthoringError(
+            "model-authored exact span maps are not accepted; return ordered blocks"
+        )
 
-    obligation_map = _normalize_span_map(draft.get("obligation_span_map") or {})
-    occurrence_map = _normalize_span_map(draft.get("occurrence_span_map") or {})
+    raw_blocks = draft.get("blocks")
+    if raw_blocks is None:
+        raw_blocks = []
+    if not isinstance(raw_blocks, (list, tuple)):
+        raise SectionAuthoringError("section writer must return an ordered blocks list")
+    model_owned_fields = {
+        "body": draft.get("body") or draft.get("student_visible_body"),
+        "case_activity": draft.get("case_activity"),
+        "assessment": draft.get("assessment"),
+        "summary": draft.get("summary"),
+    }
+    if any(str(value or "").strip() for value in model_owned_fields.values()):
+        raise SectionAuthoringError("student-visible text must be represented by ordered blocks")
+    if draft.get("exercises"):
+        raise SectionAuthoringError("student-visible exercises must be represented by ordered blocks")
+    if draft.get("evidence_usage"):
+        raise SectionAuthoringError("evidence usage spans are materializer-owned; return block evidence_ids only")
+
     allowed_obligation_ids = {item.obligation_id for item in brief.all_obligations}
-    unknown_obligations = sorted(set(obligation_map) - allowed_obligation_ids)
-    if unknown_obligations:
-        raise SectionAuthoringError(f"draft maps unknown obligations: {unknown_obligations}")
     allowed_occurrence_ids = {
         _constraint_value(item, "occurrence_id")
         for item in brief.occurrence_constraints
         if _constraint_value(item, "occurrence_id")
     }
-    unknown_occurrences = sorted(set(occurrence_map) - allowed_occurrence_ids)
-    if unknown_occurrences:
-        raise SectionAuthoringError(f"draft maps unknown occurrences: {unknown_occurrences}")
-
     binding_by_id = {item.obligation_id: item for item in packet.obligation_bindings}
-    span_evidence_usage: list[dict[str, Any]] = []
-    for obligation in brief.all_obligations:
-        spans = obligation_map.get(obligation.obligation_id, ())
-        binding = binding_by_id[obligation.obligation_id]
-        if binding.status == SOURCE_GAP:
-            if spans:
-                raise SectionAuthoringError(
-                    f"source-gap obligation cannot receive generated content: {obligation.obligation_id}"
-                )
-            continue
-        if obligation.required == REQUIRED and not spans:
-            raise SectionAuthoringError(f"required obligation has no rendered span: {obligation.obligation_id}")
-        for span in spans:
-            text = str(span.get("text") or "").strip()
-            if not text or text not in visible_text:
-                raise SectionAuthoringError(f"obligation span is not present in rendered section: {obligation.obligation_id}")
-            evidence_ids = tuple(_clean_strings(span.get("evidence_ids") or ()))
-            allowed = set(brief.authorized_evidence_per_obligation.get(obligation.obligation_id, ()))
-            if not evidence_ids:
-                raise SectionAuthoringError(
-                    f"obligation span must identify authorized evidence: {obligation.obligation_id}"
-                )
-            if not set(evidence_ids).issubset(allowed):
-                raise SectionAuthoringError(
-                    f"obligation span uses unauthorized evidence: {obligation.obligation_id}"
-                )
-            if binding.status == PARTIAL_OBLIGATION and not evidence_ids:
-                raise SectionAuthoringError(
-                    f"partial obligation span must identify its supported evidence: {obligation.obligation_id}"
-                )
-            span_evidence_usage.append(
-                {
-                    "obligation_id": obligation.obligation_id,
-                    "evidence_ids": list(evidence_ids),
-                    "span_id": str(span.get("span_id") or ""),
-                    "support_status": binding.status,
-                }
-            )
-    for occurrence_id, spans in occurrence_map.items():
-        for span in spans:
-            text = str(span.get("text") or "").strip()
-            if not text or text not in visible_text:
-                raise SectionAuthoringError(f"occurrence span is not present: {occurrence_id}")
+    blocks = _normalize_writer_blocks(
+        raw_blocks,
+        allowed_obligation_ids=allowed_obligation_ids,
+        allowed_occurrence_ids=allowed_occurrence_ids,
+        brief=brief,
+        binding_by_id=binding_by_id,
+    )
+
+    # Blocks are the only source for every student-visible section field.
+    body_parts = [item["text"] for item in blocks if item["channel"] == "body"]
+    body = "\n\n".join(body_parts).strip()
+    block_case_activity = [item["text"] for item in blocks if item["channel"] == "case_activity"]
+    block_exercises = [item["text"] for item in blocks if item["channel"] == "exercise"]
+    block_assessment = [item["text"] for item in blocks if item["channel"] == "assessment"]
+    block_summary = [item["text"] for item in blocks if item["channel"] == "summary"]
+    case_activity = "\n\n".join(block_case_activity).strip()
+    exercises = tuple(block_exercises)
+    assessment = "\n\n".join(block_assessment).strip()
+    summary = "\n\n".join(block_summary).strip()
+    visible_segments = [item for item in [body, case_activity, *exercises, assessment, summary] if item]
+    visible_text = "\n\n".join(visible_segments).strip()
+    _reject_internal_labels(visible_text)
+    _reject_forbidden_reteach(visible_text, brief.forbidden_reteach)
+
+    obligation_map, occurrence_map, span_evidence_usage = _compute_deterministic_maps(
+        blocks, body=body, visible_text=visible_text, brief=brief, binding_by_id=binding_by_id
+    )
+    coverage = _check_obligation_coverage(brief, binding_by_id, blocks)
+    coverage_violations = tuple(
+        item.obligation_id
+        for item in brief.required_obligations
+        if not item.source_gap and coverage.get(item.obligation_id, "VIOLATION") == "VIOLATION"
+    )
 
     _validate_module_requirements(brief, binding_by_id, case_activity, exercises, assessment, summary)
     if not body and _has_deliverable_required_obligation(brief, binding_by_id):
         raise SectionAuthoringError("section body is empty while supported required teaching remains")
 
-    explicit_usage = _normalize_evidence_usage(draft.get("evidence_usage") or ())
-    for usage in explicit_usage:
-        obligation_id = str(usage.get("obligation_id") or "")
-        allowed = set(brief.authorized_evidence_per_obligation.get(obligation_id, ()))
-        if obligation_id not in brief.authorized_evidence_per_obligation or not set(
-            _clean_strings(usage.get("evidence_ids") or ())
-        ).issubset(allowed):
-            raise SectionAuthoringError(f"evidence usage is outside the obligation authorization: {obligation_id}")
-    evidence_usage = tuple(explicit_usage or span_evidence_usage)
+    evidence_usage = tuple(span_evidence_usage)
+    claim_audit = _run_local_claim_audit(
+        brief=brief,
+        packet=packet,
+        blocks=blocks,
+        judge=claim_judge,
+    )
     draft_provenance = draft.get("generation_provenance")
     if not isinstance(draft_provenance, Mapping):
         draft_provenance = {"writer": "fake-or-wrapped-writer"}
@@ -440,8 +471,29 @@ def materialize_section_draft(
         for item in brief.required_obligations
         if item.source_gap and item.kind not in {CONCEPT_PRINCIPLE, PROCEDURE_OPERATION}
     )
-    blocked = bool(core_source_gaps)
-    render_status = BLOCKED_CORE_SOURCE_GAP if blocked else (RENDERED_PARTIAL if local_gaps or brief.partial_obligations else RENDERED)
+    unsupported_claims = tuple(
+        str(item.get("claim_id") or "")
+        for item in claim_audit
+        if item.get("final_status") == ClaimStatus.UNSUPPORTED
+    )
+    partial_claims = tuple(
+        str(item.get("claim_id") or "")
+        for item in claim_audit
+        if item.get("final_status") == ClaimStatus.PARTIALLY_SUPPORTED
+    )
+    blocked_reasons = core_source_gaps + local_gaps + tuple(
+        f"OBLIGATION_COVERAGE_VIOLATION:{item}" for item in coverage_violations
+    ) + tuple(
+        f"UNSUPPORTED_RENDERED_CLAIM:{item}" for item in unsupported_claims if item
+    )
+    blocked = bool(core_source_gaps or coverage_violations or unsupported_claims)
+    render_status = BLOCKED_CORE_SOURCE_GAP if core_source_gaps else (
+        RENDERED_PARTIAL if local_gaps or brief.partial_obligations or partial_claims or unsupported_claims else RENDERED
+    )
+    required_coverage_verified = all(
+        item.source_gap or coverage.get(item.obligation_id) == "MATCH"
+        for item in brief.required_obligations
+    )
     provenance = {
         **dict(draft_provenance),
         "materializer": "phase5d-deterministic-section-materializer-v1",
@@ -450,6 +502,15 @@ def materialize_section_draft(
         "evidence_scope_expanded": False,
         "internal_labels_rendered": False,
         "writer_replanned": False,
+        "writer_contract": "ordered_blocks_only",
+        "model_authored_spans": False,
+        "span_coordinate_space": "materialized_student_visible_sequence",
+        "obligation_coverage": coverage,
+        "local_claim_evidence_audit": claim_audit,
+        "local_claim_status_counts": _status_counts_from_claim_audit(claim_audit),
+        "required_obligations_verified": required_coverage_verified,
+        "verified_availability_eligible": not blocked and required_coverage_verified and not partial_claims,
+        "grant_order": "materialization -> obligation coverage -> conformance -> local claim evidence audit",
     }
     return RenderedSection(
         section_id=brief.outline_node_id,
@@ -467,7 +528,7 @@ def materialize_section_draft(
         generation_provenance=provenance,
         render_status=render_status,
         blocked=blocked,
-        block_reasons=core_source_gaps + local_gaps,
+        block_reasons=blocked_reasons,
     )
 
 
@@ -562,30 +623,278 @@ def _has_deliverable_required_obligation(
     )
 
 
-def _normalize_span_map(raw: Mapping[str, Any]) -> dict[str, tuple[dict[str, Any], ...]]:
-    if not isinstance(raw, Mapping):
-        raise SectionAuthoringError("span map must be a mapping")
-    result: dict[str, tuple[dict[str, Any], ...]] = {}
-    for key, value in raw.items():
-        entries = value if isinstance(value, (list, tuple)) else [value]
-        normalized: list[dict[str, Any]] = []
-        for index, item in enumerate(entries):
-            if isinstance(item, Mapping):
-                payload = dict(item)
-            else:
-                payload = {"text": str(item or "")}
-            payload.setdefault("span_id", f"{key}:span:{index + 1:02d}")
-            normalized.append(payload)
-        result[str(key)] = tuple(normalized)
+def _normalize_writer_blocks(
+    raw_blocks: Iterable[Any],
+    *,
+    allowed_obligation_ids: set[str],
+    allowed_occurrence_ids: set[str],
+    brief: SectionAuthoringBrief,
+    binding_by_id: Mapping[str, ObligationEvidenceBinding],
+) -> list[dict[str, Any]]:
+    """Validate the model's semantic block declarations.
+
+    This is deliberately the only model-facing structure.  Character
+    positions, span IDs and evidence excerpts are all produced later by
+    deterministic code.
+    """
+
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    channel_order = {"body": 0, "case_activity": 1, "exercise": 2, "assessment": 3, "summary": 4}
+    last_channel = -1
+    for index, raw in enumerate(raw_blocks, start=1):
+        if not isinstance(raw, Mapping):
+            raise SectionAuthoringError(f"writer block {index} must be an object")
+        block_id = str(raw.get("block_id") or "").strip()
+        text = str(raw.get("text") or "").strip()
+        if not block_id or not text:
+            raise SectionAuthoringError(f"writer block {index} requires block_id and non-empty text")
+        if block_id in seen:
+            raise SectionAuthoringError(f"duplicate writer block_id: {block_id}")
+        seen.add(block_id)
+        obligation_ids = _block_id_list(raw.get("intended_obligation_ids"), "intended_obligation_ids", block_id)
+        occurrence_ids = _block_id_list(raw.get("intended_occurrence_ids"), "intended_occurrence_ids", block_id)
+        evidence_ids = tuple(_clean_strings(raw.get("evidence_ids") or ()))
+        unknown_obligations = sorted(set(obligation_ids) - allowed_obligation_ids)
+        if unknown_obligations:
+            raise SectionAuthoringError(f"block maps unknown obligations: {unknown_obligations}")
+        unknown_occurrences = sorted(set(occurrence_ids) - allowed_occurrence_ids)
+        if unknown_occurrences:
+            raise SectionAuthoringError(f"block maps unknown occurrences: {unknown_occurrences}")
+        if not obligation_ids and evidence_ids:
+            raise SectionAuthoringError(f"discourse-only block cannot claim evidence: {block_id}")
+        if obligation_ids:
+            if any(binding_by_id[item].status == SOURCE_GAP for item in obligation_ids):
+                raise SectionAuthoringError(
+                    "source-gap obligation cannot receive generated content: "
+                    + ", ".join(item for item in obligation_ids if binding_by_id[item].status == SOURCE_GAP)
+                )
+            authorized_sets = [
+                set(brief.authorized_evidence_per_obligation.get(item, ()))
+                for item in obligation_ids
+            ]
+            common_authorized = set.intersection(*authorized_sets) if authorized_sets else set()
+            if not evidence_ids:
+                raise SectionAuthoringError(f"teaching block must identify authorized evidence: {block_id}")
+            if not set(evidence_ids).issubset(common_authorized):
+                raise SectionAuthoringError(f"block uses unauthorized evidence: {block_id}")
+        channel = str(raw.get("channel") or "body").strip().lower()
+        if channel not in {"body", "case_activity", "exercise", "assessment", "summary"}:
+            raise SectionAuthoringError(f"unknown writer block channel: {channel}")
+        if channel_order[channel] < last_channel:
+            raise SectionAuthoringError(
+                "writer blocks must follow deterministic channel order: body, case_activity, exercise, assessment, summary"
+            )
+        last_channel = channel_order[channel]
+        result.append(
+            {
+                "block_id": block_id,
+                "text": text,
+                "intended_obligation_ids": tuple(obligation_ids),
+                "intended_occurrence_ids": tuple(occurrence_ids),
+                "evidence_ids": evidence_ids,
+                "channel": channel,
+            }
+        )
     return result
 
 
-def _normalize_evidence_usage(raw: Iterable[Any]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for item in raw:
-        if not isinstance(item, Mapping):
-            raise SectionAuthoringError("evidence_usage entries must be mappings")
-        result.append(dict(item))
+def _block_id_list(value: Any, field_name: str, block_id: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple, set)):
+        raise SectionAuthoringError(f"{field_name} must be an array in block {block_id}")
+    return _clean_strings(value)
+
+
+def _compute_deterministic_maps(
+    blocks: list[dict[str, Any]],
+    *,
+    body: str,
+    visible_text: str,
+    brief: SectionAuthoringBrief,
+    binding_by_id: Mapping[str, ObligationEvidenceBinding],
+) -> tuple[dict[str, tuple[dict[str, Any], ...]], dict[str, tuple[dict[str, Any], ...]], list[dict[str, Any]]]:
+    obligation_map: dict[str, list[dict[str, Any]]] = {}
+    occurrence_map: dict[str, list[dict[str, Any]]] = {}
+    evidence_usage: list[dict[str, Any]] = []
+    channel_order = ("body", "case_activity", "exercise", "assessment", "summary")
+    ordered_blocks = [block for channel in channel_order for block in blocks if block["channel"] == channel]
+    materialized_visible = "\n\n".join(block["text"] for block in ordered_blocks).strip()
+    if materialized_visible != visible_text:
+        raise SectionAuthoringError("deterministic block materialization changed the visible section unexpectedly")
+    cursor = 0
+    for index, block in enumerate(ordered_blocks):
+        if index:
+            cursor += 2
+        channel = block["channel"]
+        start = cursor
+        end = start + len(block["text"])
+        cursor = end
+        base = {
+            "span_id": block["block_id"],
+            "block_id": block["block_id"],
+            "channel": channel,
+            "start": start,
+            "end": end,
+            "text": block["text"],
+            "evidence_ids": list(block["evidence_ids"]),
+        }
+        for obligation_id in block["intended_obligation_ids"]:
+            status = binding_by_id[obligation_id].status
+            entry = {**base, "coverage_status": "PARTIAL" if status == PARTIAL_OBLIGATION else "MATCH"}
+            obligation_map.setdefault(obligation_id, []).append(entry)
+            evidence_usage.append(
+                {
+                    "obligation_id": obligation_id,
+                    "evidence_ids": list(block["evidence_ids"]),
+                    "span_id": block["block_id"],
+                    "support_status": status,
+                    "channel": channel,
+                    "start": start,
+                    "end": end,
+                    "text": block["text"],
+                }
+            )
+        for occurrence_id in block["intended_occurrence_ids"]:
+            occurrence_map.setdefault(occurrence_id, []).append(dict(base))
+    # A body span is expected to be exact in the materialized body.  This
+    # check catches accidental changes in the deterministic join operation.
+    materialized_body = "\n\n".join(block["text"] for block in blocks if block["channel"] == "body").strip()
+    if materialized_body != body:
+        raise SectionAuthoringError("deterministic block materialization changed the body unexpectedly")
+    return (
+        {key: tuple(value) for key, value in obligation_map.items()},
+        {key: tuple(value) for key, value in occurrence_map.items()},
+        evidence_usage,
+    )
+
+
+def _check_obligation_coverage(
+    brief: SectionAuthoringBrief,
+    bindings: Mapping[str, ObligationEvidenceBinding],
+    blocks: list[dict[str, Any]],
+) -> dict[str, str]:
+    coverage: dict[str, str] = {}
+    by_id = {item.obligation_id: item for item in brief.all_obligations}
+    for obligation_id, obligation in by_id.items():
+        binding = bindings[obligation_id]
+        matching = [item for item in blocks if obligation_id in item["intended_obligation_ids"]]
+        if binding.status == SOURCE_GAP:
+            coverage[obligation_id] = "NOT_APPLICABLE"
+            continue
+        if not matching:
+            coverage[obligation_id] = "VIOLATION"
+            continue
+        text = " ".join(item["text"] for item in matching)
+        if not _objective_signal(obligation.objective, text):
+            coverage[obligation_id] = "VIOLATION"
+        elif binding.status == PARTIAL_OBLIGATION:
+            coverage[obligation_id] = "PARTIAL"
+        else:
+            coverage[obligation_id] = "MATCH"
+    return coverage
+
+
+def _objective_signal(objective: str, text: str) -> bool:
+    objective_terms = _semantic_terms(objective)
+    text_terms = _semantic_terms(text)
+    if not objective_terms:
+        return bool(text.strip())
+    overlap = objective_terms & text_terms
+    # A block must carry at least one objective signal; association alone is
+    # never enough.  Requiring the full objective would reject valid prose
+    # paraphrases and is not a semantic entailment check.
+    return bool(overlap)
+
+
+def _semantic_terms(text: str) -> set[str]:
+    lowered = str(text or "").casefold()
+    terms = set(re.findall(r"[a-z0-9][a-z0-9_-]*", lowered))
+    for segment in re.findall(r"[\u4e00-\u9fff]+", lowered):
+        if len(segment) >= 2:
+            terms.add(segment)
+            terms.update(segment[index : index + 2] for index in range(len(segment) - 1))
+    return terms
+
+
+def _run_local_claim_audit(
+    *,
+    brief: SectionAuthoringBrief,
+    packet: SectionEvidencePacket,
+    blocks: list[dict[str, Any]],
+    judge: Any | None,
+) -> list[dict[str, Any]]:
+    """Reuse the Phase 4B claim auditor on block-local authorized evidence."""
+
+    if not blocks:
+        return []
+    span_by_id: dict[str, dict[str, Any]] = {}
+    for binding in packet.obligation_bindings:
+        for span in binding.accepted_evidence_spans:
+            evidence_id = str(span.get("evidence_id") or "").strip()
+            if evidence_id and evidence_id not in span_by_id:
+                span_by_id[evidence_id] = dict(span)
+    evidence_by_id = {
+        evidence_id: _evidence_chunk_from_span(evidence_id, span)
+        for evidence_id, span in span_by_id.items()
+    }
+    markdown_parts: list[str] = []
+    briefs: list[dict[str, Any]] = []
+    for block in blocks:
+        if not block["evidence_ids"]:
+            continue
+        occurrence_id = f"{brief.outline_node_id}:{block['block_id']}"
+        markdown_parts.append(
+            f'<!-- occurrence:start id="{occurrence_id}" chapter="{brief.chapter_id}" '
+            f'section="{brief.outline_node_id}" task="section-block" -->\n'
+            f"{block['text']}\n<!-- occurrence:end id=\"{occurrence_id}\" -->"
+        )
+        briefs.append(
+            {
+                "occurrence_id": occurrence_id,
+                "section_id": brief.outline_node_id,
+                "role": "SECTION",
+                "source_chunk_ids": list(block["evidence_ids"]),
+            }
+        )
+    if not markdown_parts:
+        return []
+    report = audit_rendered_claims(
+        markdown="\n\n".join(markdown_parts),
+        briefs=briefs,
+        evidence_by_id=evidence_by_id,
+        judge=judge,
+        artifact_root=f"section:{brief.outline_node_id}",
+        semantic_routing_categories=CALIBRATED_SEMANTIC_ROUTING_CATEGORIES,
+    )
+    return [item.to_dict() for item in report.records]
+
+
+def _evidence_chunk_from_span(evidence_id: str, span: Mapping[str, Any]) -> EvidenceChunk:
+    text = str(span.get("text") or "").strip()
+    return EvidenceChunk(
+        chunk_id=evidence_id,
+        asset_id=f"section-packet:{evidence_id}",
+        title="authorized section evidence",
+        content=text,
+        summary=text,
+        keywords=[],
+        subject="",
+        material_block="",
+        material_block_code="",
+        recommended_chapter="",
+        locator=EvidenceLocator(),
+        score=EvidenceScore(relevance=1.0, teaching_value=1.0, confidence=1.0),
+    )
+
+
+def _status_counts_from_claim_audit(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    result = {ClaimStatus.SUPPORTED: 0, ClaimStatus.PARTIALLY_SUPPORTED: 0, ClaimStatus.UNSUPPORTED: 0}
+    for item in records:
+        status = str(item.get("final_status") or "")
+        if status in result:
+            result[status] += 1
     return result
 
 

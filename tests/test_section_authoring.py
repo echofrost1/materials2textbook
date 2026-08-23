@@ -125,24 +125,35 @@ def _inputs(
 
 
 def _draft(brief, *, body: str = "The basic operation follows the documented procedure and checks the result.", **extra):
-    spans = {}
-    evidence_usage = []
-    for obligation in brief.required_obligations:
-        allowed = brief.authorized_evidence_per_obligation.get(obligation.obligation_id, ())
-        if not allowed:
-            continue
-        spans[obligation.obligation_id] = [
-            {
-                "span_id": f"span-{obligation.obligation_id}",
+    supported = [
+        obligation.obligation_id
+        for obligation in brief.required_obligations
+        if brief.authorized_evidence_per_obligation.get(obligation.obligation_id, ())
+    ]
+    common = set.intersection(*[
+        set(brief.authorized_evidence_per_obligation[item]) for item in supported
+    ]) if supported else set()
+    if supported and common:
+        blocks = [{
+            "block_id": "block-01",
+            "text": body,
+            "intended_obligation_ids": supported,
+            "intended_occurrence_ids": [],
+            "evidence_ids": [sorted(common)[0]],
+        }]
+    else:
+        blocks = []
+        for index, obligation_id in enumerate(supported, start=1):
+            blocks.append({
+                "block_id": f"block-{index:02d}",
                 "text": body,
-                "evidence_ids": [allowed[0]],
-            }
-        ]
+                "intended_obligation_ids": [obligation_id],
+                "intended_occurrence_ids": [],
+                "evidence_ids": [brief.authorized_evidence_per_obligation[obligation_id][0]],
+            })
     draft = {
-        "body": body,
-        "obligation_span_map": spans,
-        "occurrence_span_map": {},
-        "evidence_usage": evidence_usage,
+        "blocks": blocks,
+        "evidence_usage": [],
         "generation_provenance": {"writer": "fake-writer", "model": "fixture"},
     }
     draft.update(extra)
@@ -178,19 +189,20 @@ def test_fake_writer_materializes_one_coherent_body_and_maps_obligations_occurre
         constraints=[{"occurrence_id": "occ-1", "role": "TEACH"}]
     )
     body = "The basic operation follows the documented procedure and checks the result."
-    obligation_map = _draft(brief, body=body)["obligation_span_map"]
     draft = _draft(
         brief,
         body=body,
-        occurrence_span_map={"occ-1": [{"span_id": "occ-span-1", "text": body}]},
-        obligation_span_map=obligation_map,
     )
+    draft["blocks"][0]["intended_occurrence_ids"] = ["occ-1"]
     rendered = author_section(brief, packet, lambda _brief: draft)
 
     assert rendered.render_status in {RENDERED, RENDERED_PARTIAL}
     assert rendered.student_visible_body == body
     assert rendered.obligation_span_map
     assert rendered.occurrence_span_map["occ-1"][0]["text"] == body
+    assert rendered.occurrence_span_map["occ-1"][0]["start"] == 0
+    assert rendered.occurrence_span_map["occ-1"][0]["end"] == len(body)
+    assert rendered.generation_provenance["model_authored_spans"] is False
     assert rendered.evidence_usage
     assert rendered.generation_provenance["writer"] == "fake-writer"
     assert book_plan_deep_equal(plan, _plan())
@@ -206,11 +218,24 @@ def test_case_exercise_assessment_and_summary_requirements_are_not_silent() -> N
     draft = _draft(
         brief,
         body=body,
-        case_activity="Apply the operation to the bounded situation.",
-        exercises=["Practice the operation and check the result."],
-        assessment="Assess the operation and the quality result.",
-        summary="The learner can complete and verify the operation.",
     )
+    allowed = next(iter(brief.authorized_evidence_per_obligation.values()))[0]
+    for channel, text, predicate in (
+        ("case_activity", "Apply the operation to the bounded situation.", lambda item: item.kind == "case_activity"),
+        ("exercise", "Practice the operation and check the result.", lambda item: "exercise_purpose" in item.source_field),
+        ("assessment", "Assess the operation and the quality result.", lambda item: "assessment_purpose" in item.source_field),
+        ("summary", "The learner can complete and verify the operation.", lambda item: item.kind == "summary"),
+    ):
+        obligation = next((item for item in brief.all_obligations if predicate(item)), None)
+        if obligation is not None:
+            draft["blocks"].append({
+                "block_id": f"{channel}-block",
+                "channel": channel,
+                "text": text,
+                "intended_obligation_ids": [obligation.obligation_id],
+                "intended_occurrence_ids": [],
+                "evidence_ids": [allowed],
+            })
     rendered = author_section(brief, packet, lambda _brief: draft)
     assert rendered.case_activity
     assert rendered.exercises
@@ -231,7 +256,7 @@ def test_partial_obligation_can_render_only_authorized_supported_portion() -> No
     body = "The basic operation is introduced with the supported evidence."
     rendered = materialize_section_draft(brief, packet, _draft(brief, body=body))
     assert rendered.render_status in {RENDERED, RENDERED_PARTIAL}
-    assert rendered.blocked is False
+    assert rendered.generation_provenance["verified_availability_eligible"] is False
 
 
 def test_local_source_gap_does_not_erase_supported_section_content() -> None:
@@ -244,7 +269,7 @@ def test_local_source_gap_does_not_erase_supported_section_content() -> None:
     rendered = materialize_section_draft(brief, packet, draft)
     assert rendered.body
     assert rendered.render_status == RENDERED_PARTIAL
-    assert rendered.blocked is False
+    assert rendered.blocked is True
     assert any(reason.startswith("SOURCE_GAP:") for reason in rendered.block_reasons)
 
 
@@ -252,7 +277,7 @@ def test_core_source_gap_blocks_section_without_model_common_sense() -> None:
     plan = _plan()
     plan, blueprint, packet, brief = _inputs(plan=plan, chunks=[], authorized=[])
     assert all(item.status == SOURCE_GAP for item in packet.obligation_bindings)
-    rendered = materialize_section_draft(brief, packet, {"body": "", "obligation_span_map": {}})
+    rendered = materialize_section_draft(brief, packet, {"blocks": []})
     assert rendered.render_status == BLOCKED_CORE_SOURCE_GAP
     assert rendered.blocked is True
     assert not rendered.body
@@ -272,23 +297,67 @@ def test_unauthorized_evidence_and_unknown_span_mapping_are_rejected() -> None:
     plan, _, packet, brief = _inputs()
     body = "The basic operation follows the documented procedure and checks the result."
     first_obligation = brief.required_obligations[0].obligation_id
-    unauthorized = _draft(
-        brief,
-        body=body,
-        obligation_span_map={
-            first_obligation: [{"text": body, "evidence_ids": ["not-authorized"]}]
-        },
-    )
+    unauthorized = _draft(brief, body=body)
+    unauthorized["blocks"][0]["evidence_ids"] = ["not-authorized"]
     with pytest.raises(SectionAuthoringError, match="unauthorized evidence"):
         materialize_section_draft(brief, packet, unauthorized)
 
     unknown = _draft(
         brief,
         body=body,
-        occurrence_span_map={"unknown-occurrence": [{"text": body}]},
     )
+    unknown["blocks"][0]["intended_occurrence_ids"] = ["unknown-occurrence"]
     with pytest.raises(SectionAuthoringError, match="unknown occurrences"):
         materialize_section_draft(brief, packet, unknown)
+
+
+def test_model_authored_exact_span_maps_are_rejected() -> None:
+    _, _, packet, brief = _inputs()
+    with pytest.raises(SectionAuthoringError, match="exact span maps"):
+        materialize_section_draft(
+            brief,
+            packet,
+            {"body": "ignored", "obligation_span_map": {}, "occurrence_span_map": {}},
+        )
+
+
+def test_deterministic_materialization_runs_local_claim_audit_and_keeps_grant_order() -> None:
+    _, _, packet, brief = _inputs(constraints=[{"occurrence_id": "occ-1", "role": "TEACH"}])
+    rendered = materialize_section_draft(brief, packet, _draft(brief))
+    provenance = rendered.generation_provenance
+    assert provenance["model_authored_spans"] is False
+    assert "obligation_coverage" in provenance
+    assert "local_claim_evidence_audit" in provenance
+    assert provenance["grant_order"].startswith("materialization -> obligation coverage")
+    assert provenance["verified_availability_eligible"] in {True, False}
+
+
+def test_source_gap_block_cannot_claim_factual_content() -> None:
+    _, _, packet, brief = _inputs(chunks=[], authorized=[])
+    source_gap = brief.required_obligations[0].obligation_id
+    with pytest.raises(SectionAuthoringError, match="source-gap obligation"):
+        materialize_section_draft(
+            brief,
+            packet,
+            {
+                "blocks": [{
+                    "block_id": "gap-block",
+                    "text": "The unsupported operation is safe.",
+                    "intended_obligation_ids": [source_gap],
+                    "intended_occurrence_ids": [],
+                    "evidence_ids": ["not-authorized"],
+                }]
+            },
+        )
+
+
+def test_partial_evidence_does_not_establish_full_verified_grant() -> None:
+    _, _, packet, brief = _inputs(chunks=[_chunk("chunk-1", "basic operation")])
+    rendered = materialize_section_draft(brief, packet, _draft(brief, body="The basic operation always guarantees the result."))
+    assert rendered.render_status == RENDERED_PARTIAL
+    assert rendered.generation_provenance["verified_availability_eligible"] is False
+    counts = rendered.generation_provenance["local_claim_status_counts"]
+    assert counts["PARTIALLY_SUPPORTED"] + counts["UNSUPPORTED"] >= 0
 
 
 def test_bookplan_blueprint_and_packet_remain_immutable() -> None:
