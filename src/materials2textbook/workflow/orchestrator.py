@@ -32,9 +32,16 @@ from materials2textbook.agents.book_plan_llm import (
 )
 from materials2textbook.agents.book_plan_completeness import (
     CompletenessOptimizationResult,
+    apply_targeted_section_patch,
+    compile_section_evidence_coverage,
+    compile_curriculum_resolution_patch,
+    diagnose_book_plan_completeness,
     optimize_book_plan_completeness,
+    retrieve_section_evidence_candidates,
     render_completeness_report_markdown,
+    section_evidence_obligations,
 )
+from materials2textbook.agents.book_plan_completeness_llm import BookPlanCompletenessPatchAgent
 from materials2textbook.agents.case_designer import CaseDesignerAgent
 from materials2textbook.agents.knowledge_organizer import KnowledgeOrganizerAgent
 from materials2textbook.agents.outline_planner import OutlinePlannerAgent, render_outline_markdown
@@ -197,6 +204,11 @@ class TextbookWorkflow:
         self.book_plan_llm = BookPlanLLMAgent(
             llm_provider=llm_provider,
             use_llm=use_llm and llm_book_planning,
+        )
+        # Completeness replan uses a separate, section-scoped contract.  It is
+        # intentionally not the whole-book BookPlan planner.
+        self.book_plan_completeness_patch_agent = BookPlanCompletenessPatchAgent(
+            llm_provider=llm_provider if use_llm else None,
         )
         self.outline_planner = OutlinePlannerAgent()
         self.organizer = KnowledgeOrganizerAgent()
@@ -420,46 +432,186 @@ class TextbookWorkflow:
             # bounded, evidence-backed planning metadata/ownership, but it
             # cannot alter existing outline identity, order, titles, or
             # knowledge ownership.  Frozen inputs are diagnosed read-only.
+            curriculum_coverage_state = diagnose_book_plan_completeness(
+                book_plan,
+                chunks,
+                domain_config=domain_config,
+            ).curriculum_coverage
+            # Section evidence decisions are an audit/binding overlay.  They
+            # are populated only from bounded candidate packets and are passed
+            # by reference so the optimizer's post-patch diagnosis consumes
+            # the same validated decisions.
+            section_evidence_coverage_state: dict[str, dict[str, Any]] = {}
             replan_callback = None
             if not book_plan_is_frozen and auto_plan and planning_mode != "external":
                 def _replan_from_original(
                     current_plan: Any,
-                    _issues: list[Any],
+                    issues: list[Any],
                 ) -> Any:
-                    if planning_mode == "llm" and self.book_plan_llm.use_llm:
-                        candidate, _planner_issues = self.book_plan_llm.run(
-                            title=title,
-                            chunks=chunks,
-                            domain_config=domain_config,
-                            max_chapters=max_chapters,
-                            chapter_token_budget=max_chapter_input_tokens,
-                        )
-                    else:
-                        candidate = self.book_planner.run(
-                            title=title,
-                            chunks=chunks,
-                            manifest_xlsx=manifest_xlsx,
-                            max_chapters=max_chapters,
-                            chapter_token_budget=max_chapter_input_tokens,
-                            domain_config=domain_config,
-                        )
-                    if candidate is None:
+                    patch_agent = self.book_plan_completeness_patch_agent
+                    if patch_agent.llm_provider is None:
                         return None
-                    candidate, _ = enforce_minimum_sections(candidate, chunks)
-                    candidate, _ = enforce_material_block_coverage(
-                        candidate,
-                        chunks,
-                        max_chapters=max_chapters,
-                        chapter_token_budget=max_chapter_input_tokens,
-                    )
-                    candidate, _ = expand_tasks_by_material_density(candidate, chunks)
-                    return enrich_chapter_evidence(candidate, chunks)
+
+                    # Curriculum resolution is a separate small contract from
+                    # section metadata.  Its accepted result updates only the
+                    # coverage record consumed by the next diagnosis.
+                    for expected, coverage in list(curriculum_coverage_state.items()):
+                        if coverage.get("status") not in {"PARTIALLY_COVERED", "NO_SUPPORT_FOUND"}:
+                            continue
+                        call = patch_agent.run_curriculum(
+                            expected_requirement=expected,
+                            coverage=coverage,
+                        )
+                        if call.payload is None:
+                            continue
+                        resolution, _diagnostics = compile_curriculum_resolution_patch(
+                            call.payload,
+                            curriculum_coverage_state,
+                            chunks,
+                        )
+                        if resolution is not None:
+                            curriculum_coverage_state[expected] = {
+                                **coverage,
+                                "status": resolution.status,
+                                "supporting_evidence_ids": list(resolution.supporting_evidence_ids),
+                                "rationale": resolution.rationale,
+                                "source": "targeted curriculum resolution",
+                            }
+
+                    # One call is scoped to one existing section.  The
+                    # candidate returned to the legacy optimizer is assembled
+                    # only from accepted targeted patches; no full BookPlan
+                    # planner or structural post-processing is invoked here.
+                    candidate = current_plan
+                    sections_by_id = {
+                        section.section_id: (chapter, section)
+                        for chapter in current_plan.chapters
+                        for section in chapter.sections
+                    }
+                    grouped: dict[str, list[Any]] = {}
+                    for issue in issues:
+                        if issue.outline_node_id in sections_by_id:
+                            grouped.setdefault(issue.outline_node_id, []).append(issue)
+
+                    for section_id, section_issues in grouped.items():
+                        chapter, section = sections_by_id[section_id]
+                        candidates = retrieve_section_evidence_candidates(chapter, section, chunks)
+                        candidate_payload = [
+                            {
+                                "chunk_id": chunk.chunk_id,
+                                "title": chunk.title,
+                                "summary": chunk.summary,
+                                "content": chunk.content[:1200],
+                            }
+                            for chunk in candidates[:12]
+                        ]
+                        call = patch_agent.run_section(
+                            chapter=chapter,
+                            section=section,
+                            issues=[asdict(item) for item in section_issues],
+                            candidates=candidate_payload,
+                        )
+                        # Exactly one finite retry is allowed for a malformed
+                        # structured response.  A successful first response
+                        # is never called again.
+                        if call.payload is None and call.error and (
+                            "Expecting" in call.error or "JSON" in call.error or "delimiter" in call.error
+                        ):
+                            call = patch_agent.run_section_retry(
+                                chapter=chapter,
+                                section=section,
+                                issues=[asdict(item) for item in section_issues],
+                                candidates=candidate_payload[:8],
+                            )
+                        if call.payload is None:
+                            patched_candidate = candidate
+                        else:
+                            patched_candidate, _diagnostics = apply_targeted_section_patch(
+                                candidate,
+                                call.payload,
+                                chunks,
+                                authorized_evidence_ids={item["chunk_id"] for item in candidate_payload},
+                            )
+                        candidate = patched_candidate
+
+                        # Evidence ownership has a separate compact contract.
+                        # It is deliberately run against the current section
+                        # after any accepted metadata patch, so the retrieval
+                        # query includes purpose/outcome/task/scope/module
+                        # intent without opening the whole corpus to the model.
+                        current_sections = {
+                            item.section_id: (owner, item)
+                            for owner in candidate.chapters
+                            for item in owner.sections
+                        }
+                        current_chapter, current_section = current_sections[section_id]
+                        evidence_candidates = retrieve_section_evidence_candidates(current_chapter, current_section, chunks)
+                        evidence_packet = [
+                            {
+                                "chunk_id": item.chunk_id,
+                                "title": item.title,
+                                "summary": item.summary[:180],
+                                "content": item.content[:700],
+                            }
+                            for item in evidence_candidates
+                        ]
+                        evidence_call = patch_agent.run_section_evidence(
+                            chapter=current_chapter,
+                            section=current_section,
+                            obligations=section_evidence_obligations(current_chapter, current_section),
+                            candidates=evidence_packet,
+                        )
+                        if evidence_call.payload is not None:
+                            decision, evidence_diagnostics = compile_section_evidence_coverage(
+                                candidate,
+                                evidence_call.payload,
+                                chunks,
+                                authorized_evidence_ids={item["chunk_id"] for item in evidence_packet},
+                            )
+                            if decision is not None and not evidence_diagnostics:
+                                previous_evidence_ids = list(current_section.primary_material_ids) + list(current_section.reference_material_ids)
+                                section_evidence_coverage_state[section_id] = {
+                                    "status": decision.status,
+                                    "primary_material_ids": list(decision.primary_material_ids),
+                                    "reference_material_ids": list(decision.reference_material_ids),
+                                    "obligation_coverage": list(decision.obligation_coverage),
+                                    "candidate_ids": [item["chunk_id"] for item in evidence_packet],
+                                    "previous_evidence_ids": list(dict.fromkeys(previous_evidence_ids)),
+                                    "retrieved_candidate_ids": [item["chunk_id"] for item in evidence_packet],
+                                    "accepted_evidence_ids": list(dict.fromkeys(decision.primary_material_ids + decision.reference_material_ids)),
+                                    "confidence": decision.confidence,
+                                    "rationale": decision.rationale,
+                                    "source": "bounded Qwen section evidence coverage",
+                                }
+                                evidence_proposal = {
+                                    "chapter_id": decision.chapter_id,
+                                    "section_id": decision.section_id,
+                                    "identity": {
+                                        "section_title": current_section.title,
+                                        "knowledge_point_ids": list(current_section.knowledge_point_ids),
+                                    },
+                                    "primary_material_ids": list(decision.primary_material_ids),
+                                    "reference_material_ids": list(decision.reference_material_ids),
+                                }
+                                candidate, _ = apply_targeted_section_patch(
+                                    candidate,
+                                    evidence_proposal,
+                                    chunks,
+                                    authorized_evidence_ids={item["chunk_id"] for item in evidence_packet},
+                                )
+
+                    # Curriculum resolution is deliberately a separate
+                    # contract.  Its result is audit-only here; it cannot
+                    # mutate section metadata or invent a new outline node.
+                    return candidate if candidate != current_plan else None
 
                 replan_callback = _replan_from_original
             book_plan_completeness = optimize_book_plan_completeness(
                 book_plan,
                 chunks,
                 domain_config=domain_config,
+                curriculum_coverage=curriculum_coverage_state,
+                section_evidence_coverage=section_evidence_coverage_state,
                 replanner=replan_callback,
                 max_replan_attempts=config.normalized_completeness_replan_attempts(),
                 allow_replan=not book_plan_is_frozen,
