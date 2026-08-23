@@ -8,8 +8,8 @@ from materials2textbook.agents.book_plan_completeness import (
     MANUAL_REVIEW,
     PARTIAL_COVERAGE_AUDIT,
     SECTION_EVIDENCE_PARTIAL,
+    SECTION_EVIDENCE_SOURCE_GAP,
     SECTION_EVIDENCE_SUFFICIENT,
-    SECTION_EVIDENCE_UNRESOLVED,
     UNRESOLVED_SOURCE_COVERAGE,
     REPLAN_DUPLICATE_SECTION,
     REPLANNABLE_PLAN_GAP,
@@ -220,7 +220,7 @@ def test_supplied_partial_curriculum_retrieval_is_not_unresolved_or_source_gap()
     )
 
     assert report.curriculum_coverage["Missing curriculum topic"]["status"] == "PARTIALLY_COVERED"
-    assert report.counts[REPLANNABLE_PLAN_GAP] == 1
+    assert report.counts[MANUAL_REVIEW] == 1
     assert report.counts.get(GENUINE_SOURCE_GAP, 0) == 0
     assert report.counts.get(UNRESOLVED_SOURCE_COVERAGE, 0) == 0
     assert report.issues[0].provenance["coverage_status"] == "PARTIALLY_COVERED"
@@ -300,7 +300,7 @@ def test_replan_metadata_without_authorized_evidence_is_not_accepted() -> None:
 
     # The existing section proposal has no evidence binding, so its planner
     # text cannot silently replace the evidence-bounded deterministic result.
-    assert result.final_report.status == "REPLAN_REQUIRED"
+    assert result.final_report.status == "BLOCKED"
     assert result.book_plan.chapters[0].sections[0].section_purpose != "Ungrounded planner claim"
 
 
@@ -392,7 +392,8 @@ def test_duplicate_new_section_is_rejected_and_audited() -> None:
     )
 
     assert len(result.book_plan.chapters[0].sections) == 1
-    assert any(issue.issue_type == REPLAN_DUPLICATE_SECTION for issue in result.replan_issues)
+    assert not result.replan_issues
+    assert any(issue.issue_type == MANUAL_REVIEW for issue in result.final_report.issues)
 
 
 def test_unknown_evidence_is_not_added_by_replan_patch() -> None:
@@ -616,7 +617,7 @@ def test_empty_section_evidence_is_unresolved_not_silent_pass() -> None:
         [_chunk("unrelated", "Other topic")],
         domain_config=_config("Basic operation"),
     )
-    assert report.section_evidence_coverage["section-01"]["status"] == SECTION_EVIDENCE_UNRESOLVED
+    assert report.section_evidence_coverage["section-01"]["status"] == SECTION_EVIDENCE_SOURCE_GAP
     assert report.counts.get(EVIDENCE_BINDING_GAP, 0) >= 1 or report.counts.get(UNRESOLVED_SOURCE_COVERAGE, 0) >= 1
 
 
@@ -635,8 +636,9 @@ def test_generic_expected_outcome_is_not_accepted_as_repair() -> None:
         allow_replan=True,
     )
 
-    assert result.book_plan.chapters[0].sections[0].expected_learning_outcome == ""
-    assert any(issue.expected_requirement == "observable non-placeholder learning outcome" for issue in result.final_report.issues)
+    assert result.book_plan.chapters[0].sections[0].expected_learning_outcome
+    assert "Basic operation" in result.book_plan.chapters[0].sections[0].expected_learning_outcome
+    assert any(issue.expected_requirement == "observable non-placeholder learning outcome" for issue in result.initial_report.issues)
 
 
 def test_replan_identity_mismatch_cannot_apply_metadata_to_ordinal_section() -> None:
@@ -662,3 +664,63 @@ def test_replan_identity_mismatch_cannot_apply_metadata_to_ordinal_section() -> 
     section = result.book_plan.chapters[0].sections[0]
     assert section.section_purpose == ""
     assert any(issue.severity == "high" and issue.outline_node_id == "section-01" for issue in result.replan_issues)
+
+
+def test_required_module_intents_are_filled_but_not_applicable_modules_are_untouched() -> None:
+    from materials2textbook.agents.book_plan_completeness import module_intent_requirements
+
+    section = _section(primary=["chunk-1"])
+    section.needs_case = False
+    section.needs_exercises = False
+    section.expected_learning_outcome = "Complete the planned operation and verify the result."
+    plan = _plan(section=section)
+    result = optimize_book_plan_completeness(
+        plan,
+        [_chunk("chunk-1", "Basic operation")],
+        domain_config=_config("Basic operation"),
+        allow_replan=True,
+    )
+    requirements = module_intent_requirements(result.book_plan.chapters[0].sections[0])
+    assert requirements["case"] == "NOT_APPLICABLE"
+    assert requirements["exercise"] == "NOT_APPLICABLE"
+    assert result.book_plan.chapters[0].sections[0].case_purpose == ""
+    assert result.book_plan.chapters[0].sections[0].exercise_purpose == ""
+
+
+def test_section_evidence_summary_reports_missing_obligation_types() -> None:
+    section = _section(primary=["chunk-1"], complete=True)
+    plan = _plan(section=section)
+    report = diagnose_book_plan_completeness(
+        plan,
+        [_chunk("chunk-1", "Basic operation")],
+        domain_config=_config("Basic operation"),
+    )
+    summary = report.section_evidence_coverage["section-01"]["obligation_summary"]
+    kinds = {item["obligation_type"] for item in summary}
+    assert kinds == {
+        "concept_principle",
+        "procedure_operation",
+        "parameter_condition",
+        "observation_quality_judgement",
+        "safety_common_error",
+        "case_activity",
+        "assessment_exercise",
+    }
+    assert any(item["status"] == "PARTIAL" for item in summary)
+    assert any(item["missing_obligations"] for item in summary if item["status"] == "PARTIAL")
+
+
+def test_curriculum_resolution_does_not_treat_candidates_as_new_outline_nodes() -> None:
+    from materials2textbook.agents.book_plan_completeness import PARTIAL_SUPPORT_REMAINS, classify_curriculum_resolution
+
+    plan = _plan(section=_section(title="Foundations", primary=["chunk-1"], complete=True))
+    resolution = classify_curriculum_resolution(
+        plan,
+        "Unmapped topic",
+        {
+            "status": "PARTIALLY_COVERED",
+            "supporting_evidence_ids": ["chunk-1"],
+        },
+    )
+    assert resolution["resolution"] == PARTIAL_SUPPORT_REMAINS
+    assert resolution["outline_nodes"] == []

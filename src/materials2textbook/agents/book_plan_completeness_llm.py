@@ -160,11 +160,11 @@ class BookPlanCompletenessPatchAgent:
             "chapter_id": chapter.chapter_id,
             "section_id": section.section_id,
             "identity": {"section_title": section.title, "knowledge_point_ids": list(section.knowledge_point_ids)},
-            "status": "SECTION_EVIDENCE_SUFFICIENT|SECTION_EVIDENCE_PARTIAL|SECTION_EVIDENCE_UNRESOLVED",
+            "status": "SECTION_EVIDENCE_SUFFICIENT|SECTION_EVIDENCE_PARTIAL|SECTION_EVIDENCE_SOURCE_GAP",
             "primary_material_ids": [],
             "reference_material_ids": [],
             "obligation_coverage": [
-                {"key": "declared obligation key", "status": "SUPPORTED|PARTIAL|UNRESOLVED", "evidence_ids": [], "rationale": ""}
+                {"key": "declared obligation key", "status": "SUPPORTED|PARTIAL|NO_SUPPORT|NOT_REQUIRED", "evidence_ids": [], "rationale": ""}
             ],
             "confidence": 0.0,
             "rationale": "",

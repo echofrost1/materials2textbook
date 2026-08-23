@@ -19,6 +19,34 @@ PARTIAL_COVERAGE_AUDIT = "PARTIAL_COVERAGE_AUDIT"
 SECTION_EVIDENCE_SUFFICIENT = "SECTION_EVIDENCE_SUFFICIENT"
 SECTION_EVIDENCE_PARTIAL = "SECTION_EVIDENCE_PARTIAL"
 SECTION_EVIDENCE_UNRESOLVED = "SECTION_EVIDENCE_UNRESOLVED"
+SECTION_EVIDENCE_SOURCE_GAP = "SECTION_EVIDENCE_SOURCE_GAP"
+
+# Curriculum resolution is deliberately separate from the coverage status.  A
+# partial retrieval result may point at an existing outline node, but it is
+# not permission to add a new chapter or silently call the curriculum covered.
+COVERED_BY_EXISTING_PLAN = "COVERED_BY_EXISTING_PLAN"
+EXTEND_EXISTING_SECTION_SCOPE = "EXTEND_EXISTING_SECTION_SCOPE"
+NEW_SECTION_REQUIRED = "NEW_SECTION_REQUIRED"
+PARTIAL_SUPPORT_REMAINS = "PARTIAL_SUPPORT_REMAINS"
+
+MODULE_REQUIRED = "REQUIRED"
+MODULE_OPTIONAL = "OPTIONAL"
+MODULE_NOT_APPLICABLE = "NOT_APPLICABLE"
+
+EVIDENCE_SUPPORTED = "SUPPORTED"
+EVIDENCE_PARTIAL = "PARTIAL"
+EVIDENCE_NO_SUPPORT = "NO_SUPPORT"
+EVIDENCE_NOT_REQUIRED = "NOT_REQUIRED"
+
+_EVIDENCE_OBLIGATION_KINDS = (
+    "concept_principle",
+    "procedure_operation",
+    "parameter_condition",
+    "observation_quality_judgement",
+    "safety_common_error",
+    "case_activity",
+    "assessment_exercise",
+)
 
 MAX_REPLAN_ATTEMPTS = 1
 MAX_PRIMARY_MATERIALS = 6
@@ -84,6 +112,9 @@ class CompletenessReport:
     replan_attempts: int = 0
     deterministic_repairs: list[str] = field(default_factory=list)
     curriculum_coverage: dict[str, dict[str, Any]] = field(default_factory=dict)
+    curriculum_resolution: dict[str, dict[str, Any]] = field(default_factory=dict)
+    planning_gap_breakdown: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    module_intent_requirements: dict[str, dict[str, str]] = field(default_factory=dict)
     section_evidence_coverage: dict[str, dict[str, Any]] = field(default_factory=dict)
     safe_to_freeze: bool = False
 
@@ -160,6 +191,7 @@ class SectionEvidenceCoverageDecision:
     primary_material_ids: list[str] = field(default_factory=list)
     reference_material_ids: list[str] = field(default_factory=list)
     obligation_coverage: list[dict[str, Any]] = field(default_factory=list)
+    obligation_summary: list[dict[str, Any]] = field(default_factory=list)
     rationale: str = ""
     confidence: float = 0.0
 
@@ -351,29 +383,248 @@ def section_evidence_obligations(
     )
     for key, value in values:
         if value and not _is_placeholder(value):
-            obligations.append({"key": key, "text": str(value).strip()})
+            obligations.append(
+                {
+                    "key": key,
+                    "text": str(value).strip(),
+                    "kind": _evidence_obligation_kind(key, str(value)),
+                    "required": "true",
+                }
+            )
     for value in section.knowledge_scope or section.knowledge_point_ids:
         if value and str(value).strip():
-            obligations.append({"key": f"knowledge_scope:{value}", "text": str(value).strip()})
+            obligations.append(
+                {
+                    "key": f"knowledge_scope:{value}",
+                    "text": str(value).strip(),
+                    "kind": "concept_principle",
+                    "required": "true",
+                }
+            )
     if not obligations:
-        obligations.append({"key": "section_identity", "text": " ".join([chapter.title, section.title])})
+        obligations.append(
+            {
+                "key": "section_identity",
+                "text": " ".join([chapter.title, section.title]),
+                "kind": "concept_principle",
+                "required": "true",
+            }
+        )
     return obligations
+
+
+def _evidence_obligation_kind(key: str, text: str) -> str:
+    """Map existing planning fields to a small, domain-neutral audit kind."""
+
+    lowered = f"{key} {text}".lower()
+    if key in {"case_purpose", "activity_purpose"}:
+        return "case_activity"
+    if key in {"exercise_purpose", "assessment_purpose"}:
+        return "assessment_exercise"
+    if key == "current_task_action":
+        return "procedure_operation"
+    if key == "knowledge_scope":
+        return "concept_principle"
+    if any(term in lowered for term in ("parameter", "condition", "rule", "requirement", "参数", "条件", "规范", "要求", "标准")):
+        return "parameter_condition"
+    if any(term in lowered for term in ("observe", "quality", "judge", "compare", "identify", "inspection", "观察", "质量", "判断", "比较", "识别", "检查", "缺陷", "现象")):
+        return "observation_quality_judgement"
+    if any(term in lowered for term in ("safety", "risk", "error", "warning", "safe", "安全", "风险", "错误", "注意", "防护")):
+        return "safety_common_error"
+    if key in {"section_purpose", "expected_learning_outcome"}:
+        return "concept_principle"
+    return "concept_principle"
+
+
+def module_intent_requirements(section: BookSectionPlan) -> dict[str, str]:
+    """Classify module intent without inferring a module from text similarity.
+
+    ``needs_case`` and ``needs_exercises`` are the only explicit module
+    switches in the current BookPlan schema.  Assessment/activity are required
+    when the section has an actionable outcome and at least one learner-facing
+    module; otherwise they remain optional.  No module is made required merely
+    because its field is empty.
+    """
+
+    actionable = bool(
+        (section.expected_learning_outcome and not _is_placeholder(section.expected_learning_outcome))
+        or (section.current_task_action and not _is_placeholder(section.current_task_action))
+    )
+    return {
+        "case": MODULE_REQUIRED if section.needs_case else MODULE_NOT_APPLICABLE,
+        "exercise": MODULE_REQUIRED if section.needs_exercises else MODULE_NOT_APPLICABLE,
+        "assessment": MODULE_REQUIRED if actionable and (section.needs_case or section.needs_exercises) else MODULE_OPTIONAL,
+        "activity": MODULE_REQUIRED if actionable and (section.needs_case or section.needs_exercises) else MODULE_OPTIONAL,
+    }
+
+
+def classify_curriculum_resolution(
+    book_plan: BookPlan,
+    expected: str,
+    coverage: dict[str, Any],
+) -> dict[str, Any]:
+    """Explain what a partial curriculum result can safely do.
+
+    This is intentionally conservative.  It never proposes a new node merely
+    because retrieval returned a candidate.  Existing-plan coverage is based on
+    stable outline text/ownership; otherwise the result remains partial and is
+    routed for review.
+    """
+
+    plan_nodes: list[dict[str, Any]] = []
+    selected_ids = {str(value) for value in coverage.get("supporting_evidence_ids", []) if value}
+    for chapter in book_plan.chapters:
+        chapter_text = " ".join([chapter.title, *chapter.learning_goals])
+        chapter_ids = set(chapter.primary_material_ids) | set(chapter.reference_material_ids)
+        if _text_matches(expected, chapter_text):
+            plan_nodes.append({"outline_node_id": chapter.chapter_id, "evidence_ids": sorted(chapter_ids)})
+        for section in chapter.sections:
+            section_text = " ".join(
+                [
+                    section.title,
+                    *section.knowledge_point_ids,
+                    *section.knowledge_scope,
+                    section.section_purpose,
+                    section.current_task_action,
+                ]
+            )
+            if _text_matches(expected, section_text):
+                plan_nodes.append(
+                    {
+                        "outline_node_id": section.section_id,
+                        "evidence_ids": sorted(set(section.primary_material_ids) | set(section.reference_material_ids)),
+                    }
+                )
+    status = str(coverage.get("status") or "NO_SUPPORT_FOUND").upper()
+    if status == "COVERED" and plan_nodes:
+        resolution = COVERED_BY_EXISTING_PLAN
+    elif status == "PARTIALLY_COVERED" and plan_nodes:
+        resolution = EXTEND_EXISTING_SECTION_SCOPE
+    elif status == "PARTIALLY_COVERED" and selected_ids:
+        resolution = PARTIAL_SUPPORT_REMAINS
+    elif selected_ids:
+        resolution = NEW_SECTION_REQUIRED
+    else:
+        resolution = PARTIAL_SUPPORT_REMAINS
+    return {
+        "resolution": resolution,
+        "outline_nodes": plan_nodes,
+        "supporting_evidence_ids": sorted(selected_ids),
+        "coverage_status": status,
+        "rationale": (
+            "existing outline identity and evidence ownership support a bounded scope extension"
+            if resolution == EXTEND_EXISTING_SECTION_SCOPE
+            else "partial retrieval is recorded without adding or deleting outline nodes"
+        ),
+        "provenance": "deterministic curriculum resolution over frozen outline and bounded retrieval",
+    }
+
+
+def _planning_gap_breakdown(
+    book_plan: BookPlan,
+    issues: list[CompletenessIssue],
+    curriculum_resolution: dict[str, dict[str, Any]],
+    module_requirements: dict[str, dict[str, str]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Group planning gaps without collapsing distinct failure meanings."""
+
+    breakdown: dict[str, list[dict[str, Any]]] = {
+        "curriculum_partial_coverage": [],
+        "chapter_learning_goals": [],
+        "section_learning_outcome": [],
+        "required_module_intents": [],
+        "other": [],
+    }
+    for expected, item in curriculum_resolution.items():
+        if item.get("coverage_status") == "PARTIALLY_COVERED":
+            breakdown["curriculum_partial_coverage"].append(
+                {
+                    "expected_requirement": expected,
+                    "resolution": item.get("resolution"),
+                    "outline_nodes": item.get("outline_nodes", []),
+                    "supporting_evidence_ids": item.get("supporting_evidence_ids", []),
+                }
+            )
+    for issue in issues:
+        record = {
+            "issue_type": issue.issue_type,
+            "outline_node_id": issue.outline_node_id,
+            "expected_requirement": issue.expected_requirement,
+            "current_state": issue.current_state,
+            "recommended_action": issue.recommended_action,
+            "provenance": issue.provenance,
+        }
+        if issue.expected_requirement == "chapter learning goals are specific and non-placeholder":
+            breakdown["chapter_learning_goals"].append(record)
+        elif issue.expected_requirement == "observable non-placeholder learning outcome":
+            breakdown["section_learning_outcome"].append(record)
+        elif "module intent" in issue.expected_requirement:
+            module_name = issue.expected_requirement.split(" ", 1)[0]
+            record["module_requirement"] = module_requirements.get(issue.outline_node_id, {}).get(module_name)
+            breakdown["required_module_intents"].append(record)
+        elif not issue.expected_requirement.startswith("curriculum scope covers"):
+            breakdown["other"].append(record)
+    return breakdown
 
 
 def _coverage_status_from_obligations(obligations: list[dict[str, Any]], has_selected: bool) -> str:
     if not has_selected:
-        return SECTION_EVIDENCE_UNRESOLVED
-    statuses = {str(item.get("status") or "UNRESOLVED").upper() for item in obligations}
-    if statuses == {"SUPPORTED"}:
+        return SECTION_EVIDENCE_SOURCE_GAP
+    required = [
+        item
+        for item in obligations
+        if str(item.get("status") or EVIDENCE_NO_SUPPORT).upper() != EVIDENCE_NOT_REQUIRED
+    ]
+    statuses = {str(item.get("status") or EVIDENCE_NO_SUPPORT).upper() for item in required}
+    if statuses and statuses == {EVIDENCE_SUPPORTED}:
         return SECTION_EVIDENCE_SUFFICIENT
-    if "SUPPORTED" in statuses or "PARTIAL" in statuses:
+    if EVIDENCE_SUPPORTED in statuses or EVIDENCE_PARTIAL in statuses:
         return SECTION_EVIDENCE_PARTIAL
-    # A bounded, authorized selection exists but lexical evidence cannot prove
-    # every obligation.  Keep this as an explicit partial audit state; only an
-    # empty candidate/selection is unresolved.  A semantic coverage judgement
-    # may later promote or retain this status, but evidence count alone never
-    # promotes it to sufficient.
+    # A selected, authorized packet that cannot lexically prove the prose is
+    # still a partial audit, not a source gap.  Source gap is reserved for an
+    # empty packet/selection.
     return SECTION_EVIDENCE_PARTIAL
+
+
+def _summarize_obligation_coverage(obligations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project field-level judgements onto the seven audit categories."""
+
+    summary: list[dict[str, Any]] = []
+    for kind in _EVIDENCE_OBLIGATION_KINDS:
+        items = [item for item in obligations if item.get("kind") == kind]
+        if not items:
+            summary.append(
+                {
+                    "obligation_type": kind,
+                    "status": EVIDENCE_NOT_REQUIRED,
+                    "evidence_ids": [],
+                    "missing_obligations": [],
+                }
+            )
+            continue
+        statuses = {str(item.get("status") or EVIDENCE_NO_SUPPORT).upper() for item in items}
+        if statuses == {EVIDENCE_SUPPORTED}:
+            status = EVIDENCE_SUPPORTED
+        elif EVIDENCE_SUPPORTED in statuses or EVIDENCE_PARTIAL in statuses:
+            status = EVIDENCE_PARTIAL
+        else:
+            status = EVIDENCE_NO_SUPPORT
+        missing = [
+            str(item.get("key") or "")
+            for item in items
+            if str(item.get("status") or EVIDENCE_NO_SUPPORT).upper() != EVIDENCE_SUPPORTED
+        ]
+        summary.append(
+            {
+                "obligation_type": kind,
+                "status": status,
+                "evidence_ids": _dedupe(
+                    [str(value) for item in items for value in item.get("evidence_ids", []) if value]
+                ),
+                "missing_obligations": missing,
+            }
+        )
+    return summary
 
 
 def compile_section_evidence_coverage(
@@ -444,7 +695,9 @@ def compile_section_evidence_coverage(
         )
         return None, diagnostics
     status = str(proposal.get("status") or "").upper()
-    if status not in {SECTION_EVIDENCE_SUFFICIENT, SECTION_EVIDENCE_PARTIAL, SECTION_EVIDENCE_UNRESOLVED}:
+    if status == SECTION_EVIDENCE_UNRESOLVED:
+        status = SECTION_EVIDENCE_SOURCE_GAP
+    if status not in {SECTION_EVIDENCE_SUFFICIENT, SECTION_EVIDENCE_PARTIAL, SECTION_EVIDENCE_SOURCE_GAP}:
         diagnostics.append(
             CompletenessIssue(
                 MANUAL_REVIEW,
@@ -459,7 +712,8 @@ def compile_section_evidence_coverage(
         return None, diagnostics
     raw_obligations = proposal.get("obligation_coverage")
     raw_obligations = raw_obligations if isinstance(raw_obligations, list) else []
-    allowed_keys = {item["key"] for item in section_evidence_obligations(chapter, section)}
+    declared_obligations = {item["key"]: item for item in section_evidence_obligations(chapter, section)}
+    allowed_keys = set(declared_obligations)
     normalized_obligations: list[dict[str, Any]] = []
     for item in raw_obligations:
         if not isinstance(item, dict):
@@ -478,9 +732,11 @@ def compile_section_evidence_coverage(
                 )
             )
             return None, diagnostics
-        item_status = str(item.get("status") or "UNRESOLVED").upper()
-        if item_status not in {"SUPPORTED", "PARTIAL", "UNRESOLVED"}:
-            item_status = "UNRESOLVED"
+        item_status = str(item.get("status") or EVIDENCE_NO_SUPPORT).upper()
+        if item_status == "UNRESOLVED":
+            item_status = EVIDENCE_NO_SUPPORT
+        if item_status not in {EVIDENCE_SUPPORTED, EVIDENCE_PARTIAL, EVIDENCE_NO_SUPPORT, EVIDENCE_NOT_REQUIRED}:
+            item_status = EVIDENCE_NO_SUPPORT
         ids = _dedupe([str(value) for value in item.get("evidence_ids", []) if value])
         if any(value not in selected for value in ids):
             diagnostics.append(
@@ -495,7 +751,17 @@ def compile_section_evidence_coverage(
                 )
             )
             return None, diagnostics
-        normalized_obligations.append({"key": key, "status": item_status, "evidence_ids": ids, "rationale": str(item.get("rationale") or "")})
+        declared = declared_obligations[key]
+        normalized_obligations.append(
+            {
+                "key": key,
+                "kind": str(item.get("kind") or declared.get("kind") or "concept_principle"),
+                "status": item_status,
+                "evidence_ids": ids,
+                "rationale": str(item.get("rationale") or ""),
+                "missing_support": list(item.get("missing_support") or []),
+            }
+        )
     missing_keys = sorted(allowed_keys - {item["key"] for item in normalized_obligations})
     if missing_keys:
         diagnostics.append(
@@ -536,6 +802,7 @@ def compile_section_evidence_coverage(
         primary_material_ids=primary,
         reference_material_ids=references,
         obligation_coverage=normalized_obligations,
+        obligation_summary=_summarize_obligation_coverage(normalized_obligations),
         rationale=str(proposal.get("rationale") or ""),
         confidence=confidence,
     ), diagnostics
@@ -635,6 +902,7 @@ def diagnose_book_plan_completeness(
                     "primary_material_ids": primary,
                     "reference_material_ids": references,
                     "obligation_coverage": obligations,
+                    "obligation_summary": _summarize_obligation_coverage(obligations),
                     "candidate_ids": candidate_ids,
                     "previous_evidence_ids": _dedupe([*primary, *references]),
                     "retrieved_candidate_ids": candidate_ids,
@@ -656,6 +924,21 @@ def diagnose_book_plan_completeness(
     for issue in issues:
         counts[issue.issue_type] = counts.get(issue.issue_type, 0) + 1
     status = _report_status(issues)
+    curriculum_resolution = {
+        expected: classify_curriculum_resolution(book_plan, expected, item)
+        for expected, item in coverage.items()
+    }
+    module_requirements = {
+        section.section_id: module_intent_requirements(section)
+        for chapter in book_plan.chapters
+        for section in chapter.sections
+    }
+    planning_breakdown = _planning_gap_breakdown(
+        book_plan,
+        issues,
+        curriculum_resolution,
+        module_requirements,
+    )
     return CompletenessReport(
         status=status,
         book_id=book_plan.book_id,
@@ -663,6 +946,9 @@ def diagnose_book_plan_completeness(
         issues=issues,
         counts=counts,
         curriculum_coverage=coverage,
+        curriculum_resolution=curriculum_resolution,
+        planning_gap_breakdown=planning_breakdown,
+        module_intent_requirements=module_requirements,
         section_evidence_coverage=section_coverage,
         safe_to_freeze=status == "PASS",
     )
@@ -848,6 +1134,26 @@ def render_completeness_report_markdown(result: CompletenessOptimizationResult) 
             f"reference={len(item.get('reference_material_ids', []))}; "
             f"source={item.get('source', '')}"
         )
+        for obligation in item.get("obligation_summary", []):
+            missing = ", ".join(obligation.get("missing_obligations", [])) or "none"
+            lines.append(
+                f"  - {obligation.get('obligation_type')}: {obligation.get('status')}; "
+                f"evidence={', '.join(obligation.get('evidence_ids', [])) or 'none'}; "
+                f"missing={missing}"
+            )
+    lines.extend(["", "## Curriculum resolution", ""])
+    for expected, item in sorted(final.curriculum_resolution.items()):
+        lines.append(
+            f"- `{expected}`: {item.get('resolution')}; "
+            f"coverage={item.get('coverage_status')}; "
+            f"nodes={', '.join(node.get('outline_node_id', '') for node in item.get('outline_nodes', [])) or 'none'}"
+        )
+    lines.extend(["", "## Planning gap breakdown", ""])
+    for category, items in final.planning_gap_breakdown.items():
+        lines.append(f"- {category}: {len(items)}")
+    lines.extend(["", "## Module intent requirements", ""])
+    for section_id, requirements in sorted(final.module_intent_requirements.items()):
+        lines.append(f"- `{section_id}`: {requirements}")
     return "\n".join(lines)
 
 
@@ -915,9 +1221,20 @@ def _diagnose_curriculum_scope_v2(
         if status == "COVERED":
             continue
         candidates = [str(value) for value in item.get("supporting_evidence_ids", []) if value]
+        resolution = classify_curriculum_resolution(book_plan, expected, item)
         if status == "PARTIALLY_COVERED":
-            issue_type = REPLANNABLE_PLAN_GAP
-            action = "Apply a bounded curriculum patch using only retrieved evidence; do not invent unsupported scope."
+            if resolution["resolution"] == EXTEND_EXISTING_SECTION_SCOPE:
+                # Existing outline ownership and bounded evidence already give
+                # this topic a safe home.  Keep the residual as an explicit
+                # partial-coverage audit instead of inventing a new node.
+                issue_type = PARTIAL_COVERAGE_AUDIT
+                action = "Audit and, if needed, extend the existing section scope using only the recorded evidence packet."
+            elif resolution["resolution"] == PARTIAL_SUPPORT_REMAINS:
+                issue_type = MANUAL_REVIEW
+                action = "Use a bounded curriculum-resolution judgement when the model is available; otherwise retain this partial-support review without adding a node."
+            else:
+                issue_type = MANUAL_REVIEW
+                action = "Review whether the existing outline can carry this partial scope; do not add a new node automatically."
             missing = [f"complete curriculum representation for {expected}"]
         else:
             issue_type = GENUINE_SOURCE_GAP
@@ -936,6 +1253,8 @@ def _diagnose_curriculum_scope_v2(
                 provenance={
                     "source": "DomainConfig.chapter_order + bounded curriculum retrieval",
                     "coverage_status": status,
+                    "resolution": resolution["resolution"],
+                    "outline_nodes": resolution["outline_nodes"],
                     "retrieval_rationale": item.get("rationale", ""),
                 },
             )
@@ -1028,7 +1347,10 @@ def _diagnose_chapter_goals(
     for chapter in book_plan.chapters:
         if not chapter.learning_goals or any(_is_learning_goal_placeholder(goal) for goal in chapter.learning_goals):
             evidence_ids = _chapter_candidate_evidence_ids(chapter, chunks, chunk_map)
-            issue_type = REPLANNABLE_PLAN_GAP if evidence_ids else UNRESOLVED_SOURCE_COVERAGE
+            # Existing goals are preserved.  Without a validated replacement,
+            # changing or deleting them would be destructive normalization;
+            # route the issue to review instead of manufacturing a new goal.
+            issue_type = MANUAL_REVIEW if evidence_ids else UNRESOLVED_SOURCE_COVERAGE
             issues.append(
                 CompletenessIssue(
                     issue_type=issue_type,
@@ -1039,7 +1361,7 @@ def _diagnose_chapter_goals(
                     supporting_evidence_ids=evidence_ids,
                     missing_support=[] if evidence_ids else ["chapter-scoped evidence"],
                     recommended_action=(
-                        "derive bounded chapter goals from the chapter title, section scope, and authorized evidence"
+                        "review or replace the non-observable goal with a validated, evidence-grounded goal; do not delete it"
                         if evidence_ids
                         else "provide chapter-scoped evidence before freezing"
                     ),
@@ -1068,13 +1390,21 @@ def _diagnose_section_fields(
 ) -> list[CompletenessIssue]:
     issues: list[CompletenessIssue] = []
     evidence_ids = [chunk.chunk_id for chunk in candidates]
-    required_fields = list(_TEXT_FIELDS)
-    if not section.needs_case:
-        required_fields.remove("case_purpose")
-    if not section.needs_exercises:
-        required_fields.remove("exercise_purpose")
+    required_fields = ["section_purpose", "expected_learning_outcome", "current_task_action"]
     if not section.knowledge_scope:
         required_fields.append("knowledge_scope")
+    module_requirements = module_intent_requirements(section)
+    module_fields = {
+        "case": "case_purpose",
+        "exercise": "exercise_purpose",
+        "assessment": "assessment_purpose",
+        "activity": "activity_purpose",
+    }
+    required_fields.extend(
+        field_name
+        for module_name, field_name in module_fields.items()
+        if module_requirements[module_name] == MODULE_REQUIRED
+    )
     for field_name in required_fields:
         value = getattr(section, field_name)
         missing = not value or (isinstance(value, str) and _is_placeholder(value))
@@ -1111,6 +1441,11 @@ def _diagnose_section_fields(
                     "source": f"BookSectionPlan.{field_name}",
                     "chapter_id": chapter.chapter_id,
                     "rule": "required section/module intent presence, placeholder, and outcome quality detection",
+                    "module_requirement": (
+                        module_requirements.get(field_name.removesuffix("_purpose"))
+                        if field_name.endswith("_purpose")
+                        else None
+                    ),
                 },
             )
         )
@@ -1168,7 +1503,7 @@ def _diagnose_section_evidence(
             chunk_map,
             obligation_definitions,
         )
-    if status == SECTION_EVIDENCE_UNRESOLVED:
+    if status in {SECTION_EVIDENCE_UNRESOLVED, SECTION_EVIDENCE_SOURCE_GAP}:
         issue_type = EVIDENCE_BINDING_GAP if candidate_ids else UNRESOLVED_SOURCE_COVERAGE
         issues.append(
             CompletenessIssue(
@@ -1196,8 +1531,14 @@ def _deterministic_section_evidence_status(
     """Conservative lexical first pass used when no semantic judgement exists."""
 
     if not candidates or not bound_ids:
-        return SECTION_EVIDENCE_UNRESOLVED, [
-            {"key": "section_evidence", "status": "UNRESOLVED", "evidence_ids": []}
+        return SECTION_EVIDENCE_SOURCE_GAP, [
+            {
+                "key": "section_evidence",
+                "kind": "concept_principle",
+                "status": EVIDENCE_NO_SUPPORT,
+                "evidence_ids": [],
+                "missing_support": ["bounded evidence selection"],
+            }
         ]
     selected = [chunk_map[value] for value in bound_ids if value in chunk_map]
     obligations: list[dict[str, Any]] = []
@@ -1208,7 +1549,15 @@ def _deterministic_section_evidence_status(
     for definition in definitions:
         text = str(definition.get("text") or "")
         matches = [chunk.chunk_id for chunk in selected if _text_match_score(text, _chunk_search_text(chunk)) >= 1.0]
-        obligations.append({"key": str(definition.get("key") or "section_evidence"), "status": "SUPPORTED" if matches else "UNRESOLVED", "evidence_ids": matches})
+        obligations.append(
+            {
+                "key": str(definition.get("key") or "section_evidence"),
+                "kind": str(definition.get("kind") or "concept_principle"),
+                "status": EVIDENCE_SUPPORTED if matches else EVIDENCE_NO_SUPPORT,
+                "evidence_ids": matches,
+                "missing_support": [] if matches else [text],
+            }
+        )
     status = _coverage_status_from_obligations(obligations, bool(selected))
     return status, obligations
 
@@ -1227,13 +1576,17 @@ def _normalize_section_evidence_coverage(
         if section_id not in known or not isinstance(raw, dict):
             continue
         status = str(raw.get("status") or "").upper()
-        if status not in {SECTION_EVIDENCE_SUFFICIENT, SECTION_EVIDENCE_PARTIAL, SECTION_EVIDENCE_UNRESOLVED}:
+        if status == SECTION_EVIDENCE_UNRESOLVED:
+            status = SECTION_EVIDENCE_SOURCE_GAP
+        if status not in {SECTION_EVIDENCE_SUFFICIENT, SECTION_EVIDENCE_PARTIAL, SECTION_EVIDENCE_SOURCE_GAP}:
             continue
+        obligation_coverage = list(raw.get("obligation_coverage") or [])
         result[section_id] = {
             "status": status,
             "primary_material_ids": _dedupe([str(value) for value in raw.get("primary_material_ids", []) if value]),
             "reference_material_ids": _dedupe([str(value) for value in raw.get("reference_material_ids", []) if value]),
-            "obligation_coverage": list(raw.get("obligation_coverage") or []),
+            "obligation_coverage": obligation_coverage,
+            "obligation_summary": list(raw.get("obligation_summary") or _summarize_obligation_coverage(obligation_coverage)),
             "candidate_ids": _dedupe([str(value) for value in raw.get("candidate_ids", []) if value]),
             "previous_evidence_ids": _dedupe([str(value) for value in raw.get("previous_evidence_ids", []) if value]),
             "retrieved_candidate_ids": _dedupe([str(value) for value in raw.get("retrieved_candidate_ids", []) if value]),
@@ -1289,12 +1642,55 @@ def _apply_grounded_repairs(
                     references.append(material_id)
             if primary != section.primary_material_ids or references != section.reference_material_ids:
                 changed.append(f"{section.section_id}.evidence_ownership")
+            expected_learning_outcome = section.expected_learning_outcome
+            case_purpose = section.case_purpose
+            exercise_purpose = section.exercise_purpose
+            assessment_purpose = section.assessment_purpose
+            activity_purpose = section.activity_purpose
+
+            # Only fill fields whose module is explicitly required and only
+            # when the section already contains enough planning context.  This
+            # is a pre-freeze planning normalization, not a source-fact claim.
+            if _is_placeholder(expected_learning_outcome):
+                grounded_outcome = _grounded_section_outcome(section) if candidate_ids else ""
+                if grounded_outcome:
+                    expected_learning_outcome = grounded_outcome
+                    changed.append(f"{section.section_id}.expected_learning_outcome")
+            if candidate_ids and module_intent_requirements(section)["case"] == MODULE_REQUIRED and _is_placeholder(case_purpose):
+                case_purpose = _grounded_module_intent(section, "case")
+                if case_purpose:
+                    changed.append(f"{section.section_id}.case_purpose")
+            if candidate_ids and module_intent_requirements(section)["exercise"] == MODULE_REQUIRED and _is_placeholder(exercise_purpose):
+                exercise_purpose = _grounded_module_intent(section, "exercise")
+                if exercise_purpose:
+                    changed.append(f"{section.section_id}.exercise_purpose")
+            if candidate_ids and module_intent_requirements(
+                replace(section, expected_learning_outcome=expected_learning_outcome)
+            )["assessment"] == MODULE_REQUIRED and _is_placeholder(assessment_purpose):
+                assessment_purpose = _grounded_module_intent(
+                    replace(section, expected_learning_outcome=expected_learning_outcome), "assessment"
+                )
+                if assessment_purpose:
+                    changed.append(f"{section.section_id}.assessment_purpose")
+            if candidate_ids and module_intent_requirements(
+                replace(section, expected_learning_outcome=expected_learning_outcome)
+            )["activity"] == MODULE_REQUIRED and _is_placeholder(activity_purpose):
+                activity_purpose = _grounded_module_intent(
+                    replace(section, expected_learning_outcome=expected_learning_outcome), "activity"
+                )
+                if activity_purpose:
+                    changed.append(f"{section.section_id}.activity_purpose")
             sections.append(
                 replace(
                     section,
                     primary_material_ids=primary,
                     reference_material_ids=references,
                     knowledge_scope=knowledge_scope,
+                    expected_learning_outcome=expected_learning_outcome,
+                    case_purpose=case_purpose,
+                    exercise_purpose=exercise_purpose,
+                    assessment_purpose=assessment_purpose,
+                    activity_purpose=activity_purpose,
                 )
             )
         chapter_primary = _dedupe(
@@ -1309,6 +1705,40 @@ def _apply_grounded_repairs(
         )
         chapters.append(replace(chapter, sections=sections, primary_material_ids=chapter_primary))
     return replace(book_plan, chapters=chapters), sorted(set(changed))
+
+
+def _grounded_section_outcome(section: BookSectionPlan) -> str:
+    """Create an observable planning outcome from existing section context only."""
+
+    if not section.title and not section.current_task_action:
+        return ""
+    if any("\u4e00" <= char <= "\u9fff" for char in f"{section.title}{section.current_task_action}"):
+        return f'能够完成“{section.title}”对应的任务，并按本节要求检查结果。'
+    return f"Complete the planned {section.title or 'task'} and verify the stated conditions."
+
+
+def _grounded_module_intent(section: BookSectionPlan, module: str) -> str:
+    """Produce a non-placeholder module purpose without adding domain facts."""
+
+    subject = section.title or "the planned task"
+    action = section.current_task_action or section.section_purpose or section.expected_learning_outcome or subject
+    outcome = section.expected_learning_outcome or action
+    chinese = any("\u4e00" <= char <= "\u9fff" for char in f"{subject}{action}{outcome}")
+    if chinese:
+        if module == "case":
+            return f'围绕“{subject}”设置由授权素材支持的应用情境，观察任务结果。'
+        if module == "exercise":
+            return f'练习完成“{subject}”相关任务，并依据本节要求检查结果。'
+        if module == "assessment":
+            return f'评价学习者能否完成“{subject}”对应的学习要求，并说明关键判断依据。'
+        return f'通过观察、讨论或操作活动处理“{subject}”中的任务要求。'
+    if module == "case":
+        return f"Apply the authorized evidence to a bounded {subject} situation and inspect the result."
+    if module == "exercise":
+        return f"Practice the {subject} task and verify its stated conditions."
+    if module == "assessment":
+        return f"Assess whether the learner can meet the planned outcome for {subject}."
+    return f"Use an observation, discussion, or operation activity to work on {subject}."
 
 
 def _legacy_unreachable_deterministic_repairs(
@@ -1818,13 +2248,21 @@ def _chapter_candidate_evidence_ids(
 def _report_status(issues: list[CompletenessIssue]) -> str:
     if not issues:
         return "PASS"
-    if any(issue.issue_type in {GENUINE_SOURCE_GAP, UNRESOLVED_SOURCE_COVERAGE, MANUAL_REVIEW} for issue in issues):
+    if any(issue.issue_type in {GENUINE_SOURCE_GAP, UNRESOLVED_SOURCE_COVERAGE, MANUAL_REVIEW, PARTIAL_COVERAGE_AUDIT} for issue in issues):
         return "BLOCKED"
     return "REPLAN_REQUIRED"
 
 
 def _needs_replan(report: CompletenessReport) -> bool:
-    return any(issue.issue_type in {REPLANNABLE_PLAN_GAP, EVIDENCE_BINDING_GAP} for issue in report.issues)
+    return any(
+        issue.issue_type in {REPLANNABLE_PLAN_GAP, EVIDENCE_BINDING_GAP, PARTIAL_COVERAGE_AUDIT}
+        for issue in report.issues
+    ) or any(
+        issue.issue_type == MANUAL_REVIEW
+        and issue.expected_requirement.startswith("curriculum scope covers")
+        and issue.provenance.get("resolution") == PARTIAL_SUPPORT_REMAINS
+        for issue in report.issues
+    )
 
 
 def _issue_key(issue: CompletenessIssue) -> str:
