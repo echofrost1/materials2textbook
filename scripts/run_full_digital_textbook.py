@@ -151,6 +151,15 @@ def main() -> None:
         action="store_true",
         help="Treat --book-plan-input as an already post-processed immutable source BookPlan.",
     )
+    parser.add_argument(
+        "--freeze-calibration-input",
+        type=Path,
+        default=None,
+        help=(
+            "Freeze calibration report required with --book-plan-is-frozen. "
+            "The report must validate the snapshot/signature/fingerprint before semantic execution."
+        ),
+    )
     parser.add_argument("--domain-config", type=Path, default=None, help="Optional domain_config YAML/JSON.")
     parser.add_argument("--domain-name", default="", help="Override generated/loaded domain name.")
     parser.add_argument("--audience", default="", help="Override generated/loaded audience.")
@@ -350,6 +359,7 @@ def main() -> None:
         llm_book_planning=not args.disable_llm_book_planning,
         book_plan_input=args.book_plan_input.resolve() if args.book_plan_input else None,
         book_plan_is_frozen=args.book_plan_is_frozen,
+        freeze_calibration_input=args.freeze_calibration_input.resolve() if args.freeze_calibration_input else None,
         completeness_first_authoring=args.completeness_first_authoring,
     )
 

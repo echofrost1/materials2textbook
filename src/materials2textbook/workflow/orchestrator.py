@@ -31,6 +31,7 @@ from materials2textbook.agents.book_plan_llm import (
     plan_has_blocking_issues,
 )
 from materials2textbook.agents.book_plan_completeness import (
+    CompletenessReport,
     CompletenessOptimizationResult,
     apply_targeted_section_patch,
     compile_section_evidence_coverage,
@@ -73,6 +74,7 @@ from materials2textbook.knowledge_map.outline import (
     book_plan_snapshot_payload,
     outline_signature,
     snapshot_source_book_plan,
+    validate_frozen_book_plan,
 )
 from materials2textbook.knowledge_map.semantic_book_conformance import (
     build_semantic_book_conformance_report,
@@ -249,6 +251,7 @@ class TextbookWorkflow:
         semantic_evaluation_input: Path | None = None,
         semantic_book_mode: bool = False,
         book_plan_is_frozen: bool = False,
+        freeze_calibration_input: Path | None = None,
         completeness_first_authoring: bool = True,
         shared_fact_proposals: list[dict[str, Any]] | None = None,
         shared_fact_materialization_request: Mapping[str, Any] | None = None,
@@ -365,10 +368,12 @@ class TextbookWorkflow:
         source_book_plan_fingerprint = ""
         source_book_plan_snapshot_path = output_dir / "source_book_plan_snapshot.json"
         source_book_plan_invariant_path = output_dir / "source_book_plan_invariant.json"
+        freeze_validation_path = output_dir / "freeze_validation.json"
         book_plan_completeness_path = output_dir / "book_plan_completeness.json"
         book_plan_completeness_markdown_path = output_dir / "book_plan_completeness.md"
         book_plan_completeness: CompletenessOptimizationResult | None = None
         book_plan_review = []
+        freeze_validation: dict[str, Any] | None = None
         planning_mode = "chapter"
         if book_mode:
             _progress("planning whole-book chapter structure")
@@ -411,6 +416,14 @@ class TextbookWorkflow:
                 coverage_issues = []
                 density_issues = []
                 structure_issues = []
+                freeze_validation = validate_frozen_book_plan(
+                    book_plan,
+                    book_plan_input=book_plan_input,
+                    calibration_input=freeze_calibration_input,
+                    chapter_token_budget=max_chapter_input_tokens,
+                )
+                write_json(freeze_validation_path, freeze_validation)
+                planning_mode = "external_frozen_validated"
             else:
                 # Complete the original planning/post-processing sequence
                 # before semantic mode freezes the BookPlan source of truth.
@@ -434,15 +447,18 @@ class TextbookWorkflow:
                     }
                 )
                 book_plan = replace(book_plan, metadata=metadata)
-            # Completeness is the last pre-freeze planning step.  It may add
-            # bounded, evidence-backed planning metadata/ownership, but it
-            # cannot alter existing outline identity, order, titles, or
-            # knowledge ownership.  Frozen inputs are diagnosed read-only.
-            curriculum_coverage_state = diagnose_book_plan_completeness(
-                book_plan,
-                chunks,
-                domain_config=domain_config,
-            ).curriculum_coverage
+            # Completeness is the last pre-freeze planning step.  A validated
+            # frozen input has already passed that contract and must not be
+            # sent through the mutable diagnosis/replan path again.
+            curriculum_coverage_state = (
+                {}
+                if book_plan_is_frozen
+                else diagnose_book_plan_completeness(
+                    book_plan,
+                    chunks,
+                    domain_config=domain_config,
+                ).curriculum_coverage
+            )
             # Section evidence decisions are an audit/binding overlay.  They
             # are populated only from bounded candidate packets and are passed
             # by reference so the optimizer's post-patch diagnosis consumes
@@ -612,32 +628,33 @@ class TextbookWorkflow:
                     return candidate if candidate != current_plan else None
 
                 replan_callback = _replan_from_original
-            book_plan_completeness = optimize_book_plan_completeness(
-                book_plan,
-                chunks,
-                domain_config=domain_config,
-                curriculum_coverage=curriculum_coverage_state,
-                section_evidence_coverage=section_evidence_coverage_state,
-                replanner=replan_callback,
-                max_replan_attempts=config.normalized_completeness_replan_attempts(),
-                allow_replan=not book_plan_is_frozen,
-            )
-            write_json(book_plan_completeness_path, book_plan_completeness.to_dict())
-            write_text(
-                book_plan_completeness_markdown_path,
-                render_completeness_report_markdown(book_plan_completeness),
-            )
-            book_plan = book_plan_completeness.book_plan
-            if (
-                config.enforce_completeness_gate
-                and not book_plan_completeness.final_report.safe_to_freeze
-            ):
-                raise ValueError(
-                    "BookPlan completeness gate blocked freeze: "
-                    f"{book_plan_completeness.final_report.status} "
-                    f"{book_plan_completeness.final_report.counts}"
+            if not book_plan_is_frozen:
+                book_plan_completeness = optimize_book_plan_completeness(
+                    book_plan,
+                    chunks,
+                    domain_config=domain_config,
+                    curriculum_coverage=curriculum_coverage_state,
+                    section_evidence_coverage=section_evidence_coverage_state,
+                    replanner=replan_callback,
+                    max_replan_attempts=config.normalized_completeness_replan_attempts(),
+                    allow_replan=True,
                 )
-            book_plan_review = auto_plan_issues + section_issues + coverage_issues + density_issues + structure_issues + review_book_plan(book_plan, chunks)
+                write_json(book_plan_completeness_path, book_plan_completeness.to_dict())
+                write_text(
+                    book_plan_completeness_markdown_path,
+                    render_completeness_report_markdown(book_plan_completeness),
+                )
+                book_plan = book_plan_completeness.book_plan
+                if (
+                    config.enforce_completeness_gate
+                    and not book_plan_completeness.final_report.safe_to_freeze
+                ):
+                    raise ValueError(
+                        "BookPlan completeness gate blocked freeze: "
+                        f"{book_plan_completeness.final_report.status} "
+                        f"{book_plan_completeness.final_report.counts}"
+                    )
+                book_plan_review = auto_plan_issues + section_issues + coverage_issues + density_issues + structure_issues + review_book_plan(book_plan, chunks)
             if semantic_book_mode:
                 source_book_plan_snapshot = snapshot_source_book_plan(book_plan)
                 source_outline_signature = outline_signature(source_book_plan_snapshot)
@@ -728,14 +745,28 @@ class TextbookWorkflow:
                 }
                 if completeness_first_authoring:
                     _progress(f"semantic mode: completeness-first section authoring ({len(plans)} chapter projections)")
-                    if book_plan_completeness is None:
-                        raise RuntimeError("completeness-first authoring requires a BookPlan completeness report")
+                    if book_plan_completeness is not None:
+                        completeness_report = book_plan_completeness.final_report
+                    elif freeze_validation is not None:
+                        # The calibrated report is the immutable pre-freeze
+                        # admission record.  Reconstruct only the small
+                        # report object required by Blueprint validation; do
+                        # not rerun diagnosis or optimization for a frozen
+                        # plan.
+                        completeness_report = CompletenessReport(
+                            status="FROZEN_VALIDATED",
+                            book_id=book_plan.book_id,
+                            plan_fingerprint=book_plan_fingerprint(book_plan),
+                            safe_to_freeze=True,
+                        )
+                    else:
+                        raise RuntimeError("completeness-first authoring requires a validated BookPlan freeze")
                     semantic_execution = self._run_semantic_section_authoring_execution(
                         plans=plans,
                         chunks=chunks,
                         title=title,
                         book_plan=book_plan,
-                        completeness_report=book_plan_completeness.final_report,
+                        completeness_report=completeness_report,
                         semantic_evaluation=semantic_evaluation,
                         excluded_occurrence_ids=excluded_ids,
                     )
@@ -1206,6 +1237,19 @@ class TextbookWorkflow:
             "title": title,
             "domain_config": domain_config.to_dict(),
             "planning_mode": planning_mode,
+            "book_plan_state": (
+                "FROZEN_VALIDATED"
+                if freeze_validation is not None
+                else "PRE_FREEZE"
+            ),
+            "freeze_validation_passed": bool(freeze_validation and freeze_validation.get("validation_passed")),
+            "freeze_calibration_source": (
+                _portable_path(Path(freeze_validation["calibration_source"]))
+                if freeze_validation and freeze_validation.get("calibration_source")
+                else ""
+            ),
+            "prefreeze_completeness_rerun": not book_plan_is_frozen,
+            "freeze_validation": freeze_validation,
             "semantic_execution_mode": semantic_execution_mode,
             "authoring_mode": (
                 "completeness_first_section"
@@ -1233,6 +1277,16 @@ class TextbookWorkflow:
                     "source_book_plan_fingerprint": source_book_plan_fingerprint,
                     "final_book_plan_fingerprint": book_plan_fingerprint(book_plan),
                     "deep_equal": book_plan_deep_equal(book_plan, source_book_plan_snapshot),
+                    "freeze_calibration_fingerprint": (
+                        freeze_validation.get("expected_book_plan_fingerprint", "")
+                        if freeze_validation
+                        else ""
+                    ),
+                    "freeze_calibration_deep_equal": (
+                        bool(freeze_validation.get("deep_equal"))
+                        if freeze_validation
+                        else False
+                    ),
                 }
                 if semantic_book_mode and source_book_plan_snapshot is not None
                 else None
@@ -1243,6 +1297,7 @@ class TextbookWorkflow:
                 "manifest_xlsx": _portable_path(manifest_xlsx) if manifest_xlsx else "",
                 "book_plan_input": _portable_path(book_plan_input) if book_plan_input else "",
                 "book_plan_is_frozen": bool(book_plan_is_frozen),
+                "freeze_calibration_input": _portable_path(freeze_calibration_input) if freeze_calibration_input else "",
                 "semantic_book_mode": bool(semantic_book_mode),
                 "completeness_first_authoring": bool(completeness_first_authoring),
                 "semantic_evaluation_input": _portable_path(semantic_evaluation_input) if semantic_evaluation_input else "",
@@ -1344,6 +1399,7 @@ class TextbookWorkflow:
                 "book_plan_review_markdown": _portable_path(book_plan_review_markdown_path) if book_plan else "",
                 "book_plan_completeness_json": _portable_path(book_plan_completeness_path) if book_plan_completeness is not None else "",
                 "book_plan_completeness_markdown": _portable_path(book_plan_completeness_markdown_path) if book_plan_completeness is not None else "",
+                "freeze_validation": _portable_path(freeze_validation_path) if freeze_validation is not None else "",
                 "source_book_plan_snapshot": _portable_path(source_book_plan_snapshot_path) if semantic_book_mode and source_book_plan_snapshot is not None else "",
                 "source_book_plan_invariant": _portable_path(source_book_plan_invariant_path) if semantic_book_mode and source_book_plan_snapshot is not None else "",
                 "semantic_execution_audit": _portable_path(semantic_execution_path) if semantic_execution is not None else "",
