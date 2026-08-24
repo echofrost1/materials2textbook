@@ -47,6 +47,7 @@ class SemanticPlanningEvaluation:
     prerequisite_audit: list[dict[str, Any]] = field(default_factory=list)
     call_counts: dict[str, int] = field(default_factory=dict)
     budget_audit: list[dict[str, Any]] = field(default_factory=list)
+    semantic_retry_audit: list[dict[str, Any]] = field(default_factory=list)
 
 
 def evaluate_semantic_planning(
@@ -61,6 +62,7 @@ def evaluate_semantic_planning(
     rejected: list[dict[str, Any]] = []
     normalizations: list[dict[str, Any]] = []
     deltas: list[SemanticDelta] = []
+    semantic_retry_audit: list[dict[str, Any]] = []
 
     candidates = _identity_merge_candidates(evaluated, chunk_lookup)
     identity_response = _safe_call(lambda: agent.judge_identity(candidates), rejected, "identity") if candidates else {"judgements": []}
@@ -86,17 +88,82 @@ def evaluate_semantic_planning(
         if not current:
             continue
         payload = _trajectory_payload(trajectory.knowledge_id, points[trajectory.knowledge_id].title, current, sources, chunk_lookup, canonical_whitelist)
-        response = _safe_call(lambda: agent.plan_semantic_deltas(payload), rejected, "semantic_delta")
+        response, first_call = _call_semantic_delta(agent, payload, rejected)
+        if first_call["status"] == "RESPONSE" and not isinstance(response.get("deltas"), list):
+            first_call["status"] = "MISSING_OR_INVALID_DELTAS"
+            first_call["parse_error"] = "missing_or_invalid_deltas"
         delta_by_id = {item.get("occurrence_id"): item for item in _list_response(response, "deltas", rejected, "semantic_delta") if isinstance(item, dict)}
+        failed_occurrences: list[tuple[int, PlannedOccurrence]] = []
         for index, occurrence in enumerate(current):
             delta = _parse_delta(
                 delta_by_id.get(occurrence.occurrence_id), occurrence, points, rejected,
                 normalizations, has_previous=bool(index),
             )
             if delta is None:
-                occurrence.trusted_for_state = False
+                failed_occurrences.append((index, occurrence))
                 continue
             deltas.append(delta)
+
+        # A malformed/truncated response or a single schema-invalid item must
+        # not force us to re-run successful trajectory items.  Retry once with
+        # the failed targets plus only the earlier occurrences needed to keep
+        # the same trajectory/prerequisite context.  Successful retry output
+        # for context items is deliberately ignored.
+        if failed_occurrences:
+            failed_ids = [item.occurrence_id for _, item in failed_occurrences]
+            retry_context_end = max(index for index, _ in failed_occurrences)
+            retry_items = current[: retry_context_end + 1]
+            retry_payload = _trajectory_payload(
+                trajectory.knowledge_id,
+                points[trajectory.knowledge_id].title,
+                retry_items,
+                sources,
+                chunk_lookup,
+                canonical_whitelist,
+            )
+            retry_response, retry_call = _call_semantic_delta(agent, retry_payload, rejected)
+            retry_delta_by_id = {
+                item.get("occurrence_id"): item
+                for item in _list_response(retry_response, "deltas", rejected, "semantic_delta_retry")
+                if isinstance(item, dict)
+            }
+            retry_status = "RESPONSE"
+            retry_errors: list[str] = []
+            if not isinstance(retry_response.get("deltas"), list):
+                retry_status = "PARSE_FAILED"
+                retry_errors.append("missing_or_invalid_deltas")
+            recovered_ids: list[str] = []
+            for index, occurrence in failed_occurrences:
+                delta = _parse_delta(
+                    retry_delta_by_id.get(occurrence.occurrence_id), occurrence, points, rejected,
+                    normalizations, has_previous=bool(index),
+                )
+                if delta is None:
+                    occurrence.trusted_for_state = False
+                    continue
+                deltas.append(delta)
+                recovered_ids.append(occurrence.occurrence_id)
+            if recovered_ids:
+                remaining = [item for item in failed_ids if item not in recovered_ids]
+                if not remaining and retry_status == "RESPONSE":
+                    retry_status = "RECOVERED"
+            else:
+                remaining = failed_ids
+            semantic_retry_audit.append({
+                "occurrence_ids": failed_ids,
+                "first_response_status": first_call["status"],
+                "first_parse_error": first_call.get("parse_error", ""),
+                "first_error": first_call.get("error", ""),
+                "first_budget_audit": first_call.get("budget_audit", []),
+                "retry_response_status": retry_status if retry_call["status"] == "RESPONSE" else retry_call["status"],
+                "retry_parse_error": retry_call.get("parse_error", "") or "; ".join(retry_errors),
+                "retry_error": retry_call.get("error", ""),
+                "retry_budget_audit": retry_call.get("budget_audit", []),
+                "retry_context_occurrence_ids": [item.occurrence_id for item in retry_items],
+                "recovered_occurrence_ids": recovered_ids,
+                "remaining_occurrence_ids": remaining,
+                "retry_limit": 1,
+            })
     compiled_occurrences, final_deltas, prerequisite_audit = _compile_final_occurrences(
         knowledge_map=evaluated,
         deltas=deltas,
@@ -131,6 +198,7 @@ def evaluate_semantic_planning(
         prerequisite_audit=prerequisite_audit,
         call_counts=dict(agent.call_counts),
         budget_audit=list(getattr(agent, "budget_audit", [])),
+        semantic_retry_audit=semantic_retry_audit,
     )
 
 
@@ -859,6 +927,39 @@ def _list_response(response: dict, key: str, rejected: list[dict[str, Any]], sta
         return value
     rejected.append({"stage": stage, "reason": f"missing_or_invalid_{key}"})
     return []
+
+
+def _call_semantic_delta(
+    agent: LLMSemanticPlanningAgent,
+    payload: dict[str, Any],
+    rejected: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Make one semantic-delta call and retain enough provenance for one retry.
+
+    The agent owns JSON parsing and dynamic token budgeting.  This wrapper
+    deliberately does not repair or reinterpret a response; it only records a
+    failed call so the caller can retry the failed occurrence(s) once.
+    """
+    audit_before = len(getattr(agent, "budget_audit", []))
+    try:
+        response = agent.plan_semantic_deltas(payload)
+        if not isinstance(response, dict):
+            raise ValueError("Semantic planner response must be a JSON object.")
+        budget = list(getattr(agent, "budget_audit", [])[audit_before:])
+        return response, {"status": "RESPONSE", "budget_audit": budget}
+    except Exception as exc:
+        budget = list(getattr(agent, "budget_audit", [])[audit_before:])
+        record = {"stage": "semantic_delta", "reason": "planner_call_failed", "error": str(exc)[:500]}
+        if isinstance(exc, SemanticPlannerContextOverflow):
+            record["reason"] = SemanticPlannerContextOverflow.code
+            record["budget_audit"] = dict(exc.audit)
+        rejected.append(record)
+        return {}, {
+            "status": "CONTEXT_OVERFLOW" if isinstance(exc, SemanticPlannerContextOverflow) else "PARSE_FAILED",
+            "parse_error": str(exc)[:500],
+            "error": str(exc)[:500],
+            "budget_audit": budget,
+        }
 
 
 def _safe_call(call, rejected: list[dict[str, Any]], stage: str) -> dict:

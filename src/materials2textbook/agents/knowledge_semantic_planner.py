@@ -44,9 +44,20 @@ class LLMSemanticPlanningAgent:
     def plan_semantic_deltas(self, trajectory: dict) -> dict:
         self.call_counts["semantic_delta"] += 1
         messages = build_semantic_delta_messages(trajectory)
-        return _json_object(self._budgeted_generate(messages, "semantic_delta"))
+        occurrence_ids = [
+            str(item.get("occurrence_id"))
+            for item in trajectory.get("occurrences", [])
+            if isinstance(item, dict) and item.get("occurrence_id")
+        ]
+        return _json_object(self._budgeted_generate(messages, "semantic_delta", occurrence_ids=occurrence_ids))
 
-    def _budgeted_generate(self, messages: list[dict[str, str]], stage: str) -> str:
+    def _budgeted_generate(
+        self,
+        messages: list[dict[str, str]],
+        stage: str,
+        *,
+        occurrence_ids: list[str] | None = None,
+    ) -> str:
         config = _provider_config(self.llm_provider)
         context_window = self.context_window or int(getattr(config, "context_window", 8192))
         requested = int(getattr(config, "max_tokens", 4096))
@@ -68,6 +79,8 @@ class LLMSemanticPlanningAgent:
             "prompt_components": prompt_component_audit(messages),
             "token_estimator": "qwen_heuristic_v1",
         }
+        if occurrence_ids:
+            audit["occurrence_ids"] = list(occurrence_ids)
         self.budget_audit.append(audit)
         if effective < self.min_output_tokens:
             raise SemanticPlannerContextOverflow(audit)
