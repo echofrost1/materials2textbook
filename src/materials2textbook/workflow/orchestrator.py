@@ -698,6 +698,7 @@ class TextbookWorkflow:
                     "normalizations": semantic_evaluation.normalizations,
                     "prerequisite_audit": semantic_evaluation.prerequisite_audit,
                     "call_counts": semantic_evaluation.call_counts,
+                    "budget_audit": semantic_evaluation.budget_audit,
                 }
                 resolution = resolve_evidence_coverage_from_payload(
                     payload=semantic_evaluation_payload,

@@ -24,14 +24,19 @@ class CachingLLMProvider:
         self.stats = LLMCacheStats()
         self._cache: dict[str, str] = self._load()
 
-    def generate(self, messages: list[dict[str, str]]) -> str:
-        key = build_llm_cache_key(messages)
+    def generate(self, messages: list[dict[str, str]], *, max_tokens: int | None = None) -> str:
+        key = build_llm_cache_key(messages, max_tokens=max_tokens)
         if key in self._cache:
             self.stats.hits += 1
             return self._cache[key]
 
         self.stats.misses += 1
-        response = self.provider.generate(messages)
+        try:
+            response = self.provider.generate(messages, max_tokens=max_tokens)
+        except TypeError as exc:
+            if "max_tokens" not in str(exc):
+                raise
+            response = self.provider.generate(messages)
         if not isinstance(response, str) or not response.strip():
             raise RuntimeError("LLM cache received an empty response and will not store it.")
         self._cache[key] = response
@@ -54,7 +59,7 @@ class CachingLLMProvider:
         )
 
 
-def build_llm_cache_key(messages: list[dict[str, str]]) -> str:
+def build_llm_cache_key(messages: list[dict[str, str]], *, max_tokens: int | None = None) -> str:
     normalized: list[dict[str, Any]] = [
         {
             "role": str(message.get("role", "")),
@@ -62,5 +67,10 @@ def build_llm_cache_key(messages: list[dict[str, str]]) -> str:
         }
         for message in messages
     ]
-    payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload = json.dumps(
+        {"messages": normalized, "max_tokens": max_tokens},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

@@ -846,6 +846,19 @@ def _compute_deterministic_maps(
     evidence_usage: list[dict[str, Any]] = []
     channel_order = ("body", "case_activity", "exercise", "assessment", "summary")
     ordered_blocks = [block for channel in channel_order for block in blocks if block["channel"] == channel]
+    allowed_occurrence_ids = {
+        _constraint_value(item, "occurrence_id")
+        for item in brief.occurrence_constraints
+        if _constraint_value(item, "occurrence_id")
+    }
+    # A section with exactly one executable occurrence has an unambiguous
+    # ownership fallback: ordinary body blocks that carry no explicit
+    # occurrence association belong to that occurrence.  This repairs the
+    # production case where the section writer correctly produced a body but
+    # omitted a redundant one-item association.  It is deliberately not
+    # applied to multi-occurrence sections, where guessing would hide a
+    # materialization error.
+    sole_occurrence_id = next(iter(allowed_occurrence_ids)) if len(allowed_occurrence_ids) == 1 else None
     materialized_visible = "\n\n".join(block["text"] for block in ordered_blocks).strip()
     if materialized_visible != visible_text:
         raise SectionAuthoringError("deterministic block materialization changed the visible section unexpectedly")
@@ -882,7 +895,10 @@ def _compute_deterministic_maps(
                     "text": block["text"],
                 }
             )
-        for occurrence_id in block["intended_occurrence_ids"]:
+        occurrence_ids = block["intended_occurrence_ids"]
+        if not occurrence_ids and sole_occurrence_id and channel == "body":
+            occurrence_ids = (sole_occurrence_id,)
+        for occurrence_id in occurrence_ids:
             occurrence_map.setdefault(occurrence_id, []).append(dict(base))
     # A body span is expected to be exact in the materialized body.  This
     # check catches accidental changes in the deterministic join operation.

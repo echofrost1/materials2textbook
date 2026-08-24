@@ -28,12 +28,17 @@ class RetryingLLMProvider:
         self.backoff_seconds = max(0.0, backoff_seconds)
         self.stats = LLMRetryStats()
 
-    def generate(self, messages: list[dict[str, str]]) -> str:
+    def generate(self, messages: list[dict[str, str]], *, max_tokens: int | None = None) -> str:
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             self.stats.attempts += 1
             try:
-                return self.provider.generate(messages)
+                try:
+                    return self.provider.generate(messages, max_tokens=max_tokens)
+                except TypeError as exc:
+                    if "max_tokens" not in str(exc):
+                        raise
+                    return self.provider.generate(messages)
             except Exception as exc:
                 last_error = exc
                 if attempt >= self.max_retries:

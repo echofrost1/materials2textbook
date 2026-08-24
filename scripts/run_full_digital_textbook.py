@@ -48,10 +48,15 @@ class ProgressLLMProvider:
         self.provider = provider
         self.calls = 0
 
-    def generate(self, messages: list[dict[str, str]]) -> str:
+    def generate(self, messages: list[dict[str, str]], *, max_tokens: int | None = None) -> str:
         self.calls += 1
         print(f"[llm] request {self.calls} start", flush=True)
-        response = self.provider.generate(messages)
+        try:
+            response = self.provider.generate(messages, max_tokens=max_tokens)
+        except TypeError as exc:
+            if "max_tokens" not in str(exc):
+                raise
+            response = self.provider.generate(messages)
         print(f"[llm] request {self.calls} done, chars={len(response)}", flush=True)
         return response
 

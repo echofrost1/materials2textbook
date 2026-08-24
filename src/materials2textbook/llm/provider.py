@@ -21,7 +21,7 @@ def strip_think_blocks(text: str) -> str:
 
 
 class LLMProvider(Protocol):
-    def generate(self, messages: list[dict[str, str]]) -> str:
+    def generate(self, messages: list[dict[str, str]], *, max_tokens: int | None = None) -> str:
         """Generate text from chat messages."""
 
 
@@ -33,6 +33,7 @@ class OpenAICompatibleConfig:
     temperature: float = 0.2
     max_tokens: int = 4096
     timeout_seconds: int = 120
+    context_window: int = 8192
 
     @classmethod
     def from_env(cls, prefix: str = "OPENAI") -> "OpenAICompatibleConfig":
@@ -45,6 +46,7 @@ class OpenAICompatibleConfig:
             model=env_value("MODEL"),
             temperature=float(env_value("TEMPERATURE", "0.2")),
             max_tokens=int(env_value("MAX_TOKENS", "4096")),
+            context_window=int(env_value("CONTEXT_WINDOW", "8192")),
             timeout_seconds=int(env_value("TIMEOUT_SECONDS", "120")),
         )
 
@@ -64,7 +66,7 @@ class OpenAICompatibleProvider:
     def __init__(self, config: OpenAICompatibleConfig) -> None:
         self.config = config
 
-    def generate(self, messages: list[dict[str, str]]) -> str:
+    def generate(self, messages: list[dict[str, str]], *, max_tokens: int | None = None) -> str:
         if not self.config.is_configured:
             raise RuntimeError(
                 "LLM provider is not configured. Set OPENAI_API_KEY, "
@@ -75,7 +77,7 @@ class OpenAICompatibleProvider:
             "model": self.config.model,
             "messages": messages,
             "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": max_tokens if max_tokens is not None else self.config.max_tokens,
             "chat_template_kwargs": {"enable_thinking": False},
         }
         request = urllib.request.Request(

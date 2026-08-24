@@ -5,7 +5,7 @@ from dataclasses import replace
 from dataclasses import dataclass, field
 from typing import Any
 
-from materials2textbook.agents.knowledge_semantic_planner import LLMSemanticPlanningAgent
+from materials2textbook.agents.knowledge_semantic_planner import LLMSemanticPlanningAgent, SemanticPlannerContextOverflow
 from materials2textbook.knowledge_map.availability import (
     cross_requirements_available,
     self_requirements_available,
@@ -46,6 +46,7 @@ class SemanticPlanningEvaluation:
     normalizations: list[dict[str, Any]] = field(default_factory=list)
     prerequisite_audit: list[dict[str, Any]] = field(default_factory=list)
     call_counts: dict[str, int] = field(default_factory=dict)
+    budget_audit: list[dict[str, Any]] = field(default_factory=list)
 
 
 def evaluate_semantic_planning(
@@ -129,6 +130,7 @@ def evaluate_semantic_planning(
         normalizations=normalizations,
         prerequisite_audit=prerequisite_audit,
         call_counts=dict(agent.call_counts),
+        budget_audit=list(getattr(agent, "budget_audit", [])),
     )
 
 
@@ -863,7 +865,11 @@ def _safe_call(call, rejected: list[dict[str, Any]], stage: str) -> dict:
     try:
         return call()
     except Exception as exc:
-        rejected.append({"stage": stage, "reason": "planner_call_failed", "error": str(exc)[:500]})
+        record = {"stage": stage, "reason": "planner_call_failed", "error": str(exc)[:500]}
+        if isinstance(exc, SemanticPlannerContextOverflow):
+            record["reason"] = SemanticPlannerContextOverflow.code
+            record["budget_audit"] = dict(exc.audit)
+        rejected.append(record)
         return {}
 
 

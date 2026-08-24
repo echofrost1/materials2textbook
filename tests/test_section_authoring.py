@@ -208,6 +208,17 @@ def test_fake_writer_materializes_one_coherent_body_and_maps_obligations_occurre
     assert book_plan_deep_equal(plan, _plan())
 
 
+def test_single_occurrence_body_without_explicit_association_gets_deterministic_mapping() -> None:
+    plan, _, packet, brief = _inputs(
+        constraints=[{"occurrence_id": "occ-1", "role": "TEACH"}]
+    )
+    draft = _draft(brief, body="The operation is explained and checked against the documented evidence.")
+    rendered = author_section(brief, packet, lambda _brief: draft)
+
+    assert rendered.occurrence_span_map["occ-1"][0]["start"] == 0
+    assert rendered.generation_provenance["model_authored_spans"] is False
+
+
 def test_case_exercise_assessment_and_summary_requirements_are_not_silent() -> None:
     plan, _, packet, brief = _inputs(plan=_plan(needs_case=True, needs_exercises=True))
     assert brief.case_activity_requirement == "REQUIRED"
