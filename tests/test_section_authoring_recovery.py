@@ -68,7 +68,7 @@ def _all_obligation_block(brief, text: str):
         "text": text,
         "intended_obligation_ids": ids,
         "intended_occurrence_ids": ["occ-1"],
-        "evidence_ids": ["chunk-1"],
+        "evidence_ids": ["E1"],
     }
 
 

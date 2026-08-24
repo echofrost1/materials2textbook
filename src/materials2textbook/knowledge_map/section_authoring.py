@@ -53,6 +53,7 @@ from materials2textbook.schemas import (
 RENDERED = "RENDERED"
 RENDERED_PARTIAL = "RENDERED_PARTIAL"
 BLOCKED_CORE_SOURCE_GAP = "BLOCKED_CORE_SOURCE_GAP"
+INVALID_EVIDENCE_REFERENCE = "INVALID_EVIDENCE_REFERENCE"
 
 
 class SectionAuthoringError(ValueError):
@@ -72,6 +73,8 @@ def build_section_authoring_messages(
     """
 
     chunk_by_id = {item.chunk_id: item for item in evidence_chunks}
+    evidence_aliases = build_evidence_alias_map(packet)
+    alias_by_id = {evidence_id: alias for alias, evidence_id in evidence_aliases.items()}
     bindings = {item.obligation_id: item for item in packet.obligation_bindings}
     obligations: list[dict[str, Any]] = []
     for item in brief.all_obligations:
@@ -90,6 +93,7 @@ def build_section_authoring_messages(
                 for evidence_id in binding.accepted_evidence_ids
                 if evidence_id in chunk_by_id
             ]
+        accepted_ids = [str(value) for value in binding.accepted_evidence_ids]
         obligations.append(
             {
                 "obligation_id": item.obligation_id,
@@ -97,7 +101,10 @@ def build_section_authoring_messages(
                 "required": item.required,
                 "objective": item.objective,
                 "evidence_status": binding.status,
-                "authorized_evidence_ids": list(binding.accepted_evidence_ids),
+                # The writer must never receive source EvidenceChunk IDs.  It
+                # can only cite the packet-local aliases; deterministic code
+                # resolves them after the model returns.
+                "authorized_evidence_aliases": [alias_by_id[value] for value in accepted_ids if value in alias_by_id],
                 "evidence_spans": spans,
                 "forbidden_scope": (
                     "all professional claims for this obligation"
@@ -132,6 +139,16 @@ def build_section_authoring_messages(
         },
         "obligations": obligations,
         "source_gaps": [deepcopy(dict(item)) for item in brief.source_gaps],
+        "evidence_aliases": [
+            {
+                "alias": alias,
+                "title": str(chunk_by_id[evidence_id].title or ""),
+                "summary": str(chunk_by_id[evidence_id].summary or ""),
+                "excerpt": str(chunk_by_id[evidence_id].content or "")[:240],
+            }
+            for alias, evidence_id in evidence_aliases.items()
+            if evidence_id in chunk_by_id
+        ],
     }
     system = (
         "You are the section-level author for a vocational digital textbook. "
@@ -146,11 +163,12 @@ def build_section_authoring_messages(
     user = (
         "Return exactly this shape:\n"
         '{"blocks":[{"block_id":"b01","channel":"body|case_activity|exercise|assessment|summary",'
-        '"text":"student-visible text","intended_obligation_ids":[],"intended_occurrence_ids":[],"evidence_ids":[]}],'
+        '"text":"student-visible text","intended_obligation_ids":[],"intended_occurrence_ids":[],"evidence_ids":["E1"]}],'
         '"generation_provenance":{"writer":"section-qwen"}}\n\n'
         "The blocks array is the complete section in reading order. Every block "
         "must contain all six block keys. Do not return body/summary/offset/span "
-        "fields outside blocks. Evidence IDs on a block must be authorized for "
+        "fields outside blocks. Evidence references on a block must be packet-local "
+        "aliases (E1, E2, ...), never real EvidenceChunk IDs, and must be authorized for "
         "every obligation named by that block. For PARTIAL evidence, write only "
         "the supported portion; for SOURCE_GAP, do not write a professional fact. "
         "Make the teaching sequence natural and concrete when the evidence "
@@ -159,6 +177,25 @@ def build_section_authoring_messages(
         "IMMUTABLE AUTHORING CONTRACT:\n" + json.dumps(contract, ensure_ascii=False, indent=2)
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_evidence_alias_map(packet: SectionEvidencePacket) -> dict[str, str]:
+    """Return the stable writer-local alias map for one evidence packet.
+
+    Aliases are intentionally derived only from the packet's authorized pool,
+    in packet order.  The map is a presentation boundary: real chunk IDs stay
+    in deterministic audit/materialization state and are never sent to Qwen.
+    """
+
+    ordered_ids: list[str] = []
+    for evidence_id in (
+        *packet.authorized_primary_evidence_ids,
+        *packet.authorized_reference_evidence_ids,
+    ):
+        value = str(evidence_id or "").strip()
+        if value and value not in ordered_ids:
+            ordered_ids.append(value)
+    return {f"E{index}": evidence_id for index, evidence_id in enumerate(ordered_ids, start=1)}
 
 
 def parse_section_authoring_response(raw: str) -> dict[str, Any]:
@@ -538,12 +575,14 @@ def materialize_section_draft(
         if _constraint_value(item, "occurrence_id")
     }
     binding_by_id = {item.obligation_id: item for item in packet.obligation_bindings}
+    evidence_aliases = build_evidence_alias_map(packet)
     blocks = _normalize_writer_blocks(
         raw_blocks,
         allowed_obligation_ids=allowed_obligation_ids,
         allowed_occurrence_ids=allowed_occurrence_ids,
         brief=brief,
         binding_by_id=binding_by_id,
+        evidence_aliases=evidence_aliases,
     )
 
     # Blocks are the only source for every student-visible section field.
@@ -626,6 +665,7 @@ def materialize_section_draft(
         "brief_id": brief.brief_id,
         "packet_id": packet.packet_id,
         "evidence_scope_expanded": False,
+        "writer_evidence_aliases": dict(evidence_aliases),
         "internal_labels_rendered": False,
         "writer_replanned": False,
         "writer_contract": "ordered_blocks_only",
@@ -756,6 +796,7 @@ def _normalize_writer_blocks(
     allowed_occurrence_ids: set[str],
     brief: SectionAuthoringBrief,
     binding_by_id: Mapping[str, ObligationEvidenceBinding],
+    evidence_aliases: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     """Validate the model's semantic block declarations.
 
@@ -780,7 +821,13 @@ def _normalize_writer_blocks(
         seen.add(block_id)
         obligation_ids = _block_id_list(raw.get("intended_obligation_ids"), "intended_obligation_ids", block_id)
         occurrence_ids = _block_id_list(raw.get("intended_occurrence_ids"), "intended_occurrence_ids", block_id)
-        evidence_ids = tuple(_clean_strings(raw.get("evidence_ids") or ()))
+        evidence_aliases_in_block = tuple(_clean_strings(raw.get("evidence_ids") or ()))
+        unknown_aliases = sorted(set(evidence_aliases_in_block) - set(evidence_aliases))
+        if unknown_aliases:
+            raise SectionAuthoringError(
+                f"{INVALID_EVIDENCE_REFERENCE}: block {block_id} contains unknown aliases {unknown_aliases}"
+            )
+        evidence_ids = tuple(evidence_aliases[alias] for alias in evidence_aliases_in_block)
         unknown_obligations = sorted(set(obligation_ids) - allowed_obligation_ids)
         if unknown_obligations:
             raise SectionAuthoringError(f"block maps unknown obligations: {unknown_obligations}")

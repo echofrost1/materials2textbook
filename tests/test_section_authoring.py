@@ -15,10 +15,13 @@ from materials2textbook.knowledge_map.evidence_packet import (
 from materials2textbook.knowledge_map.outline import book_plan_deep_equal, book_plan_fingerprint
 from materials2textbook.knowledge_map.section_authoring import (
     BLOCKED_CORE_SOURCE_GAP,
+    INVALID_EVIDENCE_REFERENCE,
     RENDERED,
     RENDERED_PARTIAL,
     SectionAuthoringError,
     author_section,
+    build_evidence_alias_map,
+    build_section_authoring_messages,
     build_section_authoring_brief,
     materialize_section_draft,
 )
@@ -139,7 +142,8 @@ def _draft(brief, *, body: str = "The basic operation follows the documented pro
             "text": body,
             "intended_obligation_ids": supported,
             "intended_occurrence_ids": [],
-            "evidence_ids": [sorted(common)[0]],
+            # Writer-facing evidence references are packet-local aliases.
+            "evidence_ids": ["E1"],
         }]
     else:
         blocks = []
@@ -149,7 +153,7 @@ def _draft(brief, *, body: str = "The basic operation follows the documented pro
                 "text": body,
                 "intended_obligation_ids": [obligation_id],
                 "intended_occurrence_ids": [],
-                "evidence_ids": [brief.authorized_evidence_per_obligation[obligation_id][0]],
+                "evidence_ids": ["E1"],
             })
     draft = {
         "blocks": blocks,
@@ -182,6 +186,23 @@ def test_section_brief_compiles_obligations_and_occurrence_constraints() -> None
     assert brief.provenance["writer_may_replan"] is False
     assert book_plan_deep_equal(plan, _plan())
     assert blueprint.blueprint_id == packet.blueprint_id
+
+
+def test_writer_contract_exposes_packet_aliases_not_real_chunk_ids() -> None:
+    _, _, packet, brief = _inputs()
+    messages = build_section_authoring_messages(brief, packet, [_chunk()])
+    user_prompt = messages[1]["content"]
+    assert "E1" in user_prompt
+    assert "chunk-1" not in user_prompt
+    assert build_evidence_alias_map(packet) == {"E1": "chunk-1"}
+
+
+def test_real_chunk_id_is_rejected_as_writer_evidence_reference() -> None:
+    _, _, packet, brief = _inputs()
+    draft = _draft(brief)
+    draft["blocks"][0]["evidence_ids"] = ["chunk-1"]
+    with pytest.raises(SectionAuthoringError, match=INVALID_EVIDENCE_REFERENCE):
+        materialize_section_draft(brief, packet, draft)
 
 
 def test_fake_writer_materializes_one_coherent_body_and_maps_obligations_occurrences_and_evidence() -> None:
@@ -245,7 +266,7 @@ def test_case_exercise_assessment_and_summary_requirements_are_not_silent() -> N
                 "text": text,
                 "intended_obligation_ids": [obligation.obligation_id],
                 "intended_occurrence_ids": [],
-                "evidence_ids": [allowed],
+                "evidence_ids": ["E1"],
             })
     rendered = author_section(brief, packet, lambda _brief: draft)
     assert rendered.case_activity
@@ -310,7 +331,7 @@ def test_unauthorized_evidence_and_unknown_span_mapping_are_rejected() -> None:
     first_obligation = brief.required_obligations[0].obligation_id
     unauthorized = _draft(brief, body=body)
     unauthorized["blocks"][0]["evidence_ids"] = ["not-authorized"]
-    with pytest.raises(SectionAuthoringError, match="unauthorized evidence"):
+    with pytest.raises(SectionAuthoringError, match="INVALID_EVIDENCE_REFERENCE"):
         materialize_section_draft(brief, packet, unauthorized)
 
     unknown = _draft(
@@ -346,7 +367,7 @@ def test_deterministic_materialization_runs_local_claim_audit_and_keeps_grant_or
 def test_source_gap_block_cannot_claim_factual_content() -> None:
     _, _, packet, brief = _inputs(chunks=[], authorized=[])
     source_gap = brief.required_obligations[0].obligation_id
-    with pytest.raises(SectionAuthoringError, match="source-gap obligation"):
+    with pytest.raises(SectionAuthoringError, match="INVALID_EVIDENCE_REFERENCE"):
         materialize_section_draft(
             brief,
             packet,

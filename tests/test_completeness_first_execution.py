@@ -153,7 +153,9 @@ def test_section_execution_grants_only_after_materialized_local_verification() -
 
     def writer(brief, packet, chunks):
         obligation_ids = [item.obligation_id for item in brief.required_obligations]
-        evidence_id = next(iter(brief.authorized_evidence_per_obligation.values()))[0]
+        # Section writers cite packet-local aliases; materialization resolves
+        # E1 back to the authorized chunk deterministically.
+        evidence_id = "E1"
         return {
             "blocks": [
                 {
