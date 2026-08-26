@@ -24,6 +24,7 @@ from materials2textbook.knowledge_map.section_authoring import (
     build_evidence_alias_map,
     build_evidence_id_to_alias_map,
     allowed_evidence_aliases_for_block,
+    build_factual_claim_plan,
     build_section_authoring_messages,
     build_section_activity_guidance,
     build_section_authoring_brief,
@@ -204,7 +205,7 @@ def test_writer_contract_exposes_selected_evidence_content_not_aliases_or_chunk_
     assert build_evidence_alias_map(packet) == {"E1": "chunk-1"}
 
 
-def test_supported_claim_envelope_is_internal_and_writer_visible_without_ids() -> None:
+def test_supported_claim_envelope_is_internal_and_not_a_writer_fact_source() -> None:
     _, _, packet, brief = _inputs()
     assert brief.supported_claim_envelopes
     envelope = brief.supported_claim_envelopes[0]
@@ -214,8 +215,25 @@ def test_supported_claim_envelope_is_internal_and_writer_visible_without_ids() -
     assert "supporting_evidence_ids" not in writer_view
     messages = build_section_authoring_messages(brief, packet, [_chunk()])
     prompt = "\n".join(item["content"] for item in messages)
-    assert "supported_claim_envelope" in prompt
+    assert "supported_claim_envelope" not in prompt
+    assert "supported_claim_envelopes" not in prompt
+    assert "factual_claim_plan" in prompt
     assert "Do not complete missing technical details from general knowledge" in prompt
+    assert "chunk-1" not in prompt
+
+
+def test_factual_claim_plan_exposes_only_audited_propositions_without_raw_evidence() -> None:
+    _, _, packet, brief = _inputs()
+    plan = build_factual_claim_plan(brief, packet, [_chunk()])
+    assert plan.provenance["approved_count"] > 0
+    assert all(item.status == "SUPPORTED" for item in plan.approved_claims)
+    writer_view = plan.writer_view()
+    assert writer_view["approved_claims"]
+    assert all("supporting_evidence_ids" not in item for item in writer_view["approved_claims"])
+    prompt = build_section_authoring_messages(brief, packet, [_chunk()])[1]["content"]
+    assert "factual_claim_plan" in prompt
+    assert "approved_claims" in prompt
+    assert "selected_evidence_contents" not in prompt
     assert "chunk-1" not in prompt
 
 

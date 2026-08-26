@@ -332,6 +332,8 @@ def execute_verified_sections(
     from materials2textbook.knowledge_map.outline import book_plan_fingerprint
     from materials2textbook.knowledge_map.section_authoring import (
         author_section,
+        attach_factual_claim_plan,
+        build_factual_claim_plan,
         build_section_authoring_brief,
     )
     from materials2textbook.knowledge_map.section_authoring_recovery import (
@@ -521,6 +523,13 @@ def execute_verified_sections(
                 occurrence_constraints=constraints,
                 prior_verified_support=_state_dict(state),
             )
+            factual_claim_plan = build_factual_claim_plan(
+                brief,
+                packet,
+                chunks,
+                claim_judge=semantic_entailment_judge,
+            )
+            brief = attach_factual_claim_plan(brief, factual_claim_plan)
         except Exception as exc:
             for seed, _occurrence, _delta, _zero in compiled_items:
                 section_blocked.append(_section_block(seed, "SECTION_AUTHORING_INPUT_FAILED", f"{type(exc).__name__}: {exc}"))
@@ -577,15 +586,119 @@ def execute_verified_sections(
         # local contraction can therefore repair the exact text that will be
         # wrapped and checked below; it never changes the Brief, Packet,
         # occurrence role, or evidence ownership.
+        #
+        # The section materializer's audit is intentionally permissive about
+        # pedagogical blocks and plan-approved claim spans.  The sequential
+        # grant gate below is stricter: it audits each occurrence with its
+        # own brief and the complete packet-authorized evidence.  Run that
+        # same occurrence-local semantic audit once before recovery and feed
+        # its block-local records into the existing recovery classifier.  In
+        # this way a claim that would otherwise be discovered only after the
+        # recovery window (for example an unsupported exercise instruction)
+        # can receive the same bounded local contraction as any other claim.
+        def _occurrence_preflight_claim_audit() -> list[dict[str, Any]]:
+            records: list[dict[str, Any]] = []
+            for candidate_seed, candidate_occurrence, candidate_delta, candidate_zero in compiled_items:
+                if candidate_zero is not None:
+                    continue
+                candidate_spans = tuple(rendered.occurrence_span_map.get(candidate_occurrence.occurrence_id, ()))
+                if not candidate_spans:
+                    continue
+                candidate_source = sources[candidate_seed.source_knowledge_point_id]
+                candidate_point = points[candidate_occurrence.knowledge_id]
+                candidate_brief = build_verified_occurrence_writing_brief(
+                    occurrence=candidate_occurrence,
+                    delta=candidate_delta,
+                    source=candidate_source,
+                    point=candidate_point,
+                    verified_before=state,
+                )
+                candidate_brief = _brief_with_materialized_evidence(
+                    candidate_brief,
+                    candidate_spans,
+                    packet,
+                    candidate_occurrence.occurrence_id,
+                    brief,
+                )
+                candidate_body = "\\n\\n".join(
+                    str(item.get("text") or "").strip()
+                    for item in candidate_spans
+                    if str(item.get("text") or "").strip()
+                ).strip()
+                candidate_wrapped = wrap_rendered_occurrence(
+                    candidate_brief,
+                    candidate_body,
+                    generation_provenance=str(rendered.generation_provenance.get("writer") or "section-writer"),
+                )
+                audit = audit_rendered_claims(
+                    markdown=candidate_wrapped,
+                    briefs=[asdict(candidate_brief)],
+                    evidence_by_id=evidence_by_id,
+                    artifact_root="runtime-section-preflight",
+                    judge=semantic_entailment_judge,
+                    semantic_routing_categories=CALIBRATED_SEMANTIC_ROUTING_CATEGORIES,
+                )
+                block_ids = [
+                    str(item.get("block_id") or item.get("span_id") or "").strip()
+                    for item in candidate_spans
+                    if str(item.get("block_id") or item.get("span_id") or "").strip()
+                ]
+                for index, record in enumerate(audit.records):
+                    item = record.to_dict()
+                    # A source-fact claim with no packet-authorized evidence
+                    # cannot be rescued by a semantic judge.  Treat it as an
+                    # occurrence-local unsupported claim before recovery;
+                    # this keeps assessment/case text from becoming an
+                    # implicit factual channel after a local rewrite.
+                    if (
+                        not tuple(item.get("authorized_evidence_ids") or ())
+                        and str(item.get("content_type") or "")
+                        in {"SOURCE_FACT", "UNSUPPORTED_DOMAIN_CLAIM"}
+                    ):
+                        item["final_status"] = ClaimStatus.UNSUPPORTED
+                        item["semantic_result"] = ClaimStatus.UNSUPPORTED
+                        item["resolution"] = "DETERMINISTIC"
+                        item["rationale"] = "source-fact claim has no authorized packet evidence"
+                        item["unsupported_part"] = claim_text = str(
+                            item.get("claim_text") or item.get("source_span") or ""
+                        )
+                    claim_text = str(item.get("claim_text") or item.get("source_span") or "")
+                    matching_block = ""
+                    for span in candidate_spans:
+                        block_id = str(span.get("block_id") or span.get("span_id") or "").strip()
+                        span_text = str(span.get("text") or "")
+                        if block_id and claim_text and claim_text in span_text:
+                            matching_block = block_id
+                            break
+                    if not matching_block:
+                        matching_block = block_ids[min(index, len(block_ids) - 1)] if block_ids else ""
+                    item["source_occurrence_id"] = candidate_occurrence.occurrence_id
+                    # Keep the synthetic claim suffix free of ``:claim:``
+                    # markers.  The recovery classifier intentionally parses
+                    # the last marker to recover the block id; embedding the
+                    # original claim id (which itself contains that marker)
+                    # would turn ``b01`` into ``b01:claim:...`` and make the
+                    # exact block patch fail closed.
+                    item["occurrence_id"] = (
+                        f"{section_id}:{matching_block}:claim:{index}"
+                        if matching_block
+                        else candidate_occurrence.occurrence_id
+                    )
+                    records.append(item)
+            return records
+
         initial_rendered = rendered
-        recovery_issues = classify_section_recovery(rendered, brief, packet)
-        recovery_proposals = plan_section_recovery(
-            recovery_issues,
-            brief=brief,
-            packet=packet,
-        )
+        recovery_issues: list[Any] = []
+        recovery_proposals: list[Any] = []
         recovery_attempts: list[dict[str, Any]] = []
+        recovery_rounds: list[dict[str, Any]] = []
         working_draft = deepcopy(draft)
+        # A block can have several independent unsupported claims.  Recovery
+        # proposals currently share the stable block-level proposal id, so
+        # use the exact target text as part of the de-duplication key; this
+        # lets one bounded round contract each distinct offending span while
+        # still preventing the same target from looping across rounds.
+        seen_proposal_ids: set[tuple[str, str]] = set()
 
         def _section_occurrence_conformance(candidate: Any) -> dict[str, Any]:
             for candidate_seed, candidate_occurrence, candidate_delta, candidate_zero in compiled_items:
@@ -633,68 +746,116 @@ def execute_verified_sections(
                     }
             return {"overall": ConformanceStatus.MATCH}
 
-        for proposal in recovery_proposals:
-            if not proposal.retry_allowed:
-                continue
-            attempt_proposal = proposal
-            replacement_text = None
-            # A recovery writer may only return a replacement for this exact
-            # block.  It receives the immutable Brief/Packet and the original
-            # draft; it cannot replan roles, obligations, or evidence scope.
-            # If it returns nothing, the existing deterministic contraction is
-            # retained as the fail-closed fallback.
-            if local_recovery_writer is not None and proposal.action == "CONTRACT_BLOCK":
-                try:
-                    replacement_text = local_recovery_writer(
-                        proposal,
-                        brief,
-                        packet,
-                        draft,
-                        chunks,
-                    )
-                except Exception as exc:
-                    replacement_text = None
-                    proposal_provenance = dict(proposal.provenance)
-                    proposal_provenance["local_recovery_writer_error"] = f"{type(exc).__name__}: {exc}"
-                    attempt_proposal = replace(proposal, provenance=proposal_provenance)
-                if replacement_text and replacement_text.strip():
-                    proposal_provenance = dict(attempt_proposal.provenance)
-                    proposal_provenance.update({
-                        "recovery_strategy": "minimal_supported_rewrite",
-                        "same_brief": True,
-                        "same_packet": True,
-                        "same_evidence_scope": True,
-                    })
-                    attempt_proposal = replace(
-                        attempt_proposal,
-                        action=MINIMAL_SUPPORTED_REWRITE,
-                        provenance=proposal_provenance,
-                    )
-                else:
-                    replacement_text = None
-            attempt = apply_section_recovery(
+        def _apply_recovery_round(proposals: Iterable[Any]) -> bool:
+            nonlocal working_draft, rendered
+            accepted_any = False
+            for proposal in proposals:
+                proposal_key = (proposal.proposal_id, proposal.target_text)
+                if not proposal.retry_allowed or proposal_key in seen_proposal_ids:
+                    continue
+                seen_proposal_ids.add(proposal_key)
+                attempt_proposal = proposal
+                replacement_text = None
+                # A recovery writer may only return a replacement for this
+                # exact block.  It receives the immutable Brief/Packet and
+                # the current draft; it cannot replan roles, obligations, or
+                # evidence scope.  If it returns nothing, the existing
+                # deterministic contraction remains the fail-closed fallback.
+                if local_recovery_writer is not None and proposal.action == "CONTRACT_BLOCK":
+                    try:
+                        replacement_text = local_recovery_writer(
+                            proposal,
+                            brief,
+                            packet,
+                            working_draft,
+                            chunks,
+                        )
+                    except Exception as exc:
+                        replacement_text = None
+                        proposal_provenance = dict(proposal.provenance)
+                        proposal_provenance["local_recovery_writer_error"] = f"{type(exc).__name__}: {exc}"
+                        attempt_proposal = replace(proposal, provenance=proposal_provenance)
+                    if replacement_text and replacement_text.strip():
+                        proposal_provenance = dict(attempt_proposal.provenance)
+                        proposal_provenance.update({
+                            "recovery_strategy": "minimal_supported_rewrite",
+                            "same_brief": True,
+                            "same_packet": True,
+                            "same_evidence_scope": True,
+                        })
+                        attempt_proposal = replace(
+                            attempt_proposal,
+                            action=MINIMAL_SUPPORTED_REWRITE,
+                            provenance=proposal_provenance,
+                        )
+                    else:
+                        replacement_text = None
+                attempt = apply_section_recovery(
+                    brief=brief,
+                    packet=packet,
+                    original_draft=working_draft,
+                    proposal=attempt_proposal,
+                    replacement_text=replacement_text,
+                    claim_judge=semantic_entailment_judge,
+                    occurrence_conformance_checker=_section_occurrence_conformance,
+                    allow_unresolved_other_issues=True,
+                )
+                recovery_attempts.append(attempt.to_dict())
+                if attempt.status == ACCEPTED and attempt.post_rendered is not None:
+                    try:
+                        working_draft = apply_recovery_patch_to_draft(
+                            working_draft,
+                            attempt_proposal,
+                            replacement_text=replacement_text,
+                        )
+                    except Exception:
+                        # The acceptance gate and deterministic patch helper
+                        # share the same operation; a mismatch is fail-closed.
+                        break
+                    rendered = attempt.post_rendered
+                    accepted_any = True
+            return accepted_any
+
+        # A local recovery may need a second pass when removing one
+        # unsupported sentence exposes another claim in the same block.  Two
+        # bounded rounds are enough to preserve the fail-closed behavior while
+        # avoiding an unbounded writer/recovery loop.
+        for round_index in range(2):
+            preflight_claim_audit = _occurrence_preflight_claim_audit()
+            if preflight_claim_audit:
+                provenance = dict(rendered.generation_provenance)
+                provenance["local_claim_evidence_audit"] = preflight_claim_audit
+                provenance["local_claim_audit_source"] = "occurrence_local_preflight"
+                rendered = replace(rendered, generation_provenance=provenance)
+            round_issues = classify_section_recovery(rendered, brief, packet)
+            round_proposals = plan_section_recovery(
+                round_issues,
                 brief=brief,
                 packet=packet,
-                original_draft=working_draft,
-                proposal=attempt_proposal,
-                replacement_text=replacement_text,
-                claim_judge=semantic_entailment_judge,
-                occurrence_conformance_checker=_section_occurrence_conformance,
-                allow_unresolved_other_issues=True,
             )
-            recovery_attempts.append(attempt.to_dict())
-            if attempt.status == ACCEPTED and attempt.post_rendered is not None:
-                try:
-                    working_draft = apply_recovery_patch_to_draft(
-                        working_draft,
-                        attempt_proposal,
-                        replacement_text=replacement_text,
-                    )
-                except Exception:
-                    # The acceptance gate and deterministic patch helper share
-                    # the same operation; a mismatch is fail-closed.
-                    break
-                rendered = attempt.post_rendered
+            recovery_issues.extend(round_issues)
+            recovery_proposals.extend(round_proposals)
+            if not round_proposals:
+                recovery_rounds.append({
+                    "round": round_index + 1,
+                    "issues": len(round_issues),
+                    "proposals": 0,
+                    "accepted": 0,
+                })
+                break
+            accepted = _apply_recovery_round(round_proposals)
+            recovery_rounds.append({
+                "round": round_index + 1,
+                "issues": len(round_issues),
+                "proposals": len(round_proposals),
+                "accepted": sum(
+                    1
+                    for item in recovery_attempts
+                    if item.get("status") == ACCEPTED
+                ),
+            })
+            if not accepted:
+                break
 
         section_assembly = {
             "section_id": section_id,
@@ -707,6 +868,7 @@ def execute_verified_sections(
                 "issues": [item.to_dict() for item in recovery_issues],
                 "proposals": [item.to_dict() for item in recovery_proposals],
                 "attempts": recovery_attempts,
+                "rounds": recovery_rounds,
                 "auto_applied": any(item.get("status") == ACCEPTED for item in recovery_attempts),
             },
         }

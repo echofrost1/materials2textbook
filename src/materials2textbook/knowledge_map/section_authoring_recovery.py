@@ -564,9 +564,17 @@ def _apply_block_patch(
         if target_index is None or not proposal.target_text:
             raise ValueError("EXACT_TARGET_BLOCK_OR_TEXT_MISSING")
         current = str(blocks[target_index].get("text") or "")
-        if proposal.target_text not in current:
+        # Claim auditors may serialize paragraph boundaries as literal ``\\n``
+        # escapes while the deterministic materializer stores real newline
+        # characters.  Normalize only that representation detail; the target
+        # text itself must still match exactly and no fuzzy replacement is
+        # performed.
+        target_text = proposal.target_text
+        if target_text not in current and "\\n" in target_text:
+            target_text = target_text.replace("\\n", "\n")
+        if target_text not in current:
             raise ValueError("EXACT_TARGET_TEXT_NOT_FOUND")
-        candidate = current.replace(proposal.target_text, "", 1).strip()
+        candidate = current.replace(target_text, "", 1).strip()
         if not candidate:
             blocks.pop(target_index)
         else:

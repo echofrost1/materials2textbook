@@ -9,7 +9,7 @@ does not call a model, change BookPlan/Blueprint/Packet, or export a DigitalBook
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import re
 from typing import Any, Callable, Iterable, Mapping
@@ -66,6 +66,9 @@ def build_section_authoring_messages(
     brief: "SectionAuthoringBrief",
     packet: SectionEvidencePacket,
     evidence_chunks: Iterable[EvidenceChunk],
+    *,
+    factual_claim_plan: "FactualClaimPlan | None" = None,
+    claim_judge: Any | None = None,
 ) -> list[dict[str, str]]:
     """Build the production section-writer contract.
 
@@ -74,29 +77,42 @@ def build_section_authoring_messages(
     occurrence anchors, or evidence outside the packet.
     """
 
-    chunk_by_id = {item.chunk_id: item for item in evidence_chunks}
+    evidence_chunks = tuple(evidence_chunks)
+    factual_claim_plan = factual_claim_plan or brief.factual_claim_plan
+    if factual_claim_plan is None:
+        factual_claim_plan = build_factual_claim_plan(
+            brief,
+            packet,
+            evidence_chunks,
+            claim_judge=claim_judge,
+        )
     bindings = {item.obligation_id: item for item in packet.obligation_bindings}
-    envelope_by_obligation: dict[str, SupportedClaimEnvelope] = {}
-    for envelope in brief.supported_claim_envelopes:
-        for obligation_id in envelope.obligation_ids:
-            envelope_by_obligation[obligation_id] = envelope
+    approved_by_obligation: dict[str, list[FactualClaimPlanItem]] = {}
+    approved_by_occurrence: dict[str, list[FactualClaimPlanItem]] = {}
+    for claim in factual_claim_plan.approved_claims:
+        for obligation_id in claim.obligation_ids:
+            approved_by_obligation.setdefault(obligation_id, []).append(claim)
+        for occurrence_id in claim.occurrence_ids:
+            approved_by_occurrence.setdefault(occurrence_id, []).append(claim)
+
+    def _claim_view(claim: FactualClaimPlanItem) -> dict[str, Any]:
+        # Keep the writer view compact and free of evidence identifiers.  The
+        # statement is already claim-audit approved; occurrence/knowledge
+        # associations tell the model which contribution the statement serves.
+        return {
+            "claim_id": claim.claim_id,
+            "statement": claim.statement,
+            "occurrence_ids": list(claim.occurrence_ids),
+            "target_knowledge_ids": list(claim.target_knowledge_ids),
+        }
     obligations: list[dict[str, Any]] = []
     for item in brief.all_obligations:
         binding = bindings[item.obligation_id]
-        spans = [
-            str(span.get("text") or "").strip()
-            for span in binding.accepted_evidence_spans
-            if str(span.get("text") or "").strip()
+        approved_claims = [
+            claim
+            for claim in factual_claim_plan.approved_claims
+            if item.obligation_id in claim.obligation_ids
         ]
-        # A packet span is authoritative.  Falling back to the supplied chunk
-        # text is only useful for packets produced by older deterministic
-        # fixtures that did not persist an excerpt; IDs remain the whitelist.
-        if not spans:
-            spans = [
-                str(chunk_by_id[evidence_id].content or chunk_by_id[evidence_id].summary or "").strip()
-                for evidence_id in binding.accepted_evidence_ids
-                if evidence_id in chunk_by_id
-            ]
         obligations.append(
             {
                 "obligation_id": item.obligation_id,
@@ -104,16 +120,10 @@ def build_section_authoring_messages(
                 "required": item.required,
                 "objective": item.objective,
                 "evidence_status": binding.status,
-                # Evidence ownership is deterministic metadata.  The model
-                # receives only the selected source excerpts needed for this
-                # obligation; it never receives packet aliases/IDs and never
-                # has to choose them in its response.
-                "selected_evidence_contents": spans[:12],
-                "supported_claim_envelope": (
-                    envelope_by_obligation[item.obligation_id].to_dict(include_internal_ids=False)
-                    if item.obligation_id in envelope_by_obligation
-                    else {}
-                ),
+                # The writer receives only already-approved factual claims,
+                # never raw evidence text or evidence identifiers.
+                "approved_factual_claim_ids": [claim.claim_id for claim in approved_claims],
+                "approved_factual_claims": [claim.claim_id for claim in approved_claims],
                 "forbidden_scope": (
                     "all professional claims for this obligation"
                     if binding.status == SOURCE_GAP
@@ -141,6 +151,13 @@ def build_section_authoring_messages(
         "required_current_contribution": list(brief.required_current_contribution),
         "activity_guidance": build_section_activity_guidance(brief),
         "occurrence_constraints": [deepcopy(dict(item)) for item in brief.occurrence_constraints],
+        "occurrence_factual_claims": [
+            {
+                "occurrence_id": occurrence_id,
+                "approved_factual_claim_ids": [claim.claim_id for claim in claims],
+            }
+            for occurrence_id, claims in approved_by_occurrence.items()
+        ],
         "module_requirements": {
             "case_activity": brief.case_activity_requirement,
             "exercise": brief.exercise_requirement,
@@ -153,30 +170,30 @@ def build_section_authoring_messages(
                 "block_id": f"obligation-{index:02d}",
                 "intended_obligation_ids": [item.obligation_id],
                 "teaching_responsibility": item.objective,
-                "selected_evidence_contents": [
-                    str(span.get("text") or "").strip()[:256]
-                    for span in bindings[item.obligation_id].accepted_evidence_spans
-                    if str(span.get("text") or "").strip()
-                ][:12],
-                "supported_claim_envelope": (
-                    envelope_by_obligation[item.obligation_id].to_dict(include_internal_ids=False)
-                    if item.obligation_id in envelope_by_obligation
-                    else {}
-                ),
+                "approved_factual_claim_ids": [
+                    claim.claim_id
+                    for claim in factual_claim_plan.approved_claims
+                    if item.obligation_id in claim.obligation_ids
+                ],
+                "approved_factual_claims": [
+                    claim.claim_id
+                    for claim in approved_by_obligation.get(item.obligation_id, [])
+                ],
+                "intended_occurrence_ids": list(item.linked_occurrence_ids),
             }
             for index, item in enumerate(brief.all_obligations, start=1)
         ],
         "source_gaps": [deepcopy(dict(item)) for item in brief.source_gaps],
-        "supported_claim_envelopes": [
-            item.to_dict(include_internal_ids=False)
-            for item in brief.supported_claim_envelopes
-        ],
+        "factual_claim_plan": factual_claim_plan.writer_view(),
     }
     system = (
         "You are the section-level author for a vocational digital textbook. "
         "Write one coherent student-visible section from this immutable contract. "
-        "Use only the evidence spans supplied in the contract; do not use "
-        "outside knowledge or broaden evidence ownership. Do not replan roles, "
+        "Use only the approved factual claim plan supplied in the contract for "
+        "technical propositions; do not use outside knowledge or broaden evidence "
+        "ownership. The factual claim plan is the sole domain-fact input. Do not "
+        "treat the internal claim envelope or evidence packet as additional material. "
+        "Do not replan roles, "
         "facets, prerequisites, obligations, or module requirements. Internal "
         "labels such as EXPLAIN, PERFORM, ANALYZE, TEACH, APPLY, RECALL, and "
         "EXTEND must never appear in student-visible text. Do not complete "
@@ -199,7 +216,7 @@ def build_section_authoring_messages(
         "optional when obligations use different evidence. For PARTIAL evidence, write only "
         "the supported portion; for SOURCE_GAP, do not write a professional fact. "
         "The planned_block_contracts list is deterministic guidance containing the "
-        "selected source excerpts for each planned responsibility. "
+        "approved factual claim plan for each planned responsibility. "
         "Make the teaching sequence natural and concrete when the evidence "
         "supports it: move from a fact to its explanation, relation, and a "
         "student takeaway. Teach the section_new_contribution first; recap "
@@ -209,10 +226,10 @@ def build_section_authoring_messages(
         "write system language such as source, evidence, semantic, occurrence, "
         "prerequisite, or source gap for students. Include procedures, conditions, "
         "observable results, case/activity, exercise, assessment, and summary only "
-        "when the immutable contract requires them. The supported claim envelope "
-        "controls WHAT technical facts, relations, conditions, modalities, and "
-        "professional judgements may be asserted; you control HOW those facts "
-        "are taught. Do not turn a general source statement into a richer scene, "
+        "when the immutable contract requires them. The approved factual claim "
+        "plan controls WHAT technical facts, relations, conditions, modalities, "
+        "and professional judgements may be asserted; you control HOW those facts "
+        "are taught. Do not turn a claim into a richer scene, "
         "complete risk chain, or complete inspection sequence.\n\n"
         "IMMUTABLE AUTHORING CONTRACT:\n" + json.dumps(contract, ensure_ascii=False, indent=2)
     )
@@ -480,6 +497,92 @@ class SupportedClaimEnvelope:
 
 
 @dataclass(frozen=True)
+class FactualClaimPlanItem:
+    """One already-audited factual proposition available to the writer.
+
+    The plan is deliberately narrower than an Evidence Packet.  Evidence
+    ownership remains internal metadata, while the writer receives only the
+    approved proposition text and its obligation association.  A plan item is
+    eligible for prose only when ``status`` is ``SUPPORTED``.
+    """
+
+    claim_id: str
+    block_id: str
+    obligation_ids: tuple[str, ...]
+    statement: str
+    status: str
+    occurrence_ids: tuple[str, ...] = ()
+    target_knowledge_ids: tuple[str, ...] = ()
+    supporting_evidence_ids: tuple[str, ...] = ()
+    content_type: str = ContentType.SOURCE_FACT
+    rationale: str = ""
+    provenance: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self, *, include_internal_ids: bool = True) -> dict[str, Any]:
+        value = {
+            "claim_id": self.claim_id,
+            "block_id": self.block_id,
+            "obligation_ids": list(self.obligation_ids),
+            "statement": self.statement,
+            "status": self.status,
+            "occurrence_ids": list(self.occurrence_ids),
+            "target_knowledge_ids": list(self.target_knowledge_ids),
+            "content_type": self.content_type,
+            "rationale": self.rationale,
+            "provenance": deepcopy(dict(self.provenance)),
+        }
+        if include_internal_ids:
+            value["supporting_evidence_ids"] = list(self.supporting_evidence_ids)
+        return value
+
+
+@dataclass(frozen=True)
+class FactualClaimPlan:
+    """Deterministic, claim-level bridge between evidence and prose."""
+
+    plan_id: str
+    claims: tuple[FactualClaimPlanItem, ...] = ()
+    provenance: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def approved_claims(self) -> tuple[FactualClaimPlanItem, ...]:
+        return tuple(item for item in self.claims if item.status == ClaimStatus.SUPPORTED)
+
+    def to_dict(self, *, include_internal_ids: bool = True) -> dict[str, Any]:
+        return {
+            "plan_id": self.plan_id,
+            "claims": [
+                item.to_dict(include_internal_ids=include_internal_ids)
+                for item in self.claims
+            ],
+            "provenance": deepcopy(dict(self.provenance)),
+        }
+
+    def writer_view(self) -> dict[str, Any]:
+        """Return the plan view safe to place in a model prompt."""
+
+        return {
+            "plan_id": self.plan_id,
+            "approved_claims": [
+                {
+                    "claim_id": item.claim_id,
+                    "block_id": item.block_id,
+                    "obligation_ids": list(item.obligation_ids),
+                    "statement": item.statement,
+                    "status": item.status,
+                    "occurrence_ids": list(item.occurrence_ids),
+                    "target_knowledge_ids": list(item.target_knowledge_ids),
+                }
+                for item in self.approved_claims
+            ],
+            "provenance": {
+                "source_bounded": bool(self.provenance.get("source_bounded")),
+                "approval_rule": self.provenance.get("approval_rule", ""),
+            },
+        }
+
+
+@dataclass(frozen=True)
 class SectionAuthoringBrief:
     """Immutable section-level writing contract compiled from prior overlays."""
 
@@ -511,6 +614,7 @@ class SectionAuthoringBrief:
     assessment_requirement: str = "NOT_APPLICABLE"
     summary_requirement: str = "NOT_APPLICABLE"
     supported_claim_envelopes: tuple[SupportedClaimEnvelope, ...] = ()
+    factual_claim_plan: FactualClaimPlan | None = None
     provenance: Mapping[str, Any] = field(default_factory=dict)
 
     @property
@@ -552,6 +656,11 @@ class SectionAuthoringBrief:
                 item.to_dict(include_internal_ids=True)
                 for item in self.supported_claim_envelopes
             ],
+            "factual_claim_plan": (
+                self.factual_claim_plan.to_dict(include_internal_ids=True)
+                if self.factual_claim_plan is not None
+                else None
+            ),
             "provenance": deepcopy(dict(self.provenance)),
         }
 
@@ -771,6 +880,478 @@ def build_section_authoring_brief(
     )
 
 
+def attach_factual_claim_plan(
+    brief: SectionAuthoringBrief,
+    factual_claim_plan: FactualClaimPlan,
+) -> SectionAuthoringBrief:
+    """Attach a pre-audited claim plan without mutating the immutable brief."""
+
+    return replace(brief, factual_claim_plan=factual_claim_plan)
+
+
+def build_factual_claim_plan(
+    brief: SectionAuthoringBrief,
+    packet: SectionEvidencePacket,
+    evidence_chunks: Iterable[EvidenceChunk],
+    *,
+    claim_judge: Any | None = None,
+    max_claims_per_obligation: int = 6,
+    max_total_claims: int = 24,
+) -> FactualClaimPlan:
+    """Compile and audit the factual propositions available to a section writer.
+
+    Candidate propositions come only from an obligation's already accepted
+    packet spans (or explicit packet support metadata).  Exact source
+    propositions are checked by the existing deterministic claim auditor;
+    non-literal propositions may use the supplied semantic judge.  Only
+    ``SUPPORTED`` items are exposed to prose generation.  This function never
+    retrieves evidence, changes obligations, or broadens ownership.
+    """
+
+    chunk_by_id = {item.chunk_id: item for item in evidence_chunks}
+    binding_by_id = {item.obligation_id: item for item in packet.obligation_bindings}
+    envelope_by_obligation = {
+        obligation_id: envelope
+        for envelope in brief.supported_claim_envelopes
+        for obligation_id in envelope.obligation_ids
+    }
+    occurrence_context = _occurrence_evidence_context(brief, packet, chunk_by_id)
+    claims: list[FactualClaimPlanItem] = []
+    counts: dict[str, int] = {}
+    candidate_total = 0
+    for obligation in brief.all_obligations:
+        if len(claims) >= max_total_claims:
+            break
+        binding = binding_by_id.get(obligation.obligation_id)
+        if binding is None or binding.status == SOURCE_GAP:
+            continue
+        candidates = _factual_claim_candidates(
+            binding,
+            obligation,
+            chunk_by_id=chunk_by_id,
+            occurrence_context=occurrence_context,
+        )
+        candidate_total += len(candidates)
+        for index, (statement, evidence_ids, occurrence_ids) in enumerate(
+            candidates[: min(max_claims_per_obligation, max_total_claims - len(claims))],
+            start=1,
+        ):
+            claim_id = f"{brief.outline_node_id}:{obligation.obligation_id}:fc:{index}"
+            envelope = envelope_by_obligation.get(obligation.obligation_id)
+            audit = _audit_factual_plan_candidate(
+                claim_id=claim_id,
+                statement=statement,
+                evidence_ids=evidence_ids,
+                binding=binding,
+                envelope=envelope,
+                chunk_by_id=chunk_by_id,
+                claim_judge=claim_judge,
+            )
+            status = _plan_status(audit)
+            counts[status] = counts.get(status, 0) + 1
+            claims.append(
+                FactualClaimPlanItem(
+                    claim_id=claim_id,
+                    block_id=f"obligation-{brief.all_obligations.index(obligation) + 1:02d}",
+                    obligation_ids=(obligation.obligation_id,),
+                    statement=statement,
+                    status=status,
+                    occurrence_ids=tuple(occurrence_ids),
+                    target_knowledge_ids=tuple(obligation.target_knowledge_ids),
+                    supporting_evidence_ids=tuple(evidence_ids),
+                    content_type=ContentType.SOURCE_FACT,
+                    rationale=str(audit.get("rationale") or ""),
+                    provenance={
+                        "audit_resolution": audit.get("resolution", ""),
+                        "deterministic_result": audit.get("deterministic_result", ""),
+                        "semantic_result": audit.get("semantic_result", ""),
+                        "source_bounded": True,
+                        "occurrence_local": bool(occurrence_ids),
+                        "occurrence_evidence_authorized": all(
+                            evidence_id in occurrence_context["authorized_ids"]
+                            for evidence_id in evidence_ids
+                        ),
+                    },
+                )
+            )
+    approved = sum(1 for item in claims if item.status == ClaimStatus.SUPPORTED)
+    return FactualClaimPlan(
+        plan_id=f"factual-claim-plan:{brief.brief_id}",
+        claims=tuple(claims),
+        provenance={
+            "generator": "phase5d-deterministic-factual-claim-plan-v2",
+            "source_bounded": True,
+            "approval_rule": "only existing claim-audit SUPPORTED propositions are exposed",
+            "candidate_count": candidate_total,
+            "approved_count": approved,
+            "status_counts": counts,
+            "evidence_scope_expanded": False,
+            "occurrence_local": True,
+        },
+    )
+
+
+def _factual_claim_candidates(
+    binding: ObligationEvidenceBinding,
+    obligation: SectionAuthoringObligation,
+    *,
+    chunk_by_id: Mapping[str, EvidenceChunk] | None = None,
+    occurrence_context: Mapping[str, Any] | None = None,
+) -> list[tuple[str, tuple[str, ...], tuple[str, ...]]]:
+    """Return source propositions interleaved by linked occurrence.
+
+    A section-level obligation can be linked to several occurrences.  Using the
+    first accepted spans for the obligation alone can starve one occurrence of
+    its own teaching facts (for example, safety spans can crowd out equipment
+    facts).  We therefore add only contribution chunks that are already in the
+    packet whitelist, and interleave them by occurrence before the shared
+    obligation spans.  No retrieval or ownership expansion happens here.
+    """
+    chunk_by_id = chunk_by_id or {}
+    context = occurrence_context or {}
+    occurrence_to_ids = context.get("occurrence_to_ids", {})
+    occurrence_terms = context.get("occurrence_terms", {})
+    evidence_to_occurrences = context.get("evidence_to_occurrences", {})
+    linked_occurrences = tuple(
+        occurrence_id
+        for occurrence_id in obligation.linked_occurrence_ids
+        if occurrence_id in occurrence_to_ids
+    )
+
+    rows: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
+    # Contribution evidence is source material already authorized for this
+    # section.  Round-robin order makes the plan retain a small factual slice
+    # for each linked occurrence instead of consuming the cap with one topic.
+    per_occurrence: dict[str, list[tuple[str, tuple[str, ...], tuple[str, ...]]]] = {}
+    for occurrence_id in linked_occurrences:
+        # Do not let the first packet chunk consume the entire per-obligation
+        # claim budget.  A section packet commonly contains a broad safety
+        # chunk followed by a more specific equipment/procedure chunk.  Rank
+        # statements by their deterministic identity-term overlap, then
+        # round-robin across evidence chunks so the plan can retain distinct,
+        # source-backed propositions without expanding ownership.
+        terms = tuple(occurrence_terms.get(occurrence_id, ()))
+        by_evidence: dict[str, list[tuple[str, tuple[str, ...], tuple[str, ...]]]] = {}
+        for evidence_id in occurrence_to_ids.get(occurrence_id, ()):
+            chunk = chunk_by_id.get(evidence_id)
+            if chunk is None:
+                continue
+            statements = _split_source_claims(
+                str(chunk.content or chunk.summary or chunk.title or "")
+            )
+            scored_statements = sorted(
+                statements,
+                key=lambda statement: (
+                    -_statement_relevance_score(statement, terms),
+                    -len(statement),
+                ),
+            )
+            by_evidence[evidence_id] = [
+                (statement, (evidence_id,), (occurrence_id,))
+                for statement in scored_statements
+            ]
+        values: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
+        evidence_order = sorted(
+            by_evidence,
+            key=lambda evidence_id: (
+                -max(
+                    (_statement_relevance_score(item[0], terms) for item in by_evidence[evidence_id]),
+                    default=0,
+                ),
+                evidence_id,
+            ),
+        )
+        cursor = 0
+        while evidence_order:
+            progressed = False
+            for evidence_id in evidence_order:
+                rows_for_evidence = by_evidence[evidence_id]
+                if cursor < len(rows_for_evidence):
+                    values.append(rows_for_evidence[cursor])
+                    progressed = True
+            if not progressed:
+                break
+            cursor += 1
+        per_occurrence[occurrence_id] = values
+    cursor = 0
+    while per_occurrence and any(per_occurrence.values()):
+        progressed = False
+        for occurrence_id in linked_occurrences:
+            values = per_occurrence.get(occurrence_id, [])
+            if cursor < len(values):
+                rows.append(values[cursor])
+                progressed = True
+        if not progressed:
+            break
+        cursor += 1
+
+    support = binding.provenance.get("evidence_set_support", {})
+    support = support if isinstance(support, Mapping) else {}
+    raw_values = support.get("supported_propositions") or support.get("supported_requirements") or ()
+    if isinstance(raw_values, str):
+        raw_values = [raw_values]
+    explicit = [
+        str(value).strip()
+        for value in raw_values
+        if str(value).strip()
+        and "authorized source proposition from the bound evidence" not in str(value)
+    ]
+    evidence_spans = [
+        (str(span.get("evidence_id") or "").strip(), str(span.get("text") or "").strip())
+        for span in binding.accepted_evidence_spans
+        if str(span.get("evidence_id") or "").strip()
+        and str(span.get("text") or "").strip()
+    ]
+    evidence_ids = tuple(dict.fromkeys(item[0] for item in evidence_spans))
+    candidates: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = list(rows)
+    for statement in explicit:
+        matching = tuple(
+            dict.fromkeys(
+                evidence_id
+                for evidence_id, span in evidence_spans
+                if statement in span
+            )
+        ) or evidence_ids
+        matching_occurrences = tuple(
+            dict.fromkeys(
+                occurrence_id
+                for evidence_id in matching
+                for occurrence_id in evidence_to_occurrences.get(evidence_id, ())
+            )
+        )
+        candidates.append((statement[:360], matching, matching_occurrences))
+    for evidence_id, span in evidence_spans:
+        for statement in _split_source_claims(span):
+            candidates.append(
+                (
+                    statement,
+                    (evidence_id,),
+                    tuple(evidence_to_occurrences.get(evidence_id, ())),
+                )
+            )
+    deduped: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
+    index_by_key: dict[str, int] = {}
+    for statement, ids, occurrence_ids in candidates:
+        key = re.sub(r"\s+", "", statement)
+        if not key:
+            continue
+        if key in index_by_key:
+            index = index_by_key[key]
+            old_statement, old_ids, old_occurrence_ids = deduped[index]
+            deduped[index] = (
+                old_statement,
+                tuple(dict.fromkeys((*old_ids, *ids))),
+                tuple(dict.fromkeys((*old_occurrence_ids, *occurrence_ids))),
+            )
+            continue
+        index_by_key[key] = len(deduped)
+        deduped.append((statement, tuple(dict.fromkeys(ids)), tuple(dict.fromkeys(occurrence_ids))))
+    return deduped
+
+
+def _occurrence_evidence_context(
+    brief: SectionAuthoringBrief,
+    packet: SectionEvidencePacket,
+    chunk_by_id: Mapping[str, EvidenceChunk],
+) -> dict[str, Any]:
+    """Compile occurrence contribution evidence within the packet whitelist."""
+
+    authorized_ids = {
+        str(item).strip()
+        for item in (
+            *packet.authorized_primary_evidence_ids,
+            *packet.authorized_reference_evidence_ids,
+        )
+        if str(item).strip()
+    }
+    occurrence_to_ids: dict[str, tuple[str, ...]] = {}
+    occurrence_terms: dict[str, tuple[str, ...]] = {}
+    evidence_to_occurrences: dict[str, list[str]] = {}
+    for raw in brief.occurrence_constraints:
+        occurrence_id = str(raw.get("occurrence_id") or "").strip()
+        if not occurrence_id:
+            continue
+        raw_ids = raw.get("contribution_evidence_chunk_ids") or raw.get("planning_evidence_chunk_ids") or ()
+        if isinstance(raw_ids, str):
+            raw_ids = [raw_ids]
+        explicit_ids = [
+            str(item).strip()
+            for item in raw_ids
+            if str(item).strip() in authorized_ids and str(item).strip() in chunk_by_id
+        ]
+        # The planner's contribution list can be narrower than the already
+        # authorized section packet.  Recover only packet-owned chunks whose
+        # title/content matches this occurrence's knowledge context; this is
+        # bounded candidate selection, not evidence-scope expansion.
+        # Match the concrete canonical knowledge identity only.  Section-level
+        # contribution prose is intentionally not used as a retrieval query:
+        # it is broad enough to make generic safety slides outrank the actual
+        # equipment proposition needed by this occurrence.
+        context_text = " ".join(
+            str(raw.get(name) or "")
+            for name in ("knowledge_id", "canonical_knowledge_id")
+        )
+        context_terms = _knowledge_context_terms(context_text)
+        occurrence_terms[occurrence_id] = tuple(
+            term for term in context_terms if len(term) >= 2
+        )
+        ranked_matches: list[tuple[int, str]] = []
+        specific_terms = tuple(term for term in context_terms if len(term) >= 3)
+        for evidence_id in sorted(authorized_ids):
+            chunk = chunk_by_id.get(evidence_id)
+            if chunk is None:
+                continue
+            # Do not let a repeated material title (for example, every slide
+            # being titled ``焊接设备与安全``) outrank the actual proposition
+            # text.  Content-level matches identify the contribution; metadata
+            # remains only a fallback through the explicit planner list.
+            chunk_text = " ".join(str(value or "") for value in (chunk.content, chunk.summary))
+            # Longer identity matches carry more weight than generic words
+            # such as ``焊接`` or ``设备``; this keeps an exact ``焊接设备``
+            # proposition ahead of unrelated safety chunks with the same
+            # material title.
+            score = sum(len(term) for term in specific_terms if term and term in chunk_text)
+            if score:
+                ranked_matches.append((score, evidence_id))
+        ranked_matches.sort(key=lambda item: (-item[0], item[1]))
+        matched_ids = [evidence_id for _score, evidence_id in ranked_matches[:12]]
+        ids = tuple(dict.fromkeys((*matched_ids, *explicit_ids)))
+        occurrence_to_ids[occurrence_id] = ids
+        for evidence_id in ids:
+            evidence_to_occurrences.setdefault(evidence_id, []).append(occurrence_id)
+    return {
+        "authorized_ids": authorized_ids,
+        "occurrence_to_ids": occurrence_to_ids,
+        "evidence_to_occurrences": evidence_to_occurrences,
+        "occurrence_terms": occurrence_terms,
+    }
+
+
+def _knowledge_context_terms(text: str) -> tuple[str, ...]:
+    """Return bounded Chinese/Latin terms for packet-local occurrence matching."""
+
+    value = re.sub(r"\s+", "", str(text or ""))
+    terms: set[str] = set()
+    for segment in re.findall(r"[\u4e00-\u9fff]+", value):
+        if len(segment) >= 2:
+            terms.add(segment)
+            # Include short n-grams so ``焊接设备认知`` matches a source title
+            # such as ``焊接设备与安全`` without relying on fuzzy retrieval.
+            for width in (2, 3, 4):
+                if len(segment) < width:
+                    continue
+                terms.update(segment[index : index + width] for index in range(len(segment) - width + 1))
+    terms.update(re.findall(r"[a-z0-9][a-z0-9_-]{2,}", value.casefold()))
+    return tuple(sorted(terms, key=lambda item: (-len(item), item)))
+
+
+def _statement_relevance_score(statement: str, terms: Iterable[str]) -> int:
+    """Score source wording only by deterministic identity-term overlap.
+
+    This is a candidate-ordering signal, not a support decision.  It keeps a
+    packet-local claim plan from spending its bounded slots on a generic chunk
+    when an authorized chunk contains the concrete knowledge identity.  The
+    statement itself remains verbatim source wording and is still audited
+    before it can reach the writer.
+    """
+
+    value = re.sub(r"\s+", "", str(statement or ""))
+    return sum(len(term) for term in terms if term and term in value)
+
+
+def _split_source_claims(text: str) -> list[str]:
+    value = re.sub(r"\s+", " ", text or "").strip()
+    if not value:
+        return []
+    # Transcript chunks may have timestamp markers after whitespace
+    # normalization.  Make each timestamped segment a separate proposition.
+    value = re.sub(
+        r"\[?\d{1,2}:\d{2}:\d{2}\s*[-–—]+>\s*\d{1,2}:\d{2}:\d{2}\]?",
+        "\n",
+        value,
+    )
+    # Keep source wording intact; only split at explicit sentence/clause
+    # boundaries so the plan never invents a proposition by paraphrasing.
+    parts = re.split(r"(?<=[。！？；.!?;])\s*|\n+", value)
+    result: list[str] = []
+    for part in parts:
+        part = part.strip(" \t\r\n-•")
+        if len(part) < 6:
+            continue
+        if len(part) > 240:
+            part = part[:240].rsplit("，", 1)[0].strip() or part[:240]
+        if part:
+            result.append(part)
+    return result
+
+
+def _audit_factual_plan_candidate(
+    *,
+    claim_id: str,
+    statement: str,
+    evidence_ids: tuple[str, ...],
+    binding: ObligationEvidenceBinding,
+    envelope: SupportedClaimEnvelope | None,
+    chunk_by_id: Mapping[str, EvidenceChunk],
+    claim_judge: Any | None,
+) -> dict[str, Any]:
+    allowed_chunks = [chunk_by_id[item] for item in evidence_ids if item in chunk_by_id]
+    if not allowed_chunks:
+        return {"final_status": ClaimStatus.UNSUPPORTED, "rationale": "no authorized evidence"}
+    rendered_id = f"claim-plan:{claim_id}"
+    markdown = (
+        f'<!-- occurrence:start id="{rendered_id}" chapter="factual-claim-plan" '
+        f'section="factual-claim-plan" task="claim-plan" -->\n'
+        f"{statement}\n"
+        f'<!-- occurrence:end id="{rendered_id}" -->'
+    )
+    record = audit_rendered_claims(
+        markdown=markdown,
+        briefs=[
+            {
+                "occurrence_id": rendered_id,
+                "section_id": "factual-claim-plan",
+                "role": "PLAN",
+                "source_chunk_ids": list(evidence_ids),
+                "content_channel": "body",
+                "content_type": ContentType.SOURCE_FACT,
+                "supported_claim_envelope": (
+                    envelope.to_dict(include_internal_ids=False) if envelope else {}
+                ),
+            }
+        ],
+        evidence_by_id={item.chunk_id: item for item in allowed_chunks},
+        # Keep the same calibrated semantic routing used by the final claim
+        # audit.  Exact source wording still passes the deterministic layer;
+        # the injected judge is only consulted when that routing requires it.
+        judge=claim_judge,
+        artifact_root="factual-claim-plan",
+        # A fixture without a semantic judge may still approve an exact
+        # source proposition through the deterministic layer.  Production
+        # passes the real judge and retains the calibrated routing categories.
+        semantic_routing_categories=(
+            CALIBRATED_SEMANTIC_ROUTING_CATEGORIES if claim_judge is not None else ()
+        ),
+    )
+    if not record.records:
+        return {"final_status": ClaimStatus.UNSUPPORTED, "rationale": "claim auditor returned no record"}
+    statuses = [item.final_status for item in record.records]
+    if ClaimStatus.UNSUPPORTED in statuses:
+        selected = next(item for item in record.records if item.final_status == ClaimStatus.UNSUPPORTED)
+    elif ClaimStatus.PARTIALLY_SUPPORTED in statuses:
+        selected = next(item for item in record.records if item.final_status == ClaimStatus.PARTIALLY_SUPPORTED)
+    else:
+        selected = record.records[0]
+    return selected.to_dict()
+
+
+def _plan_status(audit: Mapping[str, Any]) -> str:
+    status = str(audit.get("final_status") or ClaimStatus.UNSUPPORTED)
+    if status in {ClaimStatus.SUPPORTED, ClaimStatus.PARTIALLY_SUPPORTED, ClaimStatus.UNSUPPORTED}:
+        return status
+    return ClaimStatus.UNSUPPORTED
+
+
 def author_section(
     brief: SectionAuthoringBrief,
     packet: SectionEvidencePacket,
@@ -939,6 +1520,11 @@ def materialize_section_draft(
             item.to_dict(include_internal_ids=True)
             for item in brief.supported_claim_envelopes
         ],
+        "factual_claim_plan": (
+            brief.factual_claim_plan.to_dict(include_internal_ids=True)
+            if brief.factual_claim_plan is not None
+            else None
+        ),
         "required_obligations_verified": required_coverage_verified,
         "verified_availability_eligible": not blocked and required_coverage_verified and not partial_claims,
         "grant_order": "materialization -> obligation coverage -> conformance -> local claim evidence audit",
@@ -1212,6 +1798,22 @@ def _normalize_writer_blocks(
             common_authorized, _common_aliases = allowed_evidence_aliases_for_block(
                 obligation_ids, brief, evidence_id_to_alias
             )
+            # A factual claim plan may have validated a proposition against an
+            # authorized packet chunk that was not selected by the coarse
+            # obligation binding.  Promote only those already-audited plan
+            # evidence IDs for this block; never leave the packet whitelist.
+            plan_evidence_ids = tuple(
+                claim_evidence_id
+                for claim in (
+                    brief.factual_claim_plan.approved_claims
+                    if brief.factual_claim_plan is not None
+                    else ()
+                )
+                if set(claim.obligation_ids).intersection(obligation_ids)
+                for claim_evidence_id in claim.supporting_evidence_ids
+                if claim_evidence_id in evidence_id_to_alias
+            )
+            common_authorized = tuple(dict.fromkeys((*common_authorized, *plan_evidence_ids)))
             # Evidence ownership is code-owned.  New section-writer output
             # does not contain evidence_ids; attach the deterministic union
             # selected for the block's intended obligations.  A legacy fixture
@@ -1560,6 +2162,30 @@ def _run_local_claim_audit(
             evidence_id = str(span.get("evidence_id") or "").strip()
             if evidence_id and evidence_id not in span_by_id:
                 span_by_id[evidence_id] = dict(span)
+    # Claim-plan propositions can be bound to an authorized packet chunk that
+    # was not present in that obligation's coarse accepted-span list.  Expose
+    # the already-audited proposition as the local span for that same evidence
+    # ID; this is not new evidence and cannot expand the packet whitelist.
+    authorized_packet_ids = {
+        str(item).strip()
+        for item in (
+            *packet.authorized_primary_evidence_ids,
+            *packet.authorized_reference_evidence_ids,
+        )
+        if str(item).strip()
+    }
+    if brief.factual_claim_plan is not None:
+        plan_spans: dict[str, list[str]] = {}
+        for claim in brief.factual_claim_plan.approved_claims:
+            for evidence_id in claim.supporting_evidence_ids:
+                if evidence_id in authorized_packet_ids and claim.statement:
+                    plan_spans.setdefault(evidence_id, []).append(claim.statement)
+        for evidence_id, statements in plan_spans.items():
+            if evidence_id not in span_by_id:
+                span_by_id[evidence_id] = {
+                    "evidence_id": evidence_id,
+                    "text": "\n".join(dict.fromkeys(statements)),
+                }
     evidence_by_id = {
         evidence_id: _evidence_chunk_from_span(evidence_id, span)
         for evidence_id, span in span_by_id.items()
@@ -1610,6 +2236,11 @@ def _run_local_claim_audit(
                         if obligation_id in envelope_by_obligation
                     ),
                     {},
+                ),
+                "factual_claim_plan": (
+                    brief.factual_claim_plan.writer_view()
+                    if brief.factual_claim_plan is not None
+                    else {}
                 ),
             }
         )
