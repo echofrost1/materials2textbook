@@ -17,9 +17,11 @@ def build_identity_messages(candidates: list[dict]) -> list[dict[str, str]]:
 
 def build_semantic_delta_messages(trajectory: dict, *, retry: bool = False) -> list[dict[str, str]]:
     instruction = (
-        "For each occurrence in one complete canonical knowledge trajectory, report semantic facts only. "
+        "For each supplied occurrence, report semantic facts only. The supplied occurrence is the only current "
+        "target; use prior_occurrences only as earlier same-canonical context. Never use a later occurrence, an "
+        "unrelated canonical item, or a future section to infer the current contribution. "
         "Do NOT emit INTRO, TEACH, RECALL, APPLY, or EXTEND; deterministic code will derive the role. "
-        "Compare each occurrence with earlier occurrences. A new_facet is only a genuinely new instructional facet, "
+        "Compare each occurrence with the supplied earlier context only. A new_facet is only a genuinely new instructional facet, "
         "not a restatement. A new_extension_key must encode a new condition, constraint, variant, or context. "
         "Apply these binding examples: a first complete definition/principle/method gives new_facets=[EXPLAIN]; "
         "an occurrence that says it uses an already taught method and does not re-explain it gives uses_prior_knowledge=true and no new facets; "

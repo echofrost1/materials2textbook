@@ -73,6 +73,16 @@ class _RetryAgent:
         return {"judgements": []}
 
 
+class _CaptureAgent(_RetryAgent):
+    def __init__(self):
+        super().__init__({"deltas": [_delta("o1")]}, {"deltas": [_delta("o1")]})
+        self.payloads = []
+
+    def plan_semantic_deltas(self, payload, **kwargs):
+        self.payloads.append(payload)
+        return {"deltas": [_delta(payload["occurrences"][0]["occurrence_id"])]}
+
+
 def test_retry_only_reprocesses_failed_occurrence_and_recovers_it() -> None:
     agent = _RetryAgent({"deltas": [_delta("o1")]}, {"deltas": [_delta("o2")]})
     evaluation = evaluate_semantic_planning(knowledge_map=_fixture(), chunks=[], agent=agent)
@@ -103,3 +113,22 @@ def test_malformed_response_gets_one_retry_then_fails_closed() -> None:
     assert retry["retry_response_status"] == "RESPONSE"
     assert retry["remaining_occurrence_ids"] == ["o2"]
     assert any(item.get("reason") == "missing_occurrence_delta" and item.get("occurrence_id") == "o2" for item in evaluation.rejected_proposals)
+
+
+def test_isolated_semantic_context_excludes_future_occurrences_and_unrelated_canonicals() -> None:
+    agent = _CaptureAgent()
+    evaluation = evaluate_semantic_planning(
+        knowledge_map=_fixture(),
+        chunks=[],
+        agent=agent,
+        isolate_occurrence_context=True,
+    )
+
+    assert [payload["occurrences"][0]["occurrence_id"] for payload in agent.payloads] == ["o1", "o2"]
+    assert agent.payloads[0]["prior_occurrences"] == []
+    assert [item["occurrence_id"] for item in agent.payloads[1]["prior_occurrences"]] == ["o1"]
+    assert all(
+        set(item["knowledge_id"] for item in payload["canonical_id_whitelist"]) == {"k1"}
+        for payload in agent.payloads
+    )
+    assert all(item["future_occurrence_ids_exposed"] == [] for item in evaluation.semantic_context_audit)

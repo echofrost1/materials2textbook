@@ -315,7 +315,9 @@ def execute_verified_sections(
     semantic_entailment_judge: Any | None = None,
     source_bounded_calibration: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None = None,
     source_bounded_prerequisite_calibration: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None = None,
+    stable_teaching_responsibilities: Mapping[str, str] | None = None,
     local_recovery_writer: Callable[[Any, Any, Any, Mapping[str, Any], list[EvidenceChunk]], str | None] | None = None,
+    claim_plan_recovery_writer: Callable[[Any, Mapping[str, Any]], str | None] | None = None,
     preview_mode: bool = False,
 ) -> SemanticExecutionResult:
     """Run the completeness-first section authoring path.
@@ -364,6 +366,11 @@ def execute_verified_sections(
         preview_mode=preview_mode,
     )
     excluded = set(excluded_occurrence_ids or ())
+    stable_responsibilities = {
+        str(key): str(value or "").strip()
+        for key, value in (stable_teaching_responsibilities or {}).items()
+        if str(key).strip() and str(value or "").strip()
+    }
 
     def _brief_with_materialized_evidence(
         brief: Any,
@@ -482,7 +489,15 @@ def execute_verified_sections(
                 prior_verified_support=_source_occurrences(state, seed.knowledge_id),
             )
             compiled_items.append((seed, occurrence, effective_delta, zero))
-            constraints.append(_section_constraint(occurrence, effective_delta, state, zero))
+            constraints.append(
+                _section_constraint(
+                    occurrence,
+                    effective_delta,
+                    state,
+                    zero,
+                    stable_teaching_responsibility=stable_responsibilities.get(occurrence.occurrence_id, ""),
+                )
+            )
             result.authoring_frontier.append(
                 _frontier_record(
                     seed,
@@ -719,8 +734,8 @@ def execute_verified_sections(
                 # A section-level occurrence may legitimately be represented
                 # by several ordered body/activity spans.  Conformance must
                 # inspect the complete mapped contribution, not only the
-                # first span (which caused false VIOLATION results in the
-                # real equipment-recognition replay).
+                # first span (which can cause false VIOLATION results when a
+                # section contribution spans multiple blocks).
                 candidate_body = "\n\n".join(
                     str(item.get("text") or "").strip()
                     for item in candidate_spans
@@ -761,7 +776,46 @@ def execute_verified_sections(
                 # the current draft; it cannot replan roles, obligations, or
                 # evidence scope.  If it returns nothing, the existing
                 # deterministic contraction remains the fail-closed fallback.
-                if local_recovery_writer is not None and proposal.action == "CONTRACT_BLOCK":
+                if claim_plan_recovery_writer is not None and proposal.action == "CONTRACT_BLOCK":
+                    try:
+                        block = next(
+                            (
+                                item for item in (working_draft.get("blocks") or ())
+                                if isinstance(item, Mapping)
+                                and str(item.get("block_id") or "") == proposal.block_id
+                            ),
+                            {},
+                        )
+                        approved_claims = [
+                            claim.to_dict(include_internal_ids=False)
+                            for claim in (
+                                brief.factual_claim_plan.approved_claims
+                                if brief.factual_claim_plan is not None
+                                else ()
+                            )
+                            if claim.claim_id in set(block.get("approved_claim_ids") or ())
+                        ]
+                        recovery_context = {
+                            "original_block": deepcopy(dict(block)),
+                            "approved_factual_claims": approved_claims,
+                            "approved_claim_ids": [item.get("claim_id") for item in approved_claims],
+                            "exact_plan_outside_claims": [proposal.target_text],
+                            "required_obligation_ids": list(proposal.obligation_ids),
+                            "intended_occurrence_ids": list(block.get("intended_occurrence_ids") or ()),
+                            "pedagogical_context": {
+                                "section_purpose": brief.section_purpose,
+                                "current_task_action": brief.current_task_action,
+                                "section_new_contribution": list(brief.section_new_contribution),
+                            },
+                            "raw_evidence_exposed": False,
+                        }
+                        replacement_text = claim_plan_recovery_writer(proposal, recovery_context)
+                    except Exception as exc:
+                        replacement_text = None
+                        proposal_provenance = dict(proposal.provenance)
+                        proposal_provenance["claim_plan_recovery_writer_error"] = f"{type(exc).__name__}: {exc}"
+                        attempt_proposal = replace(attempt_proposal, provenance=proposal_provenance)
+                elif local_recovery_writer is not None and proposal.action == "CONTRACT_BLOCK":
                     try:
                         replacement_text = local_recovery_writer(
                             proposal,
@@ -857,6 +911,18 @@ def execute_verified_sections(
             if not accepted:
                 break
 
+        terminal_statuses = {"ACCEPTED", "ROLLED_BACK", "CONTRACT_BLOCKED", "FAILED", "SKIPPED"}
+        terminal_attempt_records = [
+            item for item in recovery_attempts
+            if str(item.get("status") or "") in terminal_statuses
+        ]
+        terminal_state_counts = {
+            status: sum(1 for item in terminal_attempt_records if item.get("status") == status)
+            for status in sorted(terminal_statuses)
+            if any(item.get("status") == status for item in terminal_attempt_records)
+        }
+        executed_attempt_count = len(recovery_attempts)
+        terminal_attempt_count = len(terminal_attempt_records)
         section_assembly = {
             "section_id": section_id,
             "status": rendered.render_status,
@@ -867,7 +933,19 @@ def execute_verified_sections(
             "recovery": {
                 "issues": [item.to_dict() for item in recovery_issues],
                 "proposals": [item.to_dict() for item in recovery_proposals],
+                "issue_count": len(recovery_issues),
+                "proposal_count": len(recovery_proposals),
                 "attempts": recovery_attempts,
+                "executed_attempts": executed_attempt_count,
+                "terminal_attempts": terminal_attempt_count,
+                "terminal_state_counts": terminal_state_counts,
+                "recovery_terminal_state_accounting_valid": (
+                    executed_attempt_count == terminal_attempt_count
+                    and all(
+                        str(item.get("status") or "") in terminal_statuses
+                        for item in recovery_attempts
+                    )
+                ),
                 "rounds": recovery_rounds,
                 "auto_applied": any(item.get("status") == ACCEPTED for item in recovery_attempts),
             },
@@ -1055,7 +1133,15 @@ def execute_verified_sections(
     return result
 
 
-def _section_constraint(occurrence: PlannedOccurrence, delta: SemanticDelta, state: InstructionalAvailabilityState, zero: Any) -> dict[str, Any]:
+def _section_constraint(
+    occurrence: PlannedOccurrence,
+    delta: SemanticDelta,
+    state: InstructionalAvailabilityState,
+    zero: Any,
+    *,
+    stable_teaching_responsibility: str = "",
+) -> dict[str, Any]:
+    contribution = str(stable_teaching_responsibility or occurrence.intended_contribution or "").strip()
     return {
         "occurrence_id": occurrence.occurrence_id,
         "section_id": occurrence.section_id,
@@ -1067,9 +1153,9 @@ def _section_constraint(occurrence: PlannedOccurrence, delta: SemanticDelta, sta
         "must_teach_facets": list(occurrence.intended_grants),
         "must_not_reteach_facets": list(occurrence.repeated_aspects),
         "extension_keys": list(occurrence.intended_extension_keys),
-        "required_current_contribution": [occurrence.intended_contribution] if occurrence.intended_contribution else [],
-        "contribution_goal": occurrence.intended_contribution,
-        "intended_contribution": occurrence.intended_contribution,
+        "required_current_contribution": [contribution] if contribution else [],
+        "contribution_goal": contribution,
+        "intended_contribution": contribution,
         "new_context": occurrence.new_context,
         "contribution_evidence_chunk_ids": list(occurrence.contribution_evidence_chunk_ids),
         "planning_evidence_chunk_ids": list(occurrence.planning_evidence_chunk_ids),

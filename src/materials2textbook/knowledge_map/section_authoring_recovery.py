@@ -244,6 +244,31 @@ def classify_section_recovery(
             )
         )
 
+    # A claim may be source-supported yet still be outside the approved
+    # factual realization plan.  Route it through the same block-local
+    # overreach recovery, but preserve the plan-specific reason for audit.
+    for plan_claim in rendered.generation_provenance.get("factual_plan_conformance", ()) or ():
+        if str(plan_claim.get("status") or "") != "PLAN_OUTSIDE":
+            continue
+        block_id = str(plan_claim.get("block_id") or "")
+        if any(
+            issue.block_id == block_id
+            and issue.target_text == str(plan_claim.get("claim_text") or "")
+            for issue in issues
+        ):
+            continue
+        issues.append(
+            _issue(
+                rendered,
+                code=CLAIM_OVERREACH,
+                reason="rendered source fact is outside the approved factual claim plan",
+                block_id=block_id,
+                target_text=str(plan_claim.get("claim_text") or ""),
+                retry_allowed=bool(block_id and plan_claim.get("claim_text")),
+                provenance={"source": "factual claim plan conformance", "plan_claim": deepcopy(dict(plan_claim))},
+            )
+        )
+
     explicit = list(conformance_issues)
     for item in explicit:
         code, reason = _classify_explicit_issue(item)
@@ -263,7 +288,7 @@ def classify_section_recovery(
 
     # A materializer may have a forbidden-reteach reason only when a caller
     # supplied a checker result (the materializer itself rejects it).  Keep the
-    # classification available for production replay and tests.
+    # classification available for runtime reporting and tests.
     for reason in rendered.block_reasons:
         upper = str(reason).upper()
         if "FORBIDDEN_RETEACH" in upper or "RETEACH" in upper:
@@ -421,6 +446,7 @@ def apply_section_recovery(
         packet,
         allow_partial_section_recovery=allow_partial_section_recovery,
         target_block_id=proposal.block_id,
+        target_text=proposal.target_text,
         allow_unresolved_other_issues=allow_unresolved_other_issues,
     )
     status = ACCEPTED if reason == "" else ROLLED_BACK
@@ -446,6 +472,7 @@ def _acceptance_failure(
     *,
     allow_partial_section_recovery: bool = False,
     target_block_id: str = "",
+    target_text: str = "",
     allow_unresolved_other_issues: bool = False,
 ) -> str:
     if rendered is None:
@@ -510,9 +537,18 @@ def _acceptance_failure(
             for item in rendered.generation_provenance.get("local_claim_evidence_audit", ()) or ()
             if _claim_block_id(str(item.get("occurrence_id") or ""), rendered.section_id) == target_block_id
         ]
-        if any(
-            str(item.get("final_status") or "").upper() in {"PARTIALLY_SUPPORTED", "UNSUPPORTED"}
+        # A block can contain several independent offending claims.  One
+        # bounded patch should be accepted when it removed/replaced its exact
+        # target; the next proposal in the same round handles the remaining
+        # targets.  Do not require the whole block to be clean before the
+        # first patch, otherwise every multi-claim block rolls back forever.
+        normalized_target = " ".join(str(target_text or "").replace("\\n", " ").split())
+        if normalized_target and any(
+            normalized_target in " ".join(
+                str(item.get(field) or "").replace("\\n", " ").split()
+            )
             for item in target_claims
+            for field in ("claim_text", "source_span")
         ):
             return "LOCAL_CLAIM_EVIDENCE_NOT_SUPPORTED"
     elif int(counts.get("PARTIALLY_SUPPORTED", 0) or 0) or int(counts.get("UNSUPPORTED", 0) or 0):
@@ -574,7 +610,13 @@ def _apply_block_patch(
             target_text = target_text.replace("\\n", "\n")
         if target_text not in current:
             raise ValueError("EXACT_TARGET_TEXT_NOT_FOUND")
-        candidate = current.replace(target_text, "", 1).strip()
+        # CONTRACT_BLOCK is normally the deterministic safe deletion path.
+        # A claim-plan-constrained recovery writer may instead provide a
+        # replacement for the exact offending span.  The target match remains
+        # exact and block metadata is never mutable, so this does not widen
+        # the recovery contract.
+        replacement = str(replacement_text or "").strip()
+        candidate = current.replace(target_text, replacement, 1).strip()
         if not candidate:
             blocks.pop(target_index)
         else:
@@ -611,7 +653,13 @@ def _apply_block_patch(
                 if block_id != proposal.block_id:
                     raise ValueError("PATCH_BLOCK_ID_MISMATCH")
                 original_block = blocks[target_index]
-                for field_name in ("intended_obligation_ids", "intended_occurrence_ids", "evidence_ids"):
+                for field_name in (
+                    "intended_obligation_ids",
+                    "required_obligation_ids",
+                    "intended_occurrence_ids",
+                    "approved_claim_ids",
+                    "evidence_ids",
+                ):
                     before = tuple(str(value) for value in (original_block.get(field_name) or ()))
                     after = tuple(str(value) for value in (patch.get(field_name) or ()))
                     if before != after:

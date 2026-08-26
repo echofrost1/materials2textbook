@@ -350,6 +350,12 @@ def test_section_execution_accepts_block_local_minimal_supported_rewrite() -> No
     assert recovery["auto_applied"] is True
     assert recovery["attempts"][0]["action"] == "MINIMAL_SUPPORTED_REWRITE"
     assert recovery["attempts"][0]["status"] == "ACCEPTED"
+    assert recovery["issue_count"] == len(recovery["issues"])
+    assert recovery["proposal_count"] == len(recovery["proposals"])
+    assert recovery["executed_attempts"] == len(recovery["attempts"])
+    assert recovery["terminal_attempts"] == recovery["executed_attempts"]
+    assert recovery["recovery_terminal_state_accounting_valid"] is True
+    assert sum(recovery["terminal_state_counts"].values()) == recovery["terminal_attempts"]
     assert result.transitions[-1]["grant_applied"] is True
 
 

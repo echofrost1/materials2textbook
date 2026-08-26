@@ -50,12 +50,20 @@ class SemanticPlanningEvaluation:
     call_counts: dict[str, int] = field(default_factory=dict)
     budget_audit: list[dict[str, Any]] = field(default_factory=list)
     semantic_retry_audit: list[dict[str, Any]] = field(default_factory=list)
+    semantic_context_audit: list[dict[str, Any]] = field(default_factory=list)
+    # Stable responsibility text comes from the pre-LLM planned occurrence,
+    # not the stochastic contribution_summary returned by a semantic call.
+    # Section authoring uses it to keep isolated and sequential callers
+    # deterministic while retaining the LLM delta itself for semantic/audit
+    # fields.
+    stable_teaching_responsibilities: dict[str, str] = field(default_factory=dict)
 
 
 def evaluate_semantic_planning(
     *, knowledge_map: KnowledgeMap, chunks: list[EvidenceChunk], agent: LLMSemanticPlanningAgent, recall_after_tasks: int = 3,
     source_bounded_calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
     source_bounded_prerequisite_calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
+    isolate_occurrence_context: bool = False,
 ) -> SemanticPlanningEvaluation:
     """Use the LLM for semantic facts only; derive every LearningRole locally."""
     evaluated = deepcopy(knowledge_map)
@@ -67,6 +75,8 @@ def evaluate_semantic_planning(
     normalizations: list[dict[str, Any]] = []
     deltas: list[SemanticDelta] = []
     semantic_retry_audit: list[dict[str, Any]] = []
+    semantic_context_audit: list[dict[str, Any]] = []
+    stable_teaching_responsibilities: dict[str, str] = {}
 
     candidates = _identity_merge_candidates(evaluated, chunk_lookup)
     identity_response = _safe_call(lambda: agent.judge_identity(candidates), rejected, "identity") if candidates else {"judgements": []}
@@ -86,108 +96,73 @@ def evaluate_semantic_planning(
         evaluated.trajectories = _rebuild_trajectories(evaluated)
         points = {item.knowledge_id: item for item in evaluated.knowledge_points}
 
-    canonical_whitelist = [{"knowledge_id": item.knowledge_id, "title": item.title} for item in evaluated.knowledge_points]
+    stable_teaching_responsibilities = {
+        item.occurrence_id: str(item.intended_contribution or "").strip()
+        for item in evaluated.planned_occurrences
+    }
+
     for trajectory in evaluated.trajectories:
-        current = [occurrences[item] for item in trajectory.occurrence_ids]
-        if not current:
+        trajectory_occurrences = [occurrences[item] for item in trajectory.occurrence_ids]
+        if not trajectory_occurrences:
             continue
-        payload = _trajectory_payload(trajectory.knowledge_id, points[trajectory.knowledge_id].title, current, sources, chunk_lookup, canonical_whitelist)
-        rejected_before_first = len(rejected)
-        response, first_call = _call_semantic_delta(agent, payload, rejected)
-        if first_call["status"] == "RESPONSE" and not isinstance(response.get("deltas"), list):
-            first_call["status"] = "MISSING_OR_INVALID_DELTAS"
-            first_call["parse_error"] = "missing_or_invalid_deltas"
-        delta_by_id = {item.get("occurrence_id"): item for item in _list_response(response, "deltas", rejected, "semantic_delta") if isinstance(item, dict)}
-        failed_occurrences: list[tuple[int, PlannedOccurrence]] = []
-        for index, occurrence in enumerate(current):
-            delta = _parse_delta(
-                delta_by_id.get(occurrence.occurrence_id), occurrence, points, rejected,
-                normalizations, has_previous=bool(index),
-            )
-            if delta is None:
-                failed_occurrences.append((index, occurrence))
-                continue
-            delta = _apply_source_facet_ceiling(
-                delta, occurrence, source_bounded_calibration, normalizations
-            )
-            deltas.append(delta)
-
-        first_validation_errors = list(rejected[rejected_before_first:])
-
-        # A malformed/truncated response or a single schema-invalid item must
-        # not force us to re-run successful trajectory items.  Retry once with
-        # the failed targets plus only the earlier occurrences needed to keep
-        # the same trajectory/prerequisite context.  Successful retry output
-        # for context items is deliberately ignored.
-        if failed_occurrences:
-            failed_ids = [item.occurrence_id for _, item in failed_occurrences]
-            retry_context_end = max(index for index, _ in failed_occurrences)
-            retry_items = current[: retry_context_end + 1]
-            retry_payload = _trajectory_payload(
+        # Production authoring must not let an unrelated later section alter
+        # the responsibility proposed for an earlier occurrence.  Keep the
+        # historical trajectory batch as the default for small adapters/tests,
+        # while the official path opts into one occurrence plus its explicit
+        # earlier same-canonical context per call.
+        batches = (
+            [([item], trajectory_occurrences[:index]) for index, item in enumerate(trajectory_occurrences)]
+            if isolate_occurrence_context
+            else [(trajectory_occurrences, [])]
+        )
+        for current, prior_context in batches:
+            relevant_ids = {trajectory.knowledge_id}
+            for item in current:
+                relevant_ids.update(
+                    str(prerequisite.knowledge_id)
+                    for prerequisite in item.required_prerequisites
+                    if getattr(prerequisite, "knowledge_id", "")
+                )
+            canonical_whitelist = [
+                {"knowledge_id": item.knowledge_id, "title": item.title}
+                for item in evaluated.knowledge_points
+                if item.knowledge_id in relevant_ids
+            ]
+            payload = _trajectory_payload(
                 trajectory.knowledge_id,
                 points[trajectory.knowledge_id].title,
-                retry_items,
+                current,
                 sources,
                 chunk_lookup,
                 canonical_whitelist,
-                evidence_excerpt_chars=96,
+                prior_occurrences=prior_context if isolate_occurrence_context else (),
             )
-            rejected_before_retry = len(rejected)
-            retry_response, retry_call = _call_semantic_delta(agent, retry_payload, rejected, retry=True)
-            retry_validation_errors = list(rejected[rejected_before_retry:])
-            retry_delta_by_id = {
-                item.get("occurrence_id"): item
-                for item in _list_response(retry_response, "deltas", rejected, "semantic_delta_retry")
-                if isinstance(item, dict)
-            }
-            retry_status = "RESPONSE"
-            retry_errors: list[str] = []
-            if not isinstance(retry_response.get("deltas"), list):
-                retry_status = "PARSE_FAILED"
-                retry_errors.append("missing_or_invalid_deltas")
-            recovered_ids: list[str] = []
-            for index, occurrence in failed_occurrences:
-                delta = _parse_delta(
-                    retry_delta_by_id.get(occurrence.occurrence_id), occurrence, points, rejected,
-                    normalizations, has_previous=bool(index),
-                )
-                if delta is None:
-                    occurrence.trusted_for_state = False
-                    continue
-                delta = _apply_source_facet_ceiling(
-                    delta, occurrence, source_bounded_calibration, normalizations
-                )
-                deltas.append(delta)
-                recovered_ids.append(occurrence.occurrence_id)
-            if recovered_ids:
-                remaining = [item for item in failed_ids if item not in recovered_ids]
-                if not remaining and retry_status == "RESPONSE":
-                    retry_status = "RECOVERED"
-            else:
-                remaining = failed_ids
-            semantic_retry_audit.append({
-                "occurrence_ids": failed_ids,
-                "first_response_status": first_call["status"],
-                "first_parse_error": first_call.get("parse_error", ""),
-                "first_error": first_call.get("error", ""),
-                "first_response_finish_reason": first_call.get("response_metadata", {}).get("finish_reason"),
-                "first_input": first_call.get("input", {}),
-                "first_output": first_call.get("output", {}),
-                "first_validation_errors": first_validation_errors,
-                "first_budget_audit": first_call.get("budget_audit", []),
-                "retry_response_status": retry_status if retry_call["status"] == "RESPONSE" else retry_call["status"],
-                "retry_parse_error": retry_call.get("parse_error", "") or "; ".join(retry_errors),
-                "retry_error": retry_call.get("error", ""),
-                "retry_validation_errors": retry_validation_errors,
-                "retry_response_finish_reason": retry_call.get("response_metadata", {}).get("finish_reason"),
-                "retry_input": retry_call.get("input", {}),
-                "retry_output": retry_call.get("output", {}),
-                "retry_budget_audit": retry_call.get("budget_audit", []),
-                "retry_context_occurrence_ids": [item.occurrence_id for item in retry_items],
-                "recovered_occurrence_ids": recovered_ids,
-                "remaining_occurrence_ids": remaining,
-                "retry_limit": 1,
+            semantic_context_audit.append({
+                "occurrence_ids": [item.occurrence_id for item in current],
+                "prior_occurrence_ids": [item.occurrence_id for item in prior_context],
+                "canonical_whitelist": [item["knowledge_id"] for item in canonical_whitelist],
+                "isolated": bool(isolate_occurrence_context),
+                "future_occurrence_ids_exposed": [] if isolate_occurrence_context else [
+                    item.occurrence_id for item in trajectory_occurrences
+                    if item.position > current[-1].position
+                ],
             })
+            _evaluate_semantic_batch(
+                current=current,
+                prior_context=prior_context,
+                payload=payload,
+                points=points,
+                sources=sources,
+                chunk_lookup=chunk_lookup,
+                canonical_whitelist=canonical_whitelist,
+                agent=agent,
+                occurrences=occurrences,
+                rejected=rejected,
+                normalizations=normalizations,
+                deltas=deltas,
+                semantic_retry_audit=semantic_retry_audit,
+                source_bounded_calibration=source_bounded_calibration,
+            )
     compiled_occurrences, final_deltas, prerequisite_audit = _compile_final_occurrences(
         knowledge_map=evaluated,
         deltas=deltas,
@@ -225,7 +200,123 @@ def evaluate_semantic_planning(
         call_counts=dict(agent.call_counts),
         budget_audit=list(getattr(agent, "budget_audit", [])),
         semantic_retry_audit=semantic_retry_audit,
+        semantic_context_audit=semantic_context_audit,
+        stable_teaching_responsibilities=stable_teaching_responsibilities,
     )
+
+
+def _evaluate_semantic_batch(
+    *,
+    current: list[PlannedOccurrence],
+    prior_context: list[PlannedOccurrence],
+    payload: dict[str, Any],
+    points: dict[str, Any],
+    sources: dict[str, Any],
+    chunk_lookup: dict[str, EvidenceChunk],
+    canonical_whitelist: list[dict[str, str]],
+    agent: LLMSemanticPlanningAgent,
+    occurrences: dict[str, PlannedOccurrence],
+    rejected: list[dict[str, Any]],
+    normalizations: list[dict[str, Any]],
+    deltas: list[SemanticDelta],
+    semantic_retry_audit: list[dict[str, Any]],
+    source_bounded_calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None,
+) -> None:
+    """Evaluate one scoped trajectory batch and retry only failed targets."""
+    rejected_before_first = len(rejected)
+    response, first_call = _call_semantic_delta(agent, payload, rejected)
+    if first_call["status"] == "RESPONSE" and not isinstance(response.get("deltas"), list):
+        first_call["status"] = "MISSING_OR_INVALID_DELTAS"
+        first_call["parse_error"] = "missing_or_invalid_deltas"
+    delta_by_id = {
+        item.get("occurrence_id"): item
+        for item in _list_response(response, "deltas", rejected, "semantic_delta")
+        if isinstance(item, dict)
+    }
+    failed_occurrences: list[tuple[int, PlannedOccurrence]] = []
+    for index, occurrence in enumerate(current):
+        delta = _parse_delta(
+            delta_by_id.get(occurrence.occurrence_id), occurrence, points, rejected,
+            normalizations, has_previous=bool(index or prior_context),
+        )
+        if delta is None:
+            failed_occurrences.append((index, occurrence))
+            continue
+        delta = _apply_source_facet_ceiling(
+            delta, occurrence, source_bounded_calibration, normalizations
+        )
+        deltas.append(delta)
+
+    first_validation_errors = list(rejected[rejected_before_first:])
+    if not failed_occurrences:
+        return
+
+    failed_ids = [item.occurrence_id for _, item in failed_occurrences]
+    retry_context_end = max(index for index, _ in failed_occurrences)
+    retry_items = current[: retry_context_end + 1]
+    retry_payload = _trajectory_payload(
+        current[0].knowledge_id,
+        points[current[0].knowledge_id].title,
+        retry_items,
+        sources,
+        chunk_lookup,
+        canonical_whitelist,
+        prior_occurrences=prior_context,
+        evidence_excerpt_chars=96,
+    )
+    rejected_before_retry = len(rejected)
+    retry_response, retry_call = _call_semantic_delta(agent, retry_payload, rejected, retry=True)
+    retry_validation_errors = list(rejected[rejected_before_retry:])
+    retry_delta_by_id = {
+        item.get("occurrence_id"): item
+        for item in _list_response(retry_response, "deltas", rejected, "semantic_delta_retry")
+        if isinstance(item, dict)
+    }
+    retry_status = "RESPONSE"
+    retry_errors: list[str] = []
+    if not isinstance(retry_response.get("deltas"), list):
+        retry_status = "PARSE_FAILED"
+        retry_errors.append("missing_or_invalid_deltas")
+    recovered_ids: list[str] = []
+    for index, occurrence in failed_occurrences:
+        delta = _parse_delta(
+            retry_delta_by_id.get(occurrence.occurrence_id), occurrence, points, rejected,
+            normalizations, has_previous=bool(index or prior_context),
+        )
+        if delta is None:
+            occurrence.trusted_for_state = False
+            continue
+        delta = _apply_source_facet_ceiling(
+            delta, occurrence, source_bounded_calibration, normalizations
+        )
+        deltas.append(delta)
+        recovered_ids.append(occurrence.occurrence_id)
+    remaining = [item for item in failed_ids if item not in recovered_ids]
+    if not remaining and retry_status == "RESPONSE":
+        retry_status = "RECOVERED"
+    semantic_retry_audit.append({
+        "occurrence_ids": failed_ids,
+        "first_response_status": first_call["status"],
+        "first_parse_error": first_call.get("parse_error", ""),
+        "first_error": first_call.get("error", ""),
+        "first_response_finish_reason": first_call.get("response_metadata", {}).get("finish_reason"),
+        "first_input": first_call.get("input", {}),
+        "first_output": first_call.get("output", {}),
+        "first_validation_errors": first_validation_errors,
+        "first_budget_audit": first_call.get("budget_audit", []),
+        "retry_response_status": retry_status if retry_call["status"] == "RESPONSE" else retry_call["status"],
+        "retry_parse_error": retry_call.get("parse_error", "") or "; ".join(retry_errors),
+        "retry_error": retry_call.get("error", ""),
+        "retry_validation_errors": retry_validation_errors,
+        "retry_response_finish_reason": retry_call.get("response_metadata", {}).get("finish_reason"),
+        "retry_input": retry_call.get("input", {}),
+        "retry_output": retry_call.get("output", {}),
+        "retry_budget_audit": retry_call.get("budget_audit", []),
+        "retry_context_occurrence_ids": [item.occurrence_id for item in retry_items],
+        "recovered_occurrence_ids": recovered_ids,
+        "remaining_occurrence_ids": remaining,
+        "retry_limit": 1,
+    })
 
 
 def _compile_final_occurrences(
@@ -1260,22 +1351,32 @@ def _trajectory_payload(
     lookup: dict[str, EvidenceChunk],
     canonical_whitelist: list[dict[str, str]],
     *,
+    prior_occurrences: list | tuple = (),
     evidence_excerpt_chars: int = 700,
 ) -> dict[str, Any]:
+    def _occurrence(item: Any) -> dict[str, Any]:
+        return {
+            "occurrence_id": item.occurrence_id,
+            "position": {"chapter_ordinal": item.position.chapter_ordinal, "task_ordinal": item.position.task_ordinal, "occurrence_ordinal": item.position.occurrence_ordinal},
+            "context_title": item.context_title,
+            "source_title": sources[item.source_knowledge_point_id].title,
+            "evidence": _evidence_for(item.source_chunk_ids, lookup, excerpt_chars=evidence_excerpt_chars),
+            "required_prerequisites": [
+                {
+                    "knowledge_id": prerequisite.knowledge_id,
+                    "required_facets": list(prerequisite.required_facets),
+                    "minimum_required_facet": prerequisite.minimum_required_facet,
+                    "necessity": prerequisite.necessity,
+                }
+                for prerequisite in item.required_prerequisites
+            ],
+        }
     return {
         "knowledge_id": knowledge_id,
         "canonical_title": title,
         "canonical_id_whitelist": canonical_whitelist,
-        "occurrences": [
-            {
-                "occurrence_id": item.occurrence_id,
-                "position": {"chapter_ordinal": item.position.chapter_ordinal, "task_ordinal": item.position.task_ordinal, "occurrence_ordinal": item.position.occurrence_ordinal},
-                "context_title": item.context_title,
-                "source_title": sources[item.source_knowledge_point_id].title,
-                "evidence": _evidence_for(item.source_chunk_ids, lookup, excerpt_chars=evidence_excerpt_chars),
-            }
-            for item in occurrences
-        ],
+        "occurrences": [_occurrence(item) for item in occurrences],
+        "prior_occurrences": [_occurrence(item) for item in prior_occurrences],
     }
 
 

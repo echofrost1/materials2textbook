@@ -830,6 +830,7 @@ class TextbookWorkflow:
                     agent=semantic_agent,
                     source_bounded_calibration=source_bounded_calibration_for_planning,
                     source_bounded_prerequisite_calibration=source_bounded_prerequisite_calibration_for_planning,
+                    isolate_occurrence_context=True,
                 )
                 write_knowledge_map_artifacts(semantic_evaluation.knowledge_map, output_dir)
                 write_semantic_evaluation_artifacts(semantic_evaluation, output_dir)
@@ -843,6 +844,8 @@ class TextbookWorkflow:
                     "call_counts": semantic_evaluation.call_counts,
                     "budget_audit": semantic_evaluation.budget_audit,
                     "semantic_retry_audit": semantic_evaluation.semantic_retry_audit,
+                    "semantic_context_audit": semantic_evaluation.semantic_context_audit,
+                    "stable_teaching_responsibilities": semantic_evaluation.stable_teaching_responsibilities,
                 }
                 resolution = resolve_evidence_coverage_from_payload(
                     payload=semantic_evaluation_payload,
@@ -1844,6 +1847,86 @@ class TextbookWorkflow:
                 model=str(getattr(getattr(self.writer.llm_provider, "config", None), "model", "")),
             )
 
+        claim_plan_recovery_attempts: dict[str, int] = {}
+
+        def claim_plan_recovery_writer(proposal, recovery_context):
+            """Rewrite one offending claim span from the approved claim plan only.
+
+            This callback is deliberately narrower than the section writer: it
+            receives no packet/chunk text or evidence IDs, only the exact block,
+            approved propositions, and the pedagogical context needed to keep
+            the replacement grammatical.  The execution layer caps calls to
+            two claim-plan recovery attempts for the section.
+            """
+
+            section_key = str(getattr(proposal, "section_id", "") or "")
+            attempts = int(claim_plan_recovery_attempts.get(section_key, 0))
+            if attempts >= 2:
+                return None
+            claim_plan_recovery_attempts[section_key] = attempts + 1
+            provider = self.writer.llm_provider
+            if provider is None:
+                return None
+            prompt = {
+                "original_block": recovery_context.get("original_block", {}),
+                "offending_claim": recovery_context.get("exact_plan_outside_claims", []),
+                "approved_factual_claims": recovery_context.get("approved_factual_claims", []),
+                "required_obligation_ids": recovery_context.get("required_obligation_ids", []),
+                "intended_occurrence_ids": recovery_context.get("intended_occurrence_ids", []),
+                "pedagogical_context": recovery_context.get("pedagogical_context", {}),
+            }
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a block-local textbook repairer. Return JSON only as "
+                        '{"replacement_text":"..."}. Replace only the exact offending '
+                        "claim span in the supplied block. You may use only the approved "
+                        "factual claim statements; do not infer, strengthen, or add any "
+                        "technical proposition. Keep the required obligation and occurrence "
+                        "responsibility, preserve student-facing language, and return a "
+                        "short natural replacement. If no safe replacement exists, return "
+                        '{"replacement_text":""}. Do not return evidence IDs, aliases, '
+                        "block metadata, offsets, or a whole section."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(prompt, ensure_ascii=False, indent=2),
+                },
+            ]
+            provider_config = getattr(provider, "config", None)
+            context_window = int(
+                getattr(provider_config, "context_window", DEFAULT_CONTEXT_WINDOW)
+                or DEFAULT_CONTEXT_WINDOW
+            )
+            requested_output = min(
+                512,
+                int(getattr(provider_config, "max_tokens", 4096) or 4096),
+            )
+            safety_margin = max(128, min(256, context_window // 20))
+            input_tokens = estimate_message_tokens(messages)
+            effective_output = min(requested_output, context_window - input_tokens - safety_margin)
+            if effective_output < 64:
+                return None
+            try:
+                raw = provider.generate(messages, max_tokens=effective_output)
+            except TypeError as exc:
+                if "max_tokens" not in str(exc):
+                    return None
+                raw = provider.generate(messages)
+            try:
+                text = str(raw or "").strip()
+                if text.startswith("```"):
+                    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE | re.DOTALL)
+                payload = json.loads(text)
+            except Exception:
+                return None
+            if not isinstance(payload, Mapping):
+                return None
+            replacement = payload.get("replacement_text")
+            return str(replacement).strip() if isinstance(replacement, str) else None
+
         def render_section(brief, packet, section_chunks):
             if not self.writer.use_llm or self.writer.llm_provider is None:
                 raise RuntimeError("completeness-first section authoring requires a configured LLM writer")
@@ -1914,7 +1997,7 @@ class TextbookWorkflow:
                             "role": "system",
                             "content": (
                                 "Repair JSON structure only. Preserve every block text, block_id, channel, "
-                                "intended_obligation_ids, and intended_occurrence_ids exactly. Do not add evidence_ids. "
+                                "required_obligation_ids, intended_occurrence_ids, and approved_claim_ids exactly. Do not add evidence_ids. "
                                 "Do not add, delete, summarize, or rewrite student-visible content. Return JSON only."
                             ),
                         },
@@ -1925,7 +2008,7 @@ class TextbookWorkflow:
                                 "The previous response could not be parsed as JSON. Return the exact same response "
                                 "with only syntax/field wrapping repaired. The required shape is "
                                 '{"blocks":[{"block_id":"b01","channel":"body|case_activity|exercise|assessment|summary",'
-                                '"text":"...","intended_obligation_ids":[],"intended_occurrence_ids":[]}],'
+                                 '"text":"...","intended_obligation_ids":[],"required_obligation_ids":[],"intended_occurrence_ids":[],"approved_claim_ids":[]}],'
                                 '"generation_provenance":{}}.\nMALFORMED RESPONSE:\n' + str(raw)
                             ),
                         },
@@ -1981,7 +2064,11 @@ class TextbookWorkflow:
                 # Evidence ownership is now attached deterministically by the
                 # materializer from each block's intended obligations.  The
                 # writer has no alias-selection or evidence-ID retry path.
-                materialize_section_draft(brief, packet, draft, claim_judge=None)
+                # Use the same occurrence-local semantic judge for the
+                # writer preflight that the sequential grant gate consumes;
+                # otherwise the official path can accept a draft locally and
+                # discover a different factual result only after materialization.
+                materialize_section_draft(brief, packet, draft, claim_judge=runtime_claim_judge)
                 return draft
 
             try:
@@ -2019,6 +2106,12 @@ class TextbookWorkflow:
             semantic_entailment_judge=runtime_claim_judge,
             source_bounded_calibration=source_bounded_calibration,
             source_bounded_prerequisite_calibration=source_bounded_prerequisite_calibration,
+            stable_teaching_responsibilities=getattr(
+                semantic_evaluation,
+                "stable_teaching_responsibilities",
+                {},
+            ),
+            claim_plan_recovery_writer=claim_plan_recovery_writer,
             preview_mode=preview_mode,
         )
 
@@ -2114,8 +2207,8 @@ class TextbookWorkflow:
         # Preserve the immutable section authoring contracts and rendered
         # section produced by the completeness-first executor.  The discourse
         # audit is an additional presentation-layer view; it must not replace
-        # the Blueprint/Packet/Brief/recovery audit that downstream manifests
-        # and replay tooling consume.
+        # the Blueprint/Packet/Brief/recovery audit consumed by downstream
+        # manifests and inspection tools.
         authoring_assemblies = {
             str(item.get("section_id") or ""): item
             for item in execution.section_assemblies

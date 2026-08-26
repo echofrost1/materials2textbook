@@ -179,6 +179,16 @@ def build_section_authoring_messages(
                     claim.claim_id
                     for claim in approved_by_obligation.get(item.obligation_id, [])
                 ],
+                # Keep the ID list as the machine contract, but expose the
+                # already-approved statement beside it so the model does not
+                # have to guess which repeated fc:N identifier belongs to a
+                # block.  This is still claim-plan-only; no evidence IDs or
+                # raw packet text are exposed here.
+                "approved_factual_claim_details": [
+                    _claim_view(claim)
+                    for claim in approved_by_obligation.get(item.obligation_id, [])
+                ],
+                "required_obligation_ids": [item.obligation_id],
                 "intended_occurrence_ids": list(item.linked_occurrence_ids),
             }
             for index, item in enumerate(brief.all_obligations, start=1)
@@ -204,19 +214,24 @@ def build_section_authoring_messages(
     )
     user = (
         "Return exactly this shape:\n"
-        '{"blocks":[{"block_id":"b01","channel":"body|case_activity|exercise|assessment|summary",'
-        '"text":"student-visible text","intended_obligation_ids":[],"intended_occurrence_ids":[]}],'
+         '{"blocks":[{"block_id":"b01","channel":"body|case_activity|exercise|assessment|summary",'
+         '"text":"student-visible text","intended_obligation_ids":[],"required_obligation_ids":[],'
+         '"intended_occurrence_ids":[],"approved_claim_ids":[]}],'
         '"generation_provenance":{"writer":"section-qwen"}}\n\n'
         "The blocks array is the complete section in reading order. Every block "
-        "must contain block_id, channel, text, intended_obligation_ids, and "
-        "intended_occurrence_ids. Do not return body/summary/offset/span or "
+         "must contain block_id, channel, text, intended_obligation_ids, required_obligation_ids, "
+         "intended_occurrence_ids, and approved_claim_ids. The approved_claim_ids must be selected "
+         "from the exact planned_block_contract for that block. Do not return body/summary/offset/span or "
         "evidence_ids fields. Evidence ownership is attached by deterministic "
         "code from the selected evidence bound to the block's intended obligations; "
         "the model must not choose aliases or source IDs. Separate blocks are "
         "optional when obligations use different evidence. For PARTIAL evidence, write only "
         "the supported portion; for SOURCE_GAP, do not write a professional fact. "
         "The planned_block_contracts list is deterministic guidance containing the "
-        "approved factual claim plan for each planned responsibility. "
+        "approved factual claim plan for each planned responsibility. Each block "
+        "also includes approved_factual_claim_details; copy only the claim_id "
+        "values whose statement you actually realize in that block. Never invent "
+        "or copy an ID from another block. "
         "Make the teaching sequence natural and concrete when the evidence "
         "supports it: move from a fact to its explanation, relation, and a "
         "student takeaway. Teach the section_new_contribution first; recap "
@@ -1167,6 +1182,27 @@ def _occurrence_evidence_context(
     occurrence_to_ids: dict[str, tuple[str, ...]] = {}
     occurrence_terms: dict[str, tuple[str, ...]] = {}
     evidence_to_occurrences: dict[str, list[str]] = {}
+    # The packet is the stable section-level evidence contract.  SemanticDelta
+    # evidence lists are model proposals and may legitimately differ between
+    # a focused replay and the same occurrence in a full-book run.  Build a
+    # deterministic occurrence-local pool from the packet bindings first so
+    # those proposals cannot change factual-claim-plan membership or claim IDs.
+    packet_ids_by_occurrence: dict[str, set[str]] = {}
+    binding_by_id = {item.obligation_id: item for item in packet.obligation_bindings}
+    for obligation in brief.all_obligations:
+        bound_ids = {
+            str(evidence_id).strip()
+            for evidence_id in (
+                binding_by_id.get(obligation.obligation_id).accepted_evidence_ids
+                if binding_by_id.get(obligation.obligation_id) is not None
+                else ()
+            )
+            if str(evidence_id).strip() in authorized_ids
+            and str(evidence_id).strip() in chunk_by_id
+        }
+        for occurrence_id in obligation.linked_occurrence_ids:
+            if occurrence_id:
+                packet_ids_by_occurrence.setdefault(str(occurrence_id), set()).update(bound_ids)
     for raw in brief.occurrence_constraints:
         occurrence_id = str(raw.get("occurrence_id") or "").strip()
         if not occurrence_id:
@@ -1174,6 +1210,10 @@ def _occurrence_evidence_context(
         raw_ids = raw.get("contribution_evidence_chunk_ids") or raw.get("planning_evidence_chunk_ids") or ()
         if isinstance(raw_ids, str):
             raw_ids = [raw_ids]
+        # Keep the planner's IDs for audit context only.  They must not alter
+        # the candidate pool: the frozen packet binding is the authority for
+        # factual realization, and using raw semantic IDs here reintroduces
+        # focused/full production-path drift.
         explicit_ids = [
             str(item).strip()
             for item in raw_ids
@@ -1197,7 +1237,16 @@ def _occurrence_evidence_context(
         )
         ranked_matches: list[tuple[int, str]] = []
         specific_terms = tuple(term for term in context_terms if len(term) >= 3)
-        for evidence_id in sorted(authorized_ids):
+        deterministic_pool = set(packet_ids_by_occurrence.get(occurrence_id, ()))
+        # Rank the complete authorized packet deterministically.  Accepted
+        # binding IDs remain a mandatory seed, but a packet may contain a
+        # stronger occurrence-specific proposition in its reference pool
+        # (for example the equipment definition needed by this occurrence).
+        # Scanning the packet whitelist—not the raw semantic proposal—recovers
+        # that proposition without expanding ownership and keeps focused/full
+        # runs identical.
+        scan_ids = set(authorized_ids)
+        for evidence_id in sorted(scan_ids):
             chunk = chunk_by_id.get(evidence_id)
             if chunk is None:
                 continue
@@ -1215,7 +1264,11 @@ def _occurrence_evidence_context(
                 ranked_matches.append((score, evidence_id))
         ranked_matches.sort(key=lambda item: (-item[0], item[1]))
         matched_ids = [evidence_id for _score, evidence_id in ranked_matches[:12]]
-        ids = tuple(dict.fromkeys((*matched_ids, *explicit_ids)))
+        # Planner evidence IDs are an unordered semantic proposal.  Never let
+        # their model order reorder the deterministic content-ranked packet
+        # candidates: doing so changes claim IDs between focused and full
+        # production paths even when the authorized packet is identical.
+        ids = tuple(dict.fromkeys((*matched_ids, *sorted(deterministic_pool))))
         occurrence_to_ids[occurrence_id] = ids
         for evidence_id in ids:
             evidence_to_occurrences.setdefault(evidence_id, []).append(occurrence_id)
@@ -1235,8 +1288,8 @@ def _knowledge_context_terms(text: str) -> tuple[str, ...]:
     for segment in re.findall(r"[\u4e00-\u9fff]+", value):
         if len(segment) >= 2:
             terms.add(segment)
-            # Include short n-grams so ``焊接设备认知`` matches a source title
-            # such as ``焊接设备与安全`` without relying on fuzzy retrieval.
+            # Include short n-grams so a multi-character knowledge title can
+            # match an authorized source title without fuzzy retrieval.
             for width in (2, 3, 4):
                 if len(segment) < width:
                     continue
@@ -1460,6 +1513,17 @@ def materialize_section_draft(
         blocks=blocks,
         judge=claim_judge,
     )
+    factual_plan_audit = _run_factual_plan_conformance(
+        brief=brief,
+        blocks=blocks,
+        claim_audit=claim_audit,
+        claim_judge=claim_judge,
+    )
+    plan_outside_claims = tuple(
+        str(item.get("claim_id") or "")
+        for item in factual_plan_audit
+        if item.get("status") == "PLAN_OUTSIDE"
+    )
     draft_provenance = draft.get("generation_provenance")
     if not isinstance(draft_provenance, Mapping):
         draft_provenance = {"writer": "fake-or-wrapped-writer"}
@@ -1488,8 +1552,10 @@ def materialize_section_draft(
         f"OBLIGATION_COVERAGE_VIOLATION:{item}" for item in coverage_violations
     ) + tuple(
         f"UNSUPPORTED_RENDERED_CLAIM:{item}" for item in unsupported_claims if item
+    ) + tuple(
+        f"FACTUAL_PLAN_OUTSIDE:{item}" for item in plan_outside_claims if item
     )
-    blocked = bool(core_source_gaps or coverage_violations or unsupported_claims)
+    blocked = bool(core_source_gaps or coverage_violations or unsupported_claims or plan_outside_claims)
     render_status = BLOCKED_CORE_SOURCE_GAP if core_source_gaps else (
         RENDERED_PARTIAL if local_gaps or brief.partial_obligations or partial_claims or unsupported_claims else RENDERED
     )
@@ -1511,11 +1577,21 @@ def materialize_section_draft(
         "deterministic_association_fallbacks": sum(
             1 for item in blocks if item.get("_deterministic_association_fallback")
         ),
+        "deterministic_contract_normalizations": [
+            {
+                "block_id": str(item.get("block_id") or ""),
+                "normalizations": list(item.get("_contract_normalizations") or ()),
+            }
+            for item in blocks
+            if item.get("_contract_normalizations")
+        ],
         "span_coordinate_space": "materialized_student_visible_sequence",
         "obligation_coverage": coverage,
         "local_claim_evidence_audit": claim_audit,
         "local_claim_status_counts": _status_counts_from_claim_audit(claim_audit),
         "local_claim_content_type_counts": _content_type_counts_from_claim_audit(claim_audit),
+        "factual_plan_conformance": factual_plan_audit,
+        "factual_plan_outside_claims": list(plan_outside_claims),
         "supported_claim_envelopes": [
             item.to_dict(include_internal_ids=True)
             for item in brief.supported_claim_envelopes
@@ -1767,6 +1843,20 @@ def _normalize_writer_blocks(
             raise SectionAuthoringError(f"duplicate writer block_id: {block_id}")
         seen.add(block_id)
         obligation_ids = _block_id_list(raw.get("intended_obligation_ids"), "intended_obligation_ids", block_id)
+        required_obligation_ids = _block_id_list(
+            raw.get("required_obligation_ids", obligation_ids),
+            "required_obligation_ids",
+            block_id,
+        )
+        contract_normalizations: list[str] = []
+        if set(required_obligation_ids) != set(obligation_ids):
+            # ``required_obligation_ids`` is a redundant declaration: the
+            # immutable intended-obligation association is authoritative.  A
+            # model may omit or stale-copy this mirror field; normalize it
+            # deterministically instead of spending the only bounded writer
+            # retry on a non-semantic formatting mismatch.
+            required_obligation_ids = list(obligation_ids)
+            contract_normalizations.append("required_obligation_ids_from_intended")
         occurrence_ids = _block_id_list(raw.get("intended_occurrence_ids"), "intended_occurrence_ids", block_id)
         unknown_obligations = sorted(set(obligation_ids) - allowed_obligation_ids)
         if unknown_obligations:
@@ -1774,6 +1864,35 @@ def _normalize_writer_blocks(
         unknown_occurrences = sorted(set(occurrence_ids) - allowed_occurrence_ids)
         if unknown_occurrences:
             raise SectionAuthoringError(f"block maps unknown occurrences: {unknown_occurrences}")
+        plan_claims = (
+            tuple(brief.factual_claim_plan.approved_claims)
+            if brief.factual_claim_plan is not None
+            else ()
+        )
+        allowed_claim_ids = {
+            claim.claim_id
+            for claim in plan_claims
+            if set(claim.obligation_ids).intersection(obligation_ids)
+            and (
+                not occurrence_ids
+                or not claim.occurrence_ids
+                or set(claim.occurrence_ids).intersection(occurrence_ids)
+            )
+        }
+        supplied_claim_ids = tuple(_clean_strings(raw.get("approved_claim_ids") or ()))
+        # Existing deterministic fixtures predate the explicit block contract.
+        # Derive their claim set from immutable obligation associations, but
+        # mark the fallback so production telemetry can distinguish it from a
+        # model-declared association.
+        implicit_claim_ids = not bool(raw.get("approved_claim_ids"))
+        approved_claim_ids = supplied_claim_ids or tuple(sorted(allowed_claim_ids))
+        unknown_claims = sorted(set(approved_claim_ids) - allowed_claim_ids)
+        if unknown_claims:
+            raise SectionAuthoringError(
+                f"FACTUAL_PLAN_CLAIM_REFERENCE_INVALID: block {block_id} contains {unknown_claims}"
+            )
+        if not obligation_ids and approved_claim_ids:
+            raise SectionAuthoringError(f"discourse-only block cannot claim factual plan claims: {block_id}")
         legacy_aliases = tuple(_clean_strings(raw.get("evidence_ids") or ()))
         unknown_aliases = sorted(set(legacy_aliases) - set(evidence_aliases))
         if unknown_aliases:
@@ -1832,21 +1951,26 @@ def _normalize_writer_blocks(
         if channel not in {"body", "case_activity", "exercise", "assessment", "summary"}:
             raise SectionAuthoringError(f"unknown writer block channel: {channel}")
         if channel_order[channel] < last_channel:
-            raise SectionAuthoringError(
-                "writer blocks must follow deterministic channel order: body, case_activity, exercise, assessment, summary"
-            )
+            contract_normalizations.append("channel_order_deferred_to_materializer")
         last_channel = channel_order[channel]
         result.append(
             {
                 "block_id": block_id,
                 "text": text,
                 "intended_obligation_ids": tuple(obligation_ids),
+                "required_obligation_ids": tuple(required_obligation_ids),
                 "intended_occurrence_ids": tuple(occurrence_ids),
+                "approved_claim_ids": tuple(approved_claim_ids),
+                "_implicit_approved_claim_ids": implicit_claim_ids,
+                "_contract_normalizations": tuple(contract_normalizations),
                 "evidence_ids": evidence_ids,
                 "channel": channel,
             }
         )
-    return result
+    # Channels define the student-visible projection order.  Sorting here is
+    # deterministic and preserves each block's text/semantic associations;
+    # it does not invent, delete, or reassign teaching content.
+    return sorted(result, key=lambda item: (channel_order[item["channel"]], result.index(item)))
 
 
 def _block_id_list(value: Any, field_name: str, block_id: str) -> list[str]:
@@ -2254,7 +2378,126 @@ def _run_local_claim_audit(
         artifact_root=f"section:{brief.outline_node_id}",
         semantic_routing_categories=CALIBRATED_SEMANTIC_ROUTING_CATEGORIES,
     )
-    return [item.to_dict() for item in report.records]
+    result: list[dict[str, Any]] = []
+    for item in report.records:
+        record = item.to_dict()
+        occurrence_id = str(record.get("occurrence_id") or "")
+        if ":" in occurrence_id:
+            record["block_id"] = occurrence_id.rsplit(":", 1)[-1]
+        result.append(record)
+    return result
+
+
+def _run_factual_plan_conformance(
+    *,
+    brief: SectionAuthoringBrief,
+    blocks: list[dict[str, Any]],
+    claim_audit: Iterable[Mapping[str, Any]],
+    claim_judge: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Check generated source facts against the approved block-local plan.
+
+    This is intentionally separate from the evidence auditor: the latter asks
+    whether an approved proposition is supported by authorized source, while
+    this layer asks whether the writer introduced a proposition that was never
+    approved for this block.  Pedagogical synthesis and derived instruction
+    remain free to organize the approved facts without entering this gate.
+    """
+    plan = brief.factual_claim_plan
+    if plan is None:
+        return []
+    claims_by_id = {item.claim_id: item for item in plan.approved_claims}
+    block_claims = {
+        str(block.get("block_id") or ""): tuple(str(item) for item in block.get("approved_claim_ids") or ())
+        for block in blocks
+    }
+    results: list[dict[str, Any]] = []
+    for record in claim_audit:
+        content_type = str(record.get("content_type") or "")
+        if content_type not in {ContentType.SOURCE_FACT, ContentType.UNSUPPORTED_DOMAIN_CLAIM}:
+            continue
+        block_id = str(record.get("block_id") or "")
+        claim_text = str(record.get("claim_text") or record.get("source_span") or "").strip()
+        allowed_ids = tuple(item for item in block_claims.get(block_id, ()) if item in claims_by_id)
+        matched: list[str] = []
+        for claim_id in allowed_ids:
+            if _factual_claim_is_within_plan(claim_text, claims_by_id[claim_id].statement):
+                matched.append(claim_id)
+        semantic_rationale = ""
+        if not matched and claim_judge is not None and allowed_ids:
+            # A student-facing paraphrase may be semantically entailed by an
+            # approved proposition without sharing its literal wording.  The
+            # second layer is still plan-only: the judge sees the generated
+            # claim and the approved statements, never raw evidence.  Any
+            # returned support ID must be one of the block's approved claim
+            # IDs, otherwise the mapping remains fail-closed.
+            try:
+                proposal = claim_judge.judge(
+                    claim=claim_text,
+                    evidence=[
+                        {
+                            "evidence_id": item,
+                            "span": claims_by_id[item].statement,
+                        }
+                        for item in allowed_ids
+                    ],
+                    context={
+                        "role": "FACTUAL_CLAIM_PLAN",
+                        "section_id": brief.outline_node_id,
+                        "current_occurrence": ",".join(
+                            str(value)
+                            for block in blocks
+                            if str(block.get("block_id") or "") == block_id
+                            for value in (block.get("intended_occurrence_ids") or ())
+                        ),
+                        "supported_claim_envelope": {},
+                    },
+                )
+                if (
+                    str(proposal.get("status") or "") == ClaimStatus.SUPPORTED
+                    and set(str(item) for item in (proposal.get("supporting_evidence_ids") or ())).issubset(set(allowed_ids))
+                    and bool(proposal.get("supporting_evidence_ids"))
+                ):
+                    matched = [
+                        str(item)
+                        for item in proposal.get("supporting_evidence_ids") or ()
+                        if str(item) in set(allowed_ids)
+                    ]
+                    semantic_rationale = str(proposal.get("rationale") or "")
+            except Exception as exc:
+                semantic_rationale = f"plan-only semantic mapping failed closed: {type(exc).__name__}"
+        status = "SUPPORTED" if matched else "PLAN_OUTSIDE"
+        results.append({
+            "claim_id": str(record.get("claim_id") or ""),
+            "block_id": block_id,
+            "claim_text": claim_text,
+            "approved_claim_ids": list(allowed_ids),
+            "matched_claim_ids": matched,
+            "status": status,
+            "reason": "claim is covered by the block-local approved factual plan" if matched else (
+                "SOURCE_FACT proposition is not covered by any approved claim for this block"
+            ),
+            "semantic_rationale": semantic_rationale,
+        })
+    return results
+
+
+def _factual_claim_is_within_plan(claim_text: str, approved_statement: str) -> bool:
+    left = " ".join(str(claim_text or "").casefold().split())
+    right = " ".join(str(approved_statement or "").casefold().split())
+    if not left or not right:
+        return False
+    if left in right or right in left:
+        return True
+    claim_terms = _semantic_terms(left)
+    statement_terms = _semantic_terms(right)
+    if not claim_terms or not statement_terms:
+        return False
+    # Require nearly every claim term to be represented in the approved
+    # proposition.  This deliberately rejects causal/modality expansions that
+    # happen to share a topic word with an approved fact.
+    coverage = len(claim_terms & statement_terms) / max(len(claim_terms), 1)
+    return coverage >= 0.78
 
 
 def _evidence_chunk_from_span(evidence_id: str, span: Mapping[str, Any]) -> EvidenceChunk:

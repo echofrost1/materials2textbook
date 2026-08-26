@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import hashlib
+from copy import deepcopy
 import re
 from hashlib import sha256
 from typing import Any, Protocol, Sequence
@@ -440,18 +442,54 @@ class OpenAICompatibleEntailmentJudge:
         self.provider = provider
         self.model = model or str(getattr(getattr(provider, "config", None), "model", ""))
         self._call_count = 0
+        self._evaluation_count = 0
+        # Focused and full production paths may construct separate judge
+        # adapters around the same provider.  Keep an exact-prompt response
+        # cache on that shared provider so repeated claim/evidence decisions
+        # cannot drift solely because Qwen sampled twice.  The key contains
+        # the complete prompt inputs; no evidence scope is widened.
+        cache = getattr(provider, "_entailment_judge_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            try:
+                setattr(provider, "_entailment_judge_cache", cache)
+            except Exception:
+                # A read-only test double simply gets an adapter-local cache.
+                pass
+        self._cache = cache
 
     @property
     def call_count(self) -> int:
         return self._call_count
 
+    @property
+    def evaluation_count(self) -> int:
+        return self._evaluation_count
+
     def judge(self, *, claim: str, evidence: list[dict[str, str]], context: dict[str, str]) -> dict[str, Any]:
-        self._call_count += 1
+        self._evaluation_count += 1
         prompt = ENTAILMENT_PROMPT.format(
             claim=claim,
             context=json.dumps(context, ensure_ascii=False, sort_keys=True),
             evidence=json.dumps(evidence, ensure_ascii=False, sort_keys=True),
         )
+        cache_key = hashlib.sha256(
+            json.dumps(
+                {
+                    "model": self.model,
+                    "prompt_version": PROMPT_VERSION,
+                    "claim": claim,
+                    "evidence": evidence,
+                    "context": context,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        cached = self._cache.get(cache_key) if isinstance(self._cache, dict) else None
+        if isinstance(cached, dict):
+            return deepcopy(cached)
+        self._call_count += 1
         raw = self.provider.generate([
             {"role": "system", "content": "Return one JSON object and nothing else."},
             {"role": "user", "content": prompt},
@@ -459,6 +497,12 @@ class OpenAICompatibleEntailmentJudge:
         payload = _parse_json_object(raw)
         payload["model"] = self.model
         payload["prompt_version"] = PROMPT_VERSION
+        if isinstance(self._cache, dict):
+            # Keep the cache bounded for long production runs.  Eviction is
+            # deterministic and only affects performance, never authorization.
+            if len(self._cache) >= 4096:
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[cache_key] = deepcopy(payload)
         return payload
 
 

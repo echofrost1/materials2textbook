@@ -33,6 +33,11 @@ from materials2textbook.knowledge_map.section_authoring import (
     validate_structural_repair_preserves_content,
 )
 from materials2textbook.knowledge_map.teaching_blueprint import build_section_teaching_blueprint
+from materials2textbook.knowledge_map.section_authoring_recovery import (
+    CONTRACT_BLOCK,
+    SectionRecoveryProposal,
+    apply_recovery_patch_to_draft,
+)
 from materials2textbook.schemas import (
     BookChapterPlan,
     BookPlan,
@@ -235,6 +240,90 @@ def test_factual_claim_plan_exposes_only_audited_propositions_without_raw_eviden
     assert "approved_claims" in prompt
     assert "selected_evidence_contents" not in prompt
     assert "chunk-1" not in prompt
+
+
+def test_block_factual_plan_contract_rejects_plan_outside_source_fact() -> None:
+    _, _, packet, brief = _inputs()
+    plan = build_factual_claim_plan(brief, packet, [_chunk()])
+    brief = replace(brief, factual_claim_plan=plan)
+    obligation = brief.required_obligations[0]
+    approved = next(item for item in plan.approved_claims if obligation.obligation_id in item.obligation_ids)
+    draft = {
+        "blocks": [{
+            "block_id": "b-plan",
+            "channel": "body",
+            "text": "The operator must select an unrelated gas flow of 42 L/min.",
+            "intended_obligation_ids": [obligation.obligation_id],
+            "required_obligation_ids": [obligation.obligation_id],
+            "intended_occurrence_ids": [],
+            "approved_claim_ids": [approved.claim_id],
+        }],
+        "generation_provenance": {"writer": "fixture"},
+    }
+    rendered = materialize_section_draft(brief, packet, draft)
+    plan_audit = rendered.generation_provenance["factual_plan_conformance"]
+    assert any(item["status"] == "PLAN_OUTSIDE" for item in plan_audit)
+    assert rendered.blocked is True
+    assert any("FACTUAL_PLAN_OUTSIDE" in reason for reason in rendered.block_reasons)
+
+
+def test_materializer_normalizes_redundant_required_obligation_mirror() -> None:
+    _, _, packet, brief = _inputs()
+    draft = _draft(brief, body="The basic operation is explained with the supported conditions.")
+    # The intended association is immutable; a stale mirror field from a
+    # structured model response must not turn a semantically valid block into
+    # a writer-path failure.
+    draft["blocks"][0]["required_obligation_ids"] = []
+    rendered = materialize_section_draft(brief, packet, draft)
+    normalizations = rendered.generation_provenance["deterministic_contract_normalizations"]
+    assert any(
+        "required_obligation_ids_from_intended" in item["normalizations"]
+        for item in normalizations
+    )
+
+
+def test_claim_plan_contract_exposes_per_block_statement_details() -> None:
+    _, _, packet, brief = _inputs()
+    plan = build_factual_claim_plan(brief, packet, [_chunk()])
+    brief = replace(brief, factual_claim_plan=plan)
+    prompt = build_section_authoring_messages(brief, packet, [_chunk()])[1]["content"]
+    assert "approved_factual_claim_details" in prompt
+    assert any(item.statement in prompt for item in plan.approved_claims)
+
+
+def test_contract_block_recovery_can_replace_exact_span_without_mutating_metadata() -> None:
+    draft = {
+        "blocks": [{
+            "block_id": "b01",
+            "channel": "body",
+            "text": "Supported fact. Unsupported extension.",
+            "intended_obligation_ids": ["obligation-1"],
+            "required_obligation_ids": ["obligation-1"],
+            "intended_occurrence_ids": ["occ-1"],
+            "approved_claim_ids": ["claim-1"],
+            "evidence_ids": ["E1"],
+        }],
+    }
+    proposal = SectionRecoveryProposal(
+        proposal_id="p1",
+        issue_id="i1",
+        section_id="section-01",
+        action=CONTRACT_BLOCK,
+        block_id="b01",
+        obligation_ids=("obligation-1",),
+        allowed_evidence_ids=("chunk-1",),
+        target_text="Unsupported extension.",
+        retry_allowed=True,
+    )
+    patched = apply_recovery_patch_to_draft(
+        draft,
+        proposal,
+        replacement_text="Supported wording.",
+    )
+    block = patched["blocks"][0]
+    assert block["text"] == "Supported fact. Supported wording."
+    assert block["approved_claim_ids"] == ["claim-1"]
+    assert block["evidence_ids"] == ["E1"]
 
 
 def test_production_authoring_contract_promotes_contribution_and_differentiated_activity_guidance() -> None:
