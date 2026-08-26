@@ -201,6 +201,13 @@ def test_section_execution_grants_only_after_materialized_local_verification() -
     assert isinstance(result.section_assemblies[0]["recovery"], dict)
     assert result.section_assemblies[0]["recovery"]["auto_applied"] is False
     assert book_plan_deep_equal(plan, before)
+    frontier = result.authoring_frontier
+    assert len(frontier) == 1
+    assert frontier[0]["frontier_status"] == "AUTHORING_FRONTIER"
+    assert frontier[0]["authoring_status"] == "VERIFIED_GRANT"
+    assert frontier[0]["occurrence_id"] == "occ-1"
+    assert frontier[0]["grant_applied"] is True
+    assert "compilation_audit" in frontier[0]
 
 
 def test_section_execution_does_not_use_rule_fallback_when_writer_is_unavailable() -> None:
@@ -218,3 +225,295 @@ def test_section_execution_does_not_use_rule_fallback_when_writer_is_unavailable
     )
     assert result.verified_state.availability_by_knowledge == {}
     assert result.blocked_occurrences[0]["issue_code"] == "SECTION_WRITER_FAILED"
+
+
+def test_section_execution_applies_local_claim_contraction_before_grant() -> None:
+    plan, chunk, source, point, occurrence, delta, _knowledge_map, report = _fixture()
+
+    def writer(brief, packet, chunks):
+        obligation_ids = [item.obligation_id for item in brief.required_obligations]
+        return {
+            "blocks": [{
+                "block_id": "b1",
+                "channel": "body",
+                "text": (
+                    "The explanation defines the equipment setup. The steps show how to perform "
+                    "the setup and verify the connection. This operation always guarantees every result."
+                ),
+                "intended_obligation_ids": obligation_ids,
+                "intended_occurrence_ids": ["occ-1"],
+                "evidence_ids": ["E1"],
+            }],
+            "generation_provenance": {"writer": "fixture-overreach-writer"},
+        }
+
+    class Judge:
+        call_count = 0
+        model = "fixture-judge"
+
+        def judge(self, *, claim, evidence, context):
+            self.call_count += 1
+            if "always guarantees" in claim.lower():
+                return {
+                    "status": "UNSUPPORTED",
+                    "supporting_evidence_ids": [],
+                    "rationale": "The authorized evidence does not support an absolute guarantee.",
+                    "confidence": 1.0,
+                    "unsupported_part": claim,
+                }
+            return {
+                "status": "SUPPORTED",
+                "supporting_evidence_ids": [item["evidence_id"] for item in evidence],
+                "rationale": "The fixture evidence supports the bounded claim.",
+                "confidence": 1.0,
+            }
+
+    result = execute_verified_sections(
+        book_plan=plan,
+        completeness_report=report,
+        occurrences=[occurrence],
+        deltas=[delta],
+        sources={source.source_knowledge_point_id: source},
+        points={point.knowledge_id: point},
+        chunks=[chunk],
+        section_writer=writer,
+        semantic_entailment_judge=Judge(),
+    )
+    recovery = result.section_assemblies[0]["recovery"]
+    assert recovery["proposals"]
+    assert recovery["auto_applied"] is True
+    assert any(item["status"] == "ACCEPTED" for item in recovery["attempts"])
+    assert result.transitions[-1]["grant_applied"] is True
+
+
+def test_section_execution_accepts_block_local_minimal_supported_rewrite() -> None:
+    plan, chunk, source, point, occurrence, delta, _knowledge_map, report = _fixture()
+
+    def writer(brief, packet, chunks):
+        return {
+            "blocks": [{
+                "block_id": "b1",
+                "channel": "body",
+                "text": (
+                    "The explanation defines the equipment setup. "
+                    "This operation always guarantees every result."
+                ),
+                "intended_obligation_ids": [item.obligation_id for item in brief.required_obligations],
+                "intended_occurrence_ids": ["occ-1"],
+                "evidence_ids": ["E1"],
+            }],
+            "generation_provenance": {"writer": "fixture-overreach-writer"},
+        }
+
+    class Judge:
+        call_count = 0
+        model = "fixture-judge"
+
+        def judge(self, *, claim, evidence, context):
+            self.call_count += 1
+            if "always guarantees" in claim.lower():
+                return {
+                    "status": "UNSUPPORTED",
+                    "supporting_evidence_ids": [],
+                    "rationale": "The authorized evidence does not support an absolute guarantee.",
+                    "confidence": 1.0,
+                    "unsupported_part": claim,
+                }
+            return {
+                "status": "SUPPORTED",
+                "supporting_evidence_ids": [item["evidence_id"] for item in evidence],
+                "rationale": "The fixture evidence supports the bounded claim.",
+                "confidence": 1.0,
+            }
+
+    def local_rewrite(proposal, brief, packet, draft, chunks):
+        assert proposal.block_id == "b1"
+        assert proposal.allowed_evidence_ids == ("e1",)
+        assert brief.packet_id == packet.packet_id
+        assert draft["blocks"][0]["evidence_ids"] == ["E1"]
+        assert [item.chunk_id for item in chunks] == ["e1"]
+        return "The explanation defines the equipment setup and its verification steps."
+
+    result = execute_verified_sections(
+        book_plan=plan,
+        completeness_report=report,
+        occurrences=[occurrence],
+        deltas=[delta],
+        sources={source.source_knowledge_point_id: source},
+        points={point.knowledge_id: point},
+        chunks=[chunk],
+        section_writer=writer,
+        semantic_entailment_judge=Judge(),
+        local_recovery_writer=local_rewrite,
+    )
+    recovery = result.section_assemblies[0]["recovery"]
+    assert recovery["auto_applied"] is True
+    assert recovery["attempts"][0]["action"] == "MINIMAL_SUPPORTED_REWRITE"
+    assert recovery["attempts"][0]["status"] == "ACCEPTED"
+    assert result.transitions[-1]["grant_applied"] is True
+
+
+def test_section_conformance_checks_all_occurrence_spans() -> None:
+    plan, chunk, source, point, occurrence, delta, _knowledge_map, report = _fixture()
+
+    def writer(brief, packet, chunks):
+        obligation_ids = [item.obligation_id for item in brief.required_obligations]
+        return {
+            "blocks": [
+                {
+                    "block_id": "b1",
+                    "channel": "body",
+                    "text": "The explanation defines the equipment setup.",
+                    "intended_obligation_ids": obligation_ids,
+                    "intended_occurrence_ids": ["occ-1"],
+                    "evidence_ids": ["E1"],
+                },
+                {
+                    "block_id": "b2",
+                    "channel": "body",
+                    "text": "The steps complete the equipment setup, connect it, and verify the connection result.",
+                    "intended_obligation_ids": obligation_ids,
+                    "intended_occurrence_ids": ["occ-1"],
+                    "evidence_ids": ["E1"],
+                },
+            ],
+            "generation_provenance": {"writer": "fixture-multi-span-writer"},
+        }
+
+    class Judge:
+        call_count = 0
+        model = "fixture-judge"
+
+        def judge(self, *, claim, evidence, context):
+            self.call_count += 1
+            return {
+                "status": "SUPPORTED",
+                "supporting_evidence_ids": [item["evidence_id"] for item in evidence],
+                "rationale": "fixture evidence supports both mapped spans",
+                "confidence": 1.0,
+            }
+
+    result = execute_verified_sections(
+        book_plan=plan,
+        completeness_report=report,
+        occurrences=[occurrence],
+        deltas=[delta],
+        sources={source.source_knowledge_point_id: source},
+        points={point.knowledge_id: point},
+        chunks=[chunk],
+        section_writer=writer,
+        semantic_entailment_judge=Judge(),
+    )
+    assert result.transitions[-1]["grant_applied"] is True
+
+
+def test_section_packet_evidence_reaches_occurrence_local_claim_audit() -> None:
+    """Section-owned evidence must drive the sequential occurrence audit.
+
+    A source-bounded section packet can authorize a chunk even when the
+    occurrence's planning delta did not carry that chunk ID.  The final
+    occurrence-local claim audit must consume the materialized packet span,
+    without widening the evidence scope.
+    """
+    plan, chunk, source, point, occurrence, delta, _knowledge_map, report = _fixture()
+    occurrence = replace(occurrence, source_chunk_ids=[])
+    delta = replace(delta, evidence_chunk_ids=[])
+
+    def writer(brief, packet, chunks):
+        obligation_ids = [item.obligation_id for item in brief.required_obligations]
+        return {
+            "blocks": [{
+                "block_id": "b1",
+                "channel": "body",
+                "text": (
+                    "The explanation defines the equipment setup. The steps show how to perform "
+                    "the setup and verify the connection. Complete the equipment setup and verify "
+                    "the connection."
+                ),
+                "intended_obligation_ids": obligation_ids,
+                "intended_occurrence_ids": ["occ-1"],
+                "evidence_ids": ["E1"],
+            }],
+            "generation_provenance": {"writer": "fixture-packet-evidence-writer"},
+        }
+
+    class Judge:
+        call_count = 0
+        model = "fixture-judge"
+
+        def judge(self, *, claim, evidence, context):
+            self.call_count += 1
+            assert evidence, "materialized packet evidence must reach occurrence audit"
+            assert {item["evidence_id"] for item in evidence} == {"e1"}
+            return {
+                "status": "SUPPORTED",
+                "supporting_evidence_ids": ["e1"],
+                "rationale": "packet-authorized evidence supports the claim",
+                "confidence": 1.0,
+            }
+
+    result = execute_verified_sections(
+        book_plan=plan,
+        completeness_report=report,
+        occurrences=[occurrence],
+        deltas=[delta],
+        sources={source.source_knowledge_point_id: source},
+        points={point.knowledge_id: point},
+        chunks=[chunk],
+        section_writer=writer,
+        semantic_entailment_judge=Judge(),
+    )
+    assert result.transitions[-1]["grant_applied"] is True
+
+
+def test_single_occurrence_body_without_model_association_uses_linked_packet_scope() -> None:
+    """The existing sole-occurrence mapping remains packet-bounded."""
+    plan, chunk, source, point, occurrence, delta, _knowledge_map, report = _fixture()
+    occurrence = replace(occurrence, source_chunk_ids=[])
+    delta = replace(delta, evidence_chunk_ids=[])
+
+    def writer(brief, packet, chunks):
+        return {
+            "blocks": [{
+                "block_id": "b1",
+                "channel": "body",
+                "text": (
+                    "The explanation defines the equipment setup. The steps show how to perform "
+                    "the setup and verify the connection. Complete the equipment setup and verify "
+                    "the connection."
+                ),
+                # The deterministic one-occurrence mapping owns this block;
+                # there is no section-wide evidence fallback in the audit.
+                "intended_obligation_ids": [],
+                "intended_occurrence_ids": [],
+                "evidence_ids": [],
+            }],
+            "generation_provenance": {"writer": "fixture-unassociated-body-writer"},
+        }
+
+    class Judge:
+        call_count = 0
+        model = "fixture-judge"
+
+        def judge(self, *, claim, evidence, context):
+            self.call_count += 1
+            assert {item["evidence_id"] for item in evidence} == {"e1"}
+            return {
+                "status": "SUPPORTED",
+                "supporting_evidence_ids": ["e1"],
+                "rationale": "linked obligation evidence supports the claim",
+                "confidence": 1.0,
+            }
+
+    result = execute_verified_sections(
+        book_plan=plan,
+        completeness_report=report,
+        occurrences=[occurrence],
+        deltas=[delta],
+        sources={source.source_knowledge_point_id: source},
+        points={point.knowledge_id: point},
+        chunks=[chunk],
+        section_writer=writer,
+        semantic_entailment_judge=Judge(),
+    )
+    assert result.transitions[-1]["grant_applied"] is True

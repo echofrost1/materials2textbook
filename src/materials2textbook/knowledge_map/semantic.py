@@ -31,6 +31,7 @@ def prerequisite_has_runtime_basis(
     provenance: str,
     supporting_basis: str,
     confidence: float,
+    necessity: str = "HARD",
 ) -> bool:
     """Return whether a prerequisite proposal may affect runtime execution.
 
@@ -39,7 +40,8 @@ def prerequisite_has_runtime_basis(
     support provenance, and confidence checks.
     """
     return bool(
-        knowledge_id.strip()
+        necessity != "NOT_REQUIRED"
+        and knowledge_id.strip()
         and rationale.strip()
         and (evidence_chunk_ids or provenance.strip() or supporting_basis.strip())
         and (required_facets or required_extension_keys)
@@ -140,7 +142,10 @@ class HeuristicSemanticPlanner:
                     provenance=edge.provenance,
                     supporting_basis=edge.supporting_basis,
                     confidence=edge.confidence,
+                    necessity=getattr(edge, "necessity", "HARD"),
                 ),
+                minimum_required_facet=getattr(edge, "minimum_required_facet", ""),
+                necessity=getattr(edge, "necessity", "HARD"),
             )
             for edge in prerequisites
             if edge.target_knowledge_id == knowledge.knowledge_id and edge.source_knowledge_id != knowledge.knowledge_id

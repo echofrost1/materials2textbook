@@ -27,6 +27,12 @@ PARTIAL_OBLIGATION = "PARTIAL_OBLIGATION"
 SOURCE_GAP = "SOURCE_GAP"
 OBLIGATION_STATUSES = frozenset({SUPPORTED_OBLIGATION, PARTIAL_OBLIGATION, SOURCE_GAP})
 
+# Some section responsibilities are derived from already accepted content
+# rather than requiring a source sentence of their own.  Summary is the first
+# production responsibility with this contract: it may synthesize the
+# supported section teaching, but it may not introduce a new domain claim.
+DERIVABLE_FROM_VERIFIED_CONTENT = "DERIVABLE_FROM_VERIFIED_CONTENT"
+
 MAX_CANDIDATES_PER_OBLIGATION = 12
 MAX_REJECTED_CANDIDATES_PER_OBLIGATION = 4
 FULL_SUPPORT_SCORE = 0.45
@@ -99,6 +105,7 @@ def build_section_evidence_packet(
     *,
     prior_verified_support: Mapping[str, Any] | None = None,
     max_candidates_per_obligation: int = MAX_CANDIDATES_PER_OBLIGATION,
+    source_bounded_calibration: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None = None,
 ) -> SectionEvidencePacket:
     """Create one bounded packet without mutating ``book_plan`` or ``blueprint``.
 
@@ -160,6 +167,14 @@ def build_section_evidence_packet(
             effective_owned,
             missing_owned_ids,
         )
+        calibrated_binding = _calibrated_evidence_binding(
+            obligation,
+            source_bounded_calibration,
+            effective_owned=effective_owned,
+            chunk_map=chunk_map,
+        )
+        if calibrated_binding is not None:
+            binding = calibrated_binding
         bindings.append(binding)
         if binding.status == SOURCE_GAP and obligation.required == REQUIRED:
             source_gaps.append(
@@ -187,6 +202,9 @@ def build_section_evidence_packet(
         "unauthorized_accepted_evidence_count": 0,
         "prior_verified_support_keys": prior_keys,
         "qwen_used": False,
+        "source_bounded_semantic_support_used": any(
+            bool(item.provenance.get("source_bounded_semantic_support")) for item in bindings
+        ),
         "obligation_count": len(blueprint.obligations),
         "required_obligation_count": sum(item.required == REQUIRED for item in blueprint.obligations),
         "status_counts": _status_counts(bindings),
@@ -239,7 +257,11 @@ def validate_section_evidence_packet(
     for binding in packet.obligation_bindings:
         if binding.status not in OBLIGATION_STATUSES:
             issues.append(f"UNKNOWN_OBLIGATION_STATUS:{binding.status}")
-        if binding.status == SUPPORTED_OBLIGATION and not binding.accepted_evidence_ids:
+        if (
+            binding.status == SUPPORTED_OBLIGATION
+            and not binding.accepted_evidence_ids
+            and not bool(binding.provenance.get("derivable_from_verified_content"))
+        ):
             issues.append(f"SUPPORTED_WITHOUT_EVIDENCE:{binding.obligation_id}")
         if any(item not in packet.authorized_primary_evidence_ids + packet.authorized_reference_evidence_ids for item in binding.accepted_evidence_ids):
             issues.append(f"UNAUTHORIZED_EVIDENCE:{binding.obligation_id}")
@@ -252,17 +274,69 @@ def _build_binding(
     out_scope_ranked: list[tuple[float, EvidenceChunk, tuple[str, ...]]],
     effective_owned: set[str],
     missing_owned_ids: list[str],
-) -> ObligationEvidenceBinding:
+    ) -> ObligationEvidenceBinding:
+    # A pedagogical summary is not a second factual teaching obligation.  It
+    # is synthesized from the section's accepted content after the factual
+    # obligations have been bound.  Keeping this as a packet-level provenance
+    # flag lets the writer contract allow a discourse-only summary while the
+    # claim audit still rejects any new factual assertion in that summary.
+    if (
+        obligation.kind == "summary"
+        and str(obligation.evidence_requirement or "").strip()
+        == "summary may be derived from already-supported section content"
+    ):
+        return ObligationEvidenceBinding(
+            obligation_id=obligation.obligation_id,
+            obligation_kind=obligation.kind,
+            status=SUPPORTED_OBLIGATION,
+            accepted_evidence_ids=(),
+            accepted_evidence_spans=(),
+            candidate_evidence_ids=(),
+            rejected_candidates=(),
+            support_rationale=(
+                "summary is pedagogical synthesis derived from accepted section content; "
+                "no summary-specific source sentence is required"
+            ),
+            provenance={
+                "obligation_required": obligation.required,
+                "evidence_requirement": DERIVABLE_FROM_VERIFIED_CONTENT,
+                "derivable_from_verified_content": True,
+                "independent_evidence_required": False,
+                "retrieval_scope": "accepted section obligations",
+                "semantic_rerank_used": False,
+            },
+        )
     candidate_ids = tuple(item[1].chunk_id for item in owned_ranked if item[0] >= PARTIAL_SUPPORT_SCORE)
+    # Select a minimal sufficient *set*, not merely the single highest lexical
+    # hit.  A concept/procedure obligation can be split across several owned
+    # chunks; each new chunk is retained only when it contributes new matched
+    # propositions.  The writer still receives only this obligation-local set.
+    selected: list[tuple[float, EvidenceChunk, tuple[str, ...]]] = []
+    covered_terms: set[str] = set()
+    for item in owned_ranked:
+        if item[0] < PARTIAL_SUPPORT_SCORE:
+            continue
+        marginal = set(item[2]) - covered_terms
+        if not selected or marginal or (item[0] >= FULL_SUPPORT_SCORE and len(selected) < 3):
+            selected.append(item)
+            covered_terms.update(item[2])
+        if len(selected) >= 6:
+            break
+    objective_terms = _terms(obligation.objective)
+    combined_coverage = len(covered_terms & objective_terms) / max(1, len(objective_terms))
     top_score = owned_ranked[0][0] if owned_ranked else 0.0
-    if top_score >= FULL_SUPPORT_SCORE:
+    if top_score >= FULL_SUPPORT_SCORE or combined_coverage >= 0.72:
         status = SUPPORTED_OBLIGATION
-        selected = [item for item in owned_ranked if item[0] >= FULL_SUPPORT_SCORE][:3]
-        rationale = "one or more authorized chunks cover the obligation at the deterministic full-support threshold"
+        rationale = (
+            "the selected authorized evidence set jointly covers the obligation "
+            f"(coverage={combined_coverage:.3f})"
+        )
     elif top_score >= PARTIAL_SUPPORT_SCORE:
         status = PARTIAL_OBLIGATION
-        selected = owned_ranked[:1]
-        rationale = "authorized evidence overlaps the obligation but does not cover it at the full-support threshold"
+        rationale = (
+            "the selected authorized evidence set provides partial support "
+            f"(coverage={combined_coverage:.3f})"
+        )
     else:
         status = SOURCE_GAP
         selected = []
@@ -310,6 +384,187 @@ def _build_binding(
             "retrieval_scope": "section-owned whitelist",
             "semantic_rerank_used": False,
             "accepted_ids_are_whitelisted": all(item in effective_owned for item in accepted_ids),
+            "evidence_set_support": {
+                "status": status,
+                "combined_matched_terms": sorted(covered_terms),
+                "combined_coverage": round(combined_coverage, 6),
+                "selected_evidence_ids": list(accepted_ids),
+                "selection_strategy": "greedy marginal proposition coverage",
+            },
+        },
+    )
+
+
+def _calibration_rows_for_obligation(
+    calibration: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None,
+    obligation_id: str,
+) -> list[Mapping[str, Any]]:
+    """Return validated source-bounded calibration rows for one obligation.
+
+    The production freeze loader currently supplies a mapping keyed by
+    ``obligation_id`` while archived calibration artifacts store a list under
+    ``obligation_calibrations``.  Accept both representations here so the
+    evidence packet cannot silently fall back to a book-wide pool merely
+    because an artifact was normalized differently.
+    """
+
+    if calibration is None:
+        return []
+    rows: Any = calibration
+    if isinstance(rows, Mapping) and "obligation_calibrations" in rows:
+        rows = rows.get("obligation_calibrations")
+    if isinstance(rows, Mapping):
+        direct = rows.get(obligation_id)
+        if isinstance(direct, Mapping):
+            return [direct]
+        result = []
+        for key, value in rows.items():
+            if not isinstance(value, Mapping):
+                continue
+            if str(value.get("obligation_id") or key) == obligation_id:
+                result.append(value)
+        return result
+    if isinstance(rows, Iterable) and not isinstance(rows, (str, bytes)):
+        return [
+            value
+            for value in rows
+            if isinstance(value, Mapping) and str(value.get("obligation_id") or "") == obligation_id
+        ]
+    return []
+
+
+def _calibrated_evidence_binding(
+    obligation: TeachingObligation,
+    calibration: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None,
+    *,
+    effective_owned: set[str],
+    chunk_map: Mapping[str, EvidenceChunk],
+) -> ObligationEvidenceBinding | None:
+    """Apply an already validated semantic evidence result without widening scope.
+
+    Source-bounded calibration is an upstream, frozen artifact.  It may make a
+    deterministic lexical binding more precise (including a multi-chunk
+    binding), but it is never allowed to authorize an ID outside the current
+    section's effective ownership or to invent a support result without
+    concrete evidence IDs.  Unknown/invalid rows deliberately return ``None``
+    so the ordinary deterministic binding remains fail-closed.
+    """
+
+    rows = _calibration_rows_for_obligation(calibration, obligation.obligation_id)
+    if not rows:
+        return None
+    row = rows[-1]
+    calibrated_status = str(row.get("calibrated_status") or "").upper()
+    if calibrated_status == "OUT_OF_SOURCE_SCOPE":
+        # A source-bounded exclusion is an audit record, never writer
+        # responsibility, even if a stale row happens to carry an old
+        # evidence_result value.
+        return _calibration_status_binding(
+            obligation,
+            row,
+            SOURCE_GAP,
+            "OUT_OF_SOURCE_SCOPE is excluded from writer responsibility",
+            support_used=False,
+        )
+    decision = str(row.get("evidence_result") or row.get("semantic_result") or row.get("decision") or "").upper()
+    if decision in {"PARTIALLY_SUPPORTED", "PARTIAL_OBLIGATION"}:
+        decision = "PARTIAL"
+    elif decision in {"SUPPORTED_OBLIGATION"}:
+        decision = "SUPPORTED"
+    elif decision in {"NO_SUPPORT", "SOURCE_GAP"}:
+        return _calibration_gap_binding(obligation, row, str(row.get("rationale") or "validated semantic judgement found no support"))
+    elif not decision:
+        return _calibration_gap_binding(obligation, row, "source-bounded calibration did not provide a support decision")
+    if decision not in {"SUPPORTED", "PARTIAL"}:
+        return _calibration_gap_binding(obligation, row, "unrecognized source-bounded support decision")
+
+    raw_ids = row.get("supporting_evidence_ids") or row.get("accepted_evidence_ids") or row.get("evidence_ids") or ()
+    requested_ids = _dedupe(raw_ids if isinstance(raw_ids, Iterable) and not isinstance(raw_ids, (str, bytes)) else [raw_ids])
+    # A calibration row containing an unowned ID is not partially trusted: it
+    # indicates an artifact/ownership mismatch and must remain fail-closed.
+    if not requested_ids or any(item not in effective_owned or item not in chunk_map for item in requested_ids):
+        if decision == "PARTIAL":
+            return _calibration_partial_binding(obligation, row, "partial semantic support has no valid authorized evidence set")
+        return _calibration_gap_binding(obligation, row, "supported semantic result referenced evidence outside the authorized packet")
+    selected_chunks = [chunk_map[item] for item in requested_ids]
+    spans = tuple(_span_record(obligation, 1.0, chunk, ()) for chunk in selected_chunks)
+    supported_requirements = row.get("supported_requirements") or row.get("supported_propositions") or ()
+    unsupported_requirements = row.get("unsupported_requirements") or ()
+    evidence_set_status = SUPPORTED_OBLIGATION if decision == "SUPPORTED" else PARTIAL_OBLIGATION
+    rationale = str(row.get("rationale") or "source-bounded semantic evidence calibration")
+    return ObligationEvidenceBinding(
+        obligation_id=obligation.obligation_id,
+        obligation_kind=obligation.kind,
+        status=evidence_set_status,
+        accepted_evidence_ids=tuple(requested_ids),
+        accepted_evidence_spans=spans,
+        candidate_evidence_ids=tuple(requested_ids),
+        rejected_candidates=(),
+        support_rationale=rationale,
+        provenance={
+            "obligation_required": obligation.required,
+            "evidence_requirement": obligation.evidence_requirement,
+            "retrieval_scope": "validated source-bounded calibration within section whitelist",
+            "semantic_rerank_used": True,
+            "source_bounded_semantic_support": True,
+            "evidence_set_support": {
+                "status": evidence_set_status,
+                "selected_evidence_ids": list(requested_ids),
+                "selection_strategy": "validated semantic calibration multi-evidence set",
+                "supported_requirements": list(supported_requirements) if isinstance(supported_requirements, Iterable) and not isinstance(supported_requirements, (str, bytes)) else [str(supported_requirements)] if supported_requirements else [],
+                "unsupported_requirements": list(unsupported_requirements) if isinstance(unsupported_requirements, Iterable) and not isinstance(unsupported_requirements, (str, bytes)) else [str(unsupported_requirements)] if unsupported_requirements else [],
+            },
+            "calibration_provenance": {
+                "obligation_id": obligation.obligation_id,
+                "evidence_result": decision,
+                "rationale": rationale,
+                "calibration_row_provenance": row.get("provenance") or row.get("calibration_provenance") or "validated source-bounded calibration",
+            },
+            "accepted_ids_are_whitelisted": True,
+        },
+    )
+
+
+def _calibration_gap_binding(
+    obligation: TeachingObligation,
+    row: Mapping[str, Any],
+    rationale: str,
+) -> ObligationEvidenceBinding:
+    return _calibration_status_binding(obligation, row, SOURCE_GAP, rationale)
+
+
+def _calibration_partial_binding(
+    obligation: TeachingObligation,
+    row: Mapping[str, Any],
+    rationale: str,
+) -> ObligationEvidenceBinding:
+    return _calibration_status_binding(obligation, row, PARTIAL_OBLIGATION, rationale)
+
+
+def _calibration_status_binding(
+    obligation: TeachingObligation,
+    row: Mapping[str, Any],
+    status: str,
+    rationale: str,
+    *,
+    support_used: bool = True,
+) -> ObligationEvidenceBinding:
+    return ObligationEvidenceBinding(
+        obligation_id=obligation.obligation_id,
+        obligation_kind=obligation.kind,
+        status=status,
+        support_rationale=rationale,
+        provenance={
+            "obligation_required": obligation.required,
+            "retrieval_scope": "validated source-bounded calibration",
+            "semantic_rerank_used": True,
+            "source_bounded_semantic_support": support_used,
+            "evidence_set_support": {"status": status, "selected_evidence_ids": []},
+            "calibration_provenance": {
+                "obligation_id": obligation.obligation_id,
+                "evidence_result": str(row.get("evidence_result") or row.get("semantic_result") or row.get("decision") or ""),
+                "rationale": rationale,
+            },
         },
     )
 

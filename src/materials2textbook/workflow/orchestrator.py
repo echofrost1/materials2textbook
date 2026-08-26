@@ -56,7 +56,7 @@ from materials2textbook.exporters.digital_book import export_digital_book
 from materials2textbook.exporters.docx import markdown_to_docx
 from materials2textbook.io_utils import read_jsonl, write_json, write_jsonl, write_text, to_jsonable
 from materials2textbook.llm.cache import CachingLLMProvider, LLMCacheStats
-from materials2textbook.llm.provider import LLMProvider
+from materials2textbook.llm.provider import DEFAULT_CONTEXT_WINDOW, LLMProvider
 from materials2textbook.knowledge_map.rendered_conformance import (
     extract_rendered_occurrences,
     render_conformance_report_markdown,
@@ -97,7 +97,7 @@ from materials2textbook.knowledge_map.pipeline import (
 )
 from materials2textbook.knowledge_map.semantic import HeuristicSemanticPlanner
 from materials2textbook.knowledge_map.semantic_evaluation import evaluate_semantic_planning
-from materials2textbook.agents.knowledge_semantic_planner import LLMSemanticPlanningAgent
+from materials2textbook.agents.knowledge_semantic_planner import LLMSemanticPlanningAgent, estimate_message_tokens
 from materials2textbook.knowledge_map.execution import execute_verified_occurrences, execute_verified_sections
 from materials2textbook.knowledge_map.rendered_claim_semantic_audit import (
     CALIBRATED_SEMANTIC_ROUTING_CATEGORIES,
@@ -124,12 +124,16 @@ from materials2textbook.knowledge_map.shared_fact_materialization import (
     skipped_shared_fact_materialization,
 )
 from materials2textbook.knowledge_map.section_discourse import (
+    build_chapter_synthesis,
     build_section_discourse_bodies,
     complete_section_discourse_audits,
 )
 from materials2textbook.knowledge_map.section_authoring import (
     build_section_authoring_messages,
+    classify_section_writer_failure,
+    materialize_section_draft,
     parse_section_authoring_response,
+    validate_structural_repair_preserves_content,
 )
 from materials2textbook.knowledge_map.writing_briefs import (
     FallbackOccurrence,
@@ -138,7 +142,7 @@ from materials2textbook.knowledge_map.writing_briefs import (
     build_writing_brief_coverage_from_payload,
     fallbacks_for_chapter,
 )
-from materials2textbook.schemas import ChapterPlan, EvidenceChunk, ReviewIssue, ReviewReport, WorkflowOutputs
+from materials2textbook.schemas import ChapterPlan, DigitalBookBlock, EvidenceChunk, ReviewIssue, ReviewReport, WorkflowOutputs
 from materials2textbook.workflow.config import WorkflowConfig
 from materials2textbook.workflow.reporting import build_workflow_summary, render_evidence_markdown, render_review_markdown
 from materials2textbook.workflow.token_budget import TokenBudgetReport, apply_evidence_token_budget, estimate_chunks_tokens
@@ -146,6 +150,126 @@ from materials2textbook.workflow.token_budget import TokenBudgetReport, apply_ev
 
 def _progress(message: str) -> None:
     print(f"[workflow] {message}", flush=True)
+
+
+def _load_source_bounded_obligation_calibration(
+    freeze_validation: Mapping[str, Any] | None,
+    calibration_input: Path | None,
+) -> dict[str, dict[str, Any]]:
+    """Load the validated source-bounded obligation overlay, if present.
+
+    The freeze artifact remains the trust anchor.  Its optional
+    ``source_calibration`` pointer is only used to load the already validated
+    row-level overlay; no diagnosis or re-planning is performed here.
+    """
+
+    candidates: list[Path] = []
+    inline: Any = None
+    if isinstance(freeze_validation, Mapping):
+        inline = freeze_validation.get("source_bounded_obligation_calibration")
+        value = freeze_validation.get("source_bounded_calibration")
+        if isinstance(value, str) and value.strip():
+            candidates.append(Path(value))
+    if calibration_input is not None and calibration_input.is_file():
+        try:
+            payload = json.loads(calibration_input.read_text(encoding="utf-8"))
+        except Exception:
+            payload = None
+        if isinstance(payload, Mapping):
+            inline = inline or payload.get("obligation_calibrations")
+            source = payload.get("source_calibration")
+            if isinstance(source, str) and source.strip():
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    source_path = calibration_input.parent / source_path
+                candidates.append(source_path)
+    if isinstance(inline, Mapping):
+        rows = inline.get("obligation_calibrations", inline)
+        if isinstance(rows, Mapping):
+            return {str(key): dict(value) for key, value in rows.items() if isinstance(value, Mapping)}
+        if isinstance(rows, list):
+            return {
+                str(row.get("obligation_id")): dict(row)
+                for row in rows
+                if isinstance(row, Mapping) and row.get("obligation_id")
+            }
+    elif isinstance(inline, list):
+        return {
+            str(row.get("obligation_id")): dict(row)
+            for row in inline
+            if isinstance(row, Mapping) and row.get("obligation_id")
+        }
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        rows = payload.get("obligation_calibrations") if isinstance(payload, Mapping) else None
+        if isinstance(rows, list):
+            return {
+                str(row.get("obligation_id")): dict(row)
+                for row in rows
+                if isinstance(row, Mapping) and row.get("obligation_id")
+            }
+        if isinstance(rows, Mapping):
+            return {str(key): dict(value) for key, value in rows.items() if isinstance(value, Mapping)}
+    return {}
+
+
+def _load_source_bounded_prerequisite_calibration(
+    freeze_validation: Mapping[str, Any] | None,
+    calibration_input: Path | None,
+) -> dict[str, Any] | list[dict[str, Any]] | None:
+    """Load the independently audited source-bounded prerequisite sidecar.
+
+    This is an effective-runtime overlay, not a planner result.  Missing or
+    malformed sidecars remain absent and are handled fail-closed by the
+    prerequisite compiler; this loader never invents or weakens an edge.
+    """
+    inline: Any = None
+    candidates: list[Path] = []
+    if isinstance(freeze_validation, Mapping):
+        inline = (
+            freeze_validation.get("source_bounded_prerequisite_calibration")
+            or freeze_validation.get("prerequisite_calibration")
+            or freeze_validation.get("source_bounded_prerequisites")
+        )
+        for key in ("source_prerequisite_calibration", "prerequisite_calibration_path"):
+            value = freeze_validation.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(Path(value))
+    if calibration_input is not None and calibration_input.is_file():
+        try:
+            payload = json.loads(calibration_input.read_text(encoding="utf-8"))
+        except Exception:
+            payload = None
+        if isinstance(payload, Mapping):
+            inline = inline or payload.get("source_bounded_prerequisite_calibration")
+            inline = inline or payload.get("prerequisite_calibration")
+            inline = inline or payload.get("source_bounded_prerequisites")
+            for key in ("source_prerequisite_calibration", "prerequisite_calibration_path"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    path = Path(value)
+                    candidates.append(path if path.is_absolute() else calibration_input.parent / path)
+    if inline is not None:
+        return inline
+    for candidate in candidates:
+        if not candidate.is_absolute() and calibration_input is not None:
+            candidate = calibration_input.parent / candidate
+        if not candidate.is_file():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, Mapping):
+            return payload
+        if isinstance(payload, list):
+            return payload
+    return None
 
 
 class _DeterministicSemanticPlanningAgent:
@@ -253,6 +377,7 @@ class TextbookWorkflow:
         book_plan_is_frozen: bool = False,
         freeze_calibration_input: Path | None = None,
         completeness_first_authoring: bool = True,
+        preview_fullbook: bool = False,
         shared_fact_proposals: list[dict[str, Any]] | None = None,
         shared_fact_materialization_request: Mapping[str, Any] | None = None,
     ) -> WorkflowOutputs:
@@ -264,11 +389,19 @@ class TextbookWorkflow:
             raise ValueError("book_plan_is_frozen requires book_plan_input; generated plans freeze only after normal post-processing.")
         semantic_book_mode = bool(semantic_book_mode or semantic_evaluation_input)
         completeness_first_authoring = bool(completeness_first_authoring)
+        preview_fullbook = bool(preview_fullbook)
+        if preview_fullbook and not semantic_book_mode:
+            raise ValueError("preview_fullbook requires semantic_book_mode")
+        if preview_fullbook and not book_plan_is_frozen:
+            raise ValueError("preview_fullbook requires a validated frozen BookPlan input")
         # Semantic production execution is defined only for a frozen
         # whole-book plan; callers need not duplicate the book-mode flag.
         book_mode = bool(book_mode or semantic_book_mode)
         semantic_runtime_mode = semantic_book_mode and semantic_evaluation_input is None
         semantic_execution_mode = (
+            "preview_fullbook"
+            if preview_fullbook and semantic_runtime_mode
+            else
             "verified_sequential"
             if semantic_runtime_mode
             else "external_payload_replay"
@@ -683,10 +816,20 @@ class TextbookWorkflow:
                     semantic_agent._occurrences = {
                         item.occurrence_id: item for item in knowledge_map.planned_occurrences
                     }
+                source_bounded_calibration_for_planning = _load_source_bounded_obligation_calibration(
+                    freeze_validation,
+                    freeze_calibration_input,
+                )
+                source_bounded_prerequisite_calibration_for_planning = _load_source_bounded_prerequisite_calibration(
+                    freeze_validation,
+                    freeze_calibration_input,
+                )
                 semantic_evaluation = evaluate_semantic_planning(
                     knowledge_map=knowledge_map,
                     chunks=chunks,
                     agent=semantic_agent,
+                    source_bounded_calibration=source_bounded_calibration_for_planning,
+                    source_bounded_prerequisite_calibration=source_bounded_prerequisite_calibration_for_planning,
                 )
                 write_knowledge_map_artifacts(semantic_evaluation.knowledge_map, output_dir)
                 write_semantic_evaluation_artifacts(semantic_evaluation, output_dir)
@@ -763,6 +906,14 @@ class TextbookWorkflow:
                         )
                     else:
                         raise RuntimeError("completeness-first authoring requires a validated BookPlan freeze")
+                    source_bounded_calibration = _load_source_bounded_obligation_calibration(
+                        freeze_validation,
+                        freeze_calibration_input,
+                    )
+                    source_bounded_prerequisite_calibration = _load_source_bounded_prerequisite_calibration(
+                        freeze_validation,
+                        freeze_calibration_input,
+                    )
                     semantic_execution = self._run_semantic_section_authoring_execution(
                         plans=plans,
                         chunks=chunks,
@@ -771,6 +922,9 @@ class TextbookWorkflow:
                         completeness_report=completeness_report,
                         semantic_evaluation=semantic_evaluation,
                         excluded_occurrence_ids=excluded_ids,
+                        source_bounded_calibration=source_bounded_calibration,
+                        source_bounded_prerequisite_calibration=source_bounded_prerequisite_calibration,
+                        preview_mode=preview_fullbook,
                     )
                 else:
                     _progress(f"semantic mode: sequential verified occurrence execution ({len(plans)} chapter projections)")
@@ -947,6 +1101,8 @@ class TextbookWorkflow:
         publication_quality_dir = output_dir / "publication_quality"
         publication_quality_path = publication_quality_dir / "publication_quality.json"
         publication_quality_markdown_path = publication_quality_dir / "publication_quality.md"
+        preview_quality_path = output_dir / "preview_quality_report.json"
+        preview_quality_markdown_path = output_dir / "preview_quality_report.md"
         repair_history_audit_path = publication_quality_dir / "repair_history.json"
         repair_history_markdown_path = publication_quality_dir / "repair_history.md"
         materialization_dir = output_dir / "materialization"
@@ -1007,6 +1163,19 @@ class TextbookWorkflow:
             section_assemblies=(semantic_execution.section_assemblies if semantic_execution is not None else []),
             semantic_book_mode=semantic_book_mode,
         )
+        if preview_fullbook and semantic_execution is not None:
+            _inject_preview_section_bodies(_digital_book, semantic_execution.section_assemblies)
+            write_json(digital_book_path, _digital_book)
+        elif (
+            completeness_first_authoring
+            and semantic_execution is not None
+            and semantic_book_mode
+        ):
+            # Production keeps the strict occurrence blocks/metadata used by
+            # alignment and availability, but adopts the accepted
+            # section-level case, exercise, assessment, and summary modules.
+            _inject_section_authoring_modules(_digital_book, semantic_execution.section_assemblies)
+            write_json(digital_book_path, _digital_book)
         downstream_closure_report = None
         shared_fact_report = None
         shared_fact_compression_report = None
@@ -1145,7 +1314,7 @@ class TextbookWorkflow:
                     else []
                 ),
                 downstream_closure_report=downstream_closure_report,
-                downstream_closure_required=True,
+                downstream_closure_required=not preview_fullbook,
             )
             final = materialization_result.markdown
             _digital_book = materialization_result.digital_book
@@ -1220,6 +1389,21 @@ class TextbookWorkflow:
                 report=publication_quality_report,
                 output_dir=publication_quality_dir,
             )
+        preview_quality_report = None
+        if preview_fullbook and semantic_execution is not None:
+            preview_quality_report = _build_preview_quality_report(
+                book_plan=book_plan,
+                semantic_evaluation=semantic_evaluation,
+                semantic_execution=semantic_execution,
+                digital_book=_digital_book,
+                rendered_claim_audit=rendered_claim_audit,
+                publication_quality_report=publication_quality_report,
+            )
+            write_json(preview_quality_path, preview_quality_report)
+            write_text(
+                preview_quality_markdown_path,
+                render_preview_quality_markdown(preview_quality_report),
+            )
         _progress("reviewing exported digital book")
         digital_book_review = self.digital_book_reviewer.run(
             _digital_book,
@@ -1253,6 +1437,22 @@ class TextbookWorkflow:
             "prefreeze_completeness_rerun": not book_plan_is_frozen,
             "freeze_validation": freeze_validation,
             "semantic_execution_mode": semantic_execution_mode,
+            "preview_only": bool(preview_fullbook),
+            "publication_approved": False if preview_fullbook else bool(
+                publication_quality_report and publication_quality_report.final_publication_status == "PASS"
+            ),
+            "production_runtime_status": (
+                "PREVIEW_ONLY_NO_VERIFIED_GRANTS" if preview_fullbook else "STRICT_RUNTIME"
+            ),
+            "preview_quality": (
+                {
+                    "json": _portable_path(preview_quality_path),
+                    "markdown": _portable_path(preview_quality_markdown_path),
+                    "summary": preview_quality_report,
+                }
+                if preview_quality_report is not None
+                else None
+            ),
             "authoring_mode": (
                 "completeness_first_section"
                 if completeness_first_authoring and semantic_runtime_mode
@@ -1302,6 +1502,7 @@ class TextbookWorkflow:
                 "freeze_calibration_input": _portable_path(freeze_calibration_input) if freeze_calibration_input else "",
                 "semantic_book_mode": bool(semantic_book_mode),
                 "completeness_first_authoring": bool(completeness_first_authoring),
+                "preview_fullbook": bool(preview_fullbook),
                 "semantic_evaluation_input": _portable_path(semantic_evaluation_input) if semantic_evaluation_input else "",
                 "source_records": len(records) + len(document_records),
                 "video_source_records": len(records),
@@ -1385,6 +1586,8 @@ class TextbookWorkflow:
                 "planning_evidence_gate_markdown": _portable_path(planning_evidence_gate_path) if planning_evidence_gate_path.exists() else "",
                 "rendered_claim_evidence_audit_json": _portable_path(rendered_claim_evidence_audit_path) if rendered_claim_audit is not None else "",
                 "rendered_claim_evidence_audit_markdown": _portable_path(rendered_claim_evidence_audit_markdown_path) if rendered_claim_audit is not None else "",
+                "preview_quality_json": _portable_path(preview_quality_path) if preview_quality_report is not None else "",
+                "preview_quality_markdown": _portable_path(preview_quality_markdown_path) if preview_quality_report is not None else "",
                 "rendered_claim_evidence_audit_model": claim_audit_model,
                 "rendered_claim_evidence_audit_provider": claim_audit_provider_name,
                 "publication_quality_json": _portable_path(publication_quality_path) if publication_quality_report else "",
@@ -1619,6 +1822,9 @@ class TextbookWorkflow:
         completeness_report: Any,
         semantic_evaluation: Any,
         excluded_occurrence_ids: set[str] | None = None,
+        source_bounded_calibration: Mapping[str, Any] | None = None,
+        source_bounded_prerequisite_calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
+        preview_mode: bool = False,
     ):
         """Run section-level authoring with the existing verified runtime.
 
@@ -1641,22 +1847,164 @@ class TextbookWorkflow:
         def render_section(brief, packet, section_chunks):
             if not self.writer.use_llm or self.writer.llm_provider is None:
                 raise RuntimeError("completeness-first section authoring requires a configured LLM writer")
-            raw = self.writer.llm_provider.generate(
-                build_section_authoring_messages(brief, packet, section_chunks)
-            )
-            draft = parse_section_authoring_response(raw)
-            provenance = draft.get("generation_provenance")
-            if not isinstance(provenance, Mapping):
-                provenance = {}
-            draft["generation_provenance"] = {
-                **dict(provenance),
-                "writer": "qwen-section-authoring",
-                "model": str(getattr(getattr(self.writer.llm_provider, "config", None), "model", "")),
-                "section_id": brief.outline_node_id,
-                "brief_id": brief.brief_id,
-                "packet_id": packet.packet_id,
-            }
-            return draft
+
+            def render_once(retry_reason: str = "", *, allow_structural_repair: bool = True):
+                messages = build_section_authoring_messages(brief, packet, section_chunks)
+                if retry_reason:
+                    messages = [
+                        *messages,
+                        {
+                            "role": "user",
+                            "content": (
+                                "The previous same-section draft was rejected by the deterministic contract: "
+                                + retry_reason
+                                + "\nReturn the same section again with the same immutable brief and evidence packet. "
+                                "Evidence ownership is deterministic; do not add evidence_ids or source IDs to blocks. "
+                                "Keep the same obligations, occurrences, facts, and roles. Return JSON only."
+                            ),
+                        },
+                    ]
+                provider_config = getattr(self.writer.llm_provider, "config", None)
+                context_window = int(getattr(provider_config, "context_window", DEFAULT_CONTEXT_WINDOW) or DEFAULT_CONTEXT_WINDOW)
+                requested_output = int(getattr(provider_config, "max_tokens", 4096) or 4096)
+                safety_margin = max(128, min(256, context_window // 20))
+                input_tokens = estimate_message_tokens(messages)
+                effective_output = min(requested_output, context_window - input_tokens - safety_margin)
+                if effective_output < 256:
+                    raise RuntimeError(
+                        "SECTION_AUTHORING_CONTEXT_OVERFLOW: "
+                        f"input_tokens={input_tokens} context_window={context_window} "
+                        f"effective_output_budget={effective_output}"
+                    )
+                try:
+                    raw = self.writer.llm_provider.generate(messages, max_tokens=effective_output)
+                except TypeError as exc:
+                    if "max_tokens" not in str(exc):
+                        raise
+                    raw = self.writer.llm_provider.generate(messages)
+                structural_repair_meta: dict[str, Any] = {
+                    "structural_repair_attempted": False,
+                    "structural_repair_accepted": False,
+                    "first_response_status": "UNKNOWN",
+                    "first_writer_failure_class": "",
+                    "final_writer_status": "UNKNOWN",
+                }
+                try:
+                    draft = parse_section_authoring_response(raw)
+                    structural_repair_meta["first_response_status"] = "PARSE_OK"
+                    structural_repair_meta["final_writer_status"] = "PARSE_OK"
+                except Exception as parse_error:
+                    failure_class = classify_section_writer_failure(str(parse_error), str(raw))
+                    structural_repair_meta["first_response_status"] = "PARSE_FAILED"
+                    structural_repair_meta["first_writer_failure_class"] = failure_class
+                    if not allow_structural_repair or failure_class not in {
+                        "INVALID_JSON",
+                        "TRUNCATED_OUTPUT",
+                        "SCHEMA_MISMATCH",
+                    }:
+                        raise ValueError(
+                            f"SECTION_WRITER_FAILURE:{failure_class}: {parse_error}"
+                        ) from parse_error
+                    # One syntax-only repair is allowed.  It receives the same
+                    # immutable section contract and the malformed response;
+                    # it may only restore JSON delimiters/field wrapping.
+                    structural_repair_meta["structural_repair_attempted"] = True
+                    repair_messages = [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Repair JSON structure only. Preserve every block text, block_id, channel, "
+                                "intended_obligation_ids, and intended_occurrence_ids exactly. Do not add evidence_ids. "
+                                "Do not add, delete, summarize, or rewrite student-visible content. Return JSON only."
+                            ),
+                        },
+                        *messages,
+                        {
+                            "role": "user",
+                            "content": (
+                                "The previous response could not be parsed as JSON. Return the exact same response "
+                                "with only syntax/field wrapping repaired. The required shape is "
+                                '{"blocks":[{"block_id":"b01","channel":"body|case_activity|exercise|assessment|summary",'
+                                '"text":"...","intended_obligation_ids":[],"intended_occurrence_ids":[]}],'
+                                '"generation_provenance":{}}.\nMALFORMED RESPONSE:\n' + str(raw)
+                            ),
+                        },
+                    ]
+                    repair_input_tokens = estimate_message_tokens(repair_messages)
+                    repair_budget = min(
+                        requested_output,
+                        context_window - repair_input_tokens - safety_margin,
+                    )
+                    structural_repair_meta.update(
+                        {
+                            "structural_repair_input_tokens": repair_input_tokens,
+                            "structural_repair_output_budget": repair_budget,
+                            "original_writer_failure": failure_class,
+                        }
+                    )
+                    if repair_budget < 256:
+                        raise ValueError(
+                            f"SECTION_WRITER_FAILURE:{failure_class}: structural repair context overflow"
+                        ) from parse_error
+                    try:
+                        repaired_raw = self.writer.llm_provider.generate(
+                            repair_messages,
+                            max_tokens=repair_budget,
+                        )
+                    except TypeError as exc:
+                        if "max_tokens" not in str(exc):
+                            raise
+                        repaired_raw = self.writer.llm_provider.generate(repair_messages)
+                    repaired = parse_section_authoring_response(repaired_raw)
+                    if not validate_structural_repair_preserves_content(str(raw), repaired):
+                        raise ValueError(
+                            "structural repair changed or could not prove preservation of block content"
+                        )
+                    draft = repaired
+                    structural_repair_meta["structural_repair_accepted"] = True
+                    structural_repair_meta["final_writer_status"] = "STRUCTURAL_REPAIR_ACCEPTED"
+                provenance = draft.get("generation_provenance")
+                if not isinstance(provenance, Mapping):
+                    provenance = {}
+                draft["generation_provenance"] = {
+                    **dict(provenance),
+                    "writer": "qwen-section-authoring",
+                    "model": str(getattr(getattr(self.writer.llm_provider, "config", None), "model", "")),
+                    "section_id": brief.outline_node_id,
+                    "brief_id": brief.brief_id,
+                    "packet_id": packet.packet_id,
+                    "structured_retry": bool(retry_reason),
+                    "input_tokens": input_tokens,
+                    "effective_output_budget": effective_output,
+                    **structural_repair_meta,
+                }
+                # Evidence ownership is now attached deterministically by the
+                # materializer from each block's intended obligations.  The
+                # writer has no alias-selection or evidence-ID retry path.
+                materialize_section_draft(brief, packet, draft, claim_judge=None)
+                return draft
+
+            try:
+                draft = render_once()
+                return draft
+            except Exception as first_error:
+                message = str(first_error)
+                retryable = any(
+                    marker in message.lower()
+                    for marker in ("invalid json", "empty output", "alias", "evidence", "block")
+                )
+                if not retryable:
+                    raise
+                # Exactly one same-section retry.  The immutable packet and
+                # alias whitelist are reused; no evidence or obligation scope
+                # can be expanded by this retry.
+                try:
+                    return render_once(message, allow_structural_repair=False)
+                except Exception as final_error:
+                    failure_class = classify_section_writer_failure(message, "")
+                    raise RuntimeError(
+                        f"SECTION_WRITER_FAILURE:{failure_class}: first={message}; final={final_error}"
+                    ) from final_error
 
         return execute_verified_sections(
             book_plan=book_plan,
@@ -1669,6 +2017,9 @@ class TextbookWorkflow:
             section_writer=render_section,
             excluded_occurrence_ids=excluded_occurrence_ids,
             semantic_entailment_judge=runtime_claim_judge,
+            source_bounded_calibration=source_bounded_calibration,
+            source_bounded_prerequisite_calibration=source_bounded_prerequisite_calibration,
+            preview_mode=preview_mode,
         )
 
     @staticmethod
@@ -1787,25 +2138,57 @@ class TextbookWorkflow:
         if book_plan is not None and getattr(book_plan, "chapters", None):
             for chapter in book_plan.chapters:
                 lines.extend([f"## {chapter.title}", ""])
+                chapter_synthesis = build_chapter_synthesis(chapter)
+                if chapter_synthesis.get("opening"):
+                    lines.extend([chapter_synthesis["opening"], ""])
                 for section in chapter.sections:
                     section_key = (chapter.chapter_id, section.section_id)
                     lines.extend([f"### {section.title}", ""])
                     visible_blocks: list[str] = []
-                    for item in rows_by_section.get(section_key, []):
-                        brief = briefs.get(item["occurrence_id"])
-                        if brief is None:
-                            continue
-                        visible_blocks.append(
-                            wrap_rendered_occurrence(
-                                brief,
-                                section_bodies.get(item["occurrence_id"], item["body"]),
-                            ).rstrip()
+                    assembly = authoring_assemblies.get(section.section_id, {})
+                    rendered_section = assembly.get("rendered_section") if isinstance(assembly, Mapping) else None
+                    # In completeness-first production, the section writer's
+                    # deterministic body is the preferred passage.  Anchors
+                    # are inserted from the materializer-owned occurrence
+                    # spans; if the spans overlap or are incomplete, retain
+                    # the strict occurrence projection rather than guessing.
+                    section_passage = None
+                    if not execution.preview_mode and isinstance(rendered_section, Mapping):
+                        section_passage = _render_section_authoring_passage(
+                            rendered_section,
+                            briefs,
+                            generation_provenance="section-authoring",
                         )
+                    if section_passage:
+                        visible_blocks.append(section_passage)
+                    else:
+                        for item in rows_by_section.get(section_key, []):
+                            brief = briefs.get(item["occurrence_id"])
+                            if brief is None:
+                                continue
+                            visible_blocks.append(
+                                wrap_rendered_occurrence(
+                                    brief,
+                                    section_bodies.get(item["occurrence_id"], item["body"]),
+                                ).rstrip()
+                            )
+                    if isinstance(rendered_section, Mapping):
+                        # Preview may show a section body even when strict
+                        # runtime blocked its occurrences.  Production only
+                        # uses a body when occurrence spans validated above.
+                        if execution.preview_mode and not visible_blocks and str(rendered_section.get("body") or "").strip():
+                            visible_blocks.append(str(rendered_section["body"]).strip())
+                        if execution.preview_mode or section_passage:
+                            extras = _render_section_module_extras(rendered_section)
+                            if extras:
+                                visible_blocks.append("\n\n".join(extras))
                     if visible_blocks:
                         # Keep every occurrence anchor, but remove the blank
                         # paragraph separator so adjacent spans form one
                         # student-visible section passage in Markdown.
                         lines.extend(["\n".join(visible_blocks), ""])
+                if chapter_synthesis.get("summary"):
+                    lines.extend([chapter_synthesis["summary"], ""])
         else:
             current_chapter = ""
             current_section: tuple[str, str] | None = None
@@ -2220,6 +2603,76 @@ def _try_markdown_to_docx(markdown: str, output_path: Path) -> list[str]:
     return []
 
 
+def _render_section_authoring_passage(
+    rendered_section: Mapping[str, Any],
+    briefs: Mapping[str, Any],
+    *,
+    generation_provenance: str,
+) -> str | None:
+    """Insert deterministic occurrence anchors into one section body.
+
+    RenderedSection offsets are trusted only after local materialization.  A
+    section with overlapping/missing occurrence spans falls back to the
+    existing strict occurrence projection instead of inventing ownership.
+    """
+
+    body = str(rendered_section.get("body") or "").strip()
+    if not body:
+        return None
+    raw_map = rendered_section.get("occurrence_span_map") or {}
+    if not isinstance(raw_map, Mapping):
+        return None
+    spans: list[tuple[int, int, str, Any]] = []
+    for occurrence_id, values in raw_map.items():
+        if not isinstance(values, (list, tuple)) or len(values) != 1:
+            return None
+        span = values[0]
+        if not isinstance(span, Mapping):
+            return None
+        try:
+            start = int(span.get("start"))
+            end = int(span.get("end"))
+        except (TypeError, ValueError):
+            return None
+        text = str(span.get("text") or "")
+        brief = briefs.get(str(occurrence_id))
+        if brief is None or start < 0 or end <= start or end > len(body) or body[start:end] != text:
+            return None
+        spans.append((start, end, text, brief))
+    if not spans:
+        return None
+    spans.sort(key=lambda item: (item[0], item[1]))
+    cursor = 0
+    parts: list[str] = []
+    for start, end, text, brief in spans:
+        if start < cursor:
+            return None
+        if start > cursor:
+            parts.append(body[cursor:start])
+        parts.append(wrap_rendered_occurrence(brief, text, generation_provenance=generation_provenance).strip())
+        cursor = end
+    if cursor < len(body):
+        parts.append(body[cursor:])
+    return "\n\n".join(item.strip() for item in parts if item.strip()).strip()
+
+
+def _render_section_module_extras(rendered_section: Mapping[str, Any]) -> list[str]:
+    extras: list[str] = []
+    case_text = str(rendered_section.get("case_activity") or "").strip()
+    if case_text:
+        extras.append("**案例/活动**\n\n" + case_text)
+    exercises = [str(item).strip() for item in (rendered_section.get("exercises") or ()) if str(item).strip()]
+    if exercises:
+        extras.append("**思考与练习**\n\n" + "\n\n".join(exercises))
+    assessment = str(rendered_section.get("assessment") or "").strip()
+    if assessment:
+        extras.append("**任务评价**\n\n" + assessment)
+    summary = str(rendered_section.get("summary") or "").strip()
+    if summary:
+        extras.append("**小结**\n\n" + summary)
+    return extras
+
+
 def _shared_fact_records_for_audit(*, semantic_execution: Any, semantic_evaluation: Any, coverage: Any) -> list[dict[str, Any]]:
     """Build read-only cross-canonical audit records from live execution output.
 
@@ -2269,6 +2722,288 @@ def _shared_fact_records_for_audit(*, semantic_execution: Any, semantic_evaluati
             }
         )
     return records
+
+
+def _inject_preview_section_bodies(digital_book: Any, section_assemblies: list[dict[str, Any]]) -> None:
+    """Project section-authoring preview content into the student book.
+
+    The normal semantic exporter intentionally projects only accepted
+    occurrence spans.  A preview is different: it must show every
+    source-bounded section for human review even when strict sequential
+    availability would have blocked that section.  This projection never
+    writes runtime grants and is marked as preview-only in block metadata.
+    """
+
+    by_section = {
+        str(item.get("section_id")): item
+        for item in section_assemblies
+        if isinstance(item, Mapping) and item.get("section_id")
+    }
+    for project in getattr(digital_book, "projects", ()):
+        for task in getattr(project, "tasks", ()):
+            section_id = str((getattr(task, "metadata", {}) or {}).get("section_id") or "")
+            assembly = by_section.get(section_id)
+            if not assembly:
+                continue
+            rendered = assembly.get("rendered_section")
+            if not isinstance(rendered, Mapping):
+                continue
+            evidence_ids = []
+            packet = assembly.get("packet")
+            if isinstance(packet, Mapping):
+                evidence_ids = list(dict.fromkeys(
+                    list(packet.get("authorized_primary_evidence_ids") or ())
+                    + list(packet.get("authorized_reference_evidence_ids") or ())
+                ))
+            implementation = next(
+                (block for block in task.blocks if block.type == "implementation" and block.markdown.strip()),
+                None,
+            )
+            body = str(rendered.get("body") or "").strip()
+            if body:
+                if implementation is None:
+                    implementation = DigitalBookBlock(
+                        block_id=f"{task.task_id}_preview_section_body",
+                        type="implementation",
+                        title="",
+                        markdown=body,
+                        evidence_chunk_ids=evidence_ids,
+                        metadata={},
+                    )
+                    task.blocks.append(implementation)
+                else:
+                    implementation.markdown = body
+                    if evidence_ids:
+                        implementation.evidence_chunk_ids = evidence_ids
+                implementation.metadata = {
+                    **(implementation.metadata or {}),
+                    "preview_only": True,
+                    "preview_section_id": section_id,
+                    "source_authoring_status": assembly.get("status", ""),
+                    "occurrence_audit_granularity": "occurrence",
+                }
+
+            def replace_items(block_type: str, values: list[str]) -> None:
+                if not values:
+                    return
+                block = next((item for item in task.blocks if item.type == block_type), None)
+                if block is None:
+                    return
+                block.items = values
+                block.metadata = {**(block.metadata or {}), "preview_only": True, "preview_section_id": section_id}
+
+            case_text = str(rendered.get("case_activity") or "").strip()
+            if case_text:
+                scenario = next((item for item in task.blocks if item.type == "scenario"), None)
+                if scenario is not None:
+                    scenario.markdown = case_text
+                    scenario.metadata = {**(scenario.metadata or {}), "preview_only": True, "preview_section_id": section_id}
+            replace_items("exercises", [str(item) for item in (rendered.get("exercises") or ()) if str(item).strip()])
+            assessment = str(rendered.get("assessment") or "").strip()
+            if assessment:
+                replace_items("assessment", [assessment])
+            summary = str(rendered.get("summary") or "").strip()
+            if summary:
+                task.blocks.append(DigitalBookBlock(
+                    block_id=f"{task.task_id}_preview_summary",
+                    type="summary",
+                    title="小结",
+                    markdown=summary,
+                    evidence_chunk_ids=evidence_ids,
+                    metadata={"preview_only": True, "preview_section_id": section_id},
+                ))
+    digital_book.metadata = {
+        **(getattr(digital_book, "metadata", {}) or {}),
+        "preview_only": True,
+        "publication_approved": False,
+        "preview_section_projection": "SectionAuthoringBrief/RenderedSection",
+    }
+
+
+def _inject_section_authoring_modules(digital_book: Any, section_assemblies: list[dict[str, Any]]) -> None:
+    """Project accepted section modules without weakening occurrence gates."""
+
+    by_section = {
+        str(item.get("section_id")): item
+        for item in section_assemblies
+        if isinstance(item, Mapping) and item.get("section_id")
+    }
+    for project in getattr(digital_book, "projects", ()):
+        for task in getattr(project, "tasks", ()):
+            section_id = str((getattr(task, "metadata", {}) or {}).get("section_id") or "")
+            assembly = by_section.get(section_id)
+            rendered = assembly.get("rendered_section") if isinstance(assembly, Mapping) else None
+            if not isinstance(rendered, Mapping):
+                continue
+            status = str(assembly.get("status") or rendered.get("render_status") or "")
+            if status in {"BLOCKED", "BLOCKED_BEFORE_AUTHORING", "BLOCKED_CORE_SOURCE_GAP"}:
+                continue
+            source_meta = {
+                "section_authoring": True,
+                "section_id": section_id,
+                "source_authoring_status": status,
+                "occurrence_audit_granularity": "occurrence",
+            }
+            case_text = str(rendered.get("case_activity") or "").strip()
+            if case_text:
+                scenario = next((item for item in task.blocks if item.type == "scenario"), None)
+                if scenario is not None:
+                    scenario.markdown = case_text
+                    scenario.metadata = {**(scenario.metadata or {}), **source_meta}
+            exercises = [str(item).strip() for item in (rendered.get("exercises") or ()) if str(item).strip()]
+            if exercises:
+                block = next((item for item in task.blocks if item.type == "exercises"), None)
+                if block is not None:
+                    block.items = exercises
+                    block.metadata = {**(block.metadata or {}), **source_meta}
+            assessment = str(rendered.get("assessment") or "").strip()
+            if assessment:
+                block = next((item for item in task.blocks if item.type == "assessment"), None)
+                if block is not None:
+                    block.items = [assessment]
+                    block.metadata = {**(block.metadata or {}), **source_meta}
+            summary = str(rendered.get("summary") or "").strip()
+            if summary and not any(
+                item.type == "summary" and str(item.metadata.get("section_id") or "") == section_id
+                for item in task.blocks
+            ):
+                task.blocks.append(
+                    DigitalBookBlock(
+                        block_id=f"{task.task_id}_section_summary",
+                        type="summary",
+                        title="小结",
+                        markdown=summary,
+                        metadata=source_meta,
+                    )
+                )
+    digital_book.metadata = {
+        **(getattr(digital_book, "metadata", {}) or {}),
+        "section_authoring_projection": "accepted_section_modules",
+    }
+
+
+def _build_preview_quality_report(
+    *,
+    book_plan: Any,
+    semantic_evaluation: Any,
+    semantic_execution: Any,
+    digital_book: Any,
+    rendered_claim_audit: Any,
+    publication_quality_report: Any,
+) -> dict[str, Any]:
+    sections = [
+        section
+        for chapter in (getattr(book_plan, "chapters", None) or [])
+        for section in chapter.sections
+    ]
+    assemblies = {
+        str(item.get("section_id")): item
+        for item in getattr(semantic_execution, "section_assemblies", ())
+        if isinstance(item, Mapping) and item.get("section_id")
+    }
+    body_sections = {
+        section_id
+        for section_id, item in assemblies.items()
+        if isinstance(item.get("rendered_section"), Mapping)
+        and str(item["rendered_section"].get("body") or "").strip()
+    }
+    overview_only = {
+        section_id
+        for section_id, item in assemblies.items()
+        if item.get("status") not in {"RENDERED", "ACCEPTED", "ACCEPTED_AFTER_RECOVERY"}
+        and section_id in body_sections
+    }
+    claim_counts: dict[str, int] = {}
+    source_claim_counts: dict[str, int] = {}
+    if rendered_claim_audit is not None:
+        for record in getattr(rendered_claim_audit, "records", ()):
+            status = str(getattr(record, "final_status", "UNRESOLVED") or "UNRESOLVED")
+            claim_counts[status] = claim_counts.get(status, 0) + 1
+            category = str(getattr(record, "claim_category", "") or "")
+            if category == "SOURCE_FACT":
+                source_claim_counts[status] = source_claim_counts.get(status, 0) + 1
+    recovery = [item.get("recovery") or {} for item in assemblies.values()]
+    proposals = sum(len(item.get("proposals") or ()) for item in recovery if isinstance(item, Mapping))
+    auto_applied = sum(1 for item in recovery if isinstance(item, Mapping) and item.get("auto_applied"))
+    rendered_occurrences = list(getattr(semantic_execution, "markdown_occurrences", ()) or ())
+    blocked_occurrences = list(getattr(semantic_execution, "blocked_occurrences", ()) or ())
+    roles: dict[str, int] = {}
+    if semantic_evaluation is not None:
+        for occurrence in getattr(semantic_evaluation.knowledge_map, "planned_occurrences", ()):
+            role = str(getattr(occurrence, "role", "UNKNOWN") or "UNKNOWN")
+            roles[role] = roles.get(role, 0) + 1
+    digital_body_sections = 0
+    for project in getattr(digital_book, "projects", ()):
+        for task in getattr(project, "tasks", ()):
+            if any(block.type == "implementation" and block.markdown.strip() for block in task.blocks):
+                digital_body_sections += 1
+    return {
+        "preview_only": True,
+        "publication_approved": False,
+        "sections_total": len(sections),
+        "sections_with_body": len(body_sections),
+        "sections_overview_only": len(overview_only),
+        "digital_book_tasks_with_body": digital_body_sections,
+        "occurrences": {
+            "planned": len(getattr(semantic_evaluation.knowledge_map, "planned_occurrences", ()) if semantic_evaluation else ()),
+            "rendered": len(rendered_occurrences),
+            "blocked": len(blocked_occurrences),
+            "zero_render": len(getattr(semantic_execution.coverage, "zero_render_occurrences", ()) or ()),
+            "roles": roles,
+            "verified_grants": 0,
+            "runtime_status": "PREVIEW_ONLY_NO_VERIFIED_GRANTS",
+        },
+        "claims": {
+            "all": claim_counts,
+            "source_fact": source_claim_counts,
+        },
+        "recovery": {
+            "proposals": proposals,
+            "auto_applied_repairs": auto_applied,
+            "accepted_repairs": 0,
+            "remaining_local_issues": sum(len(item.get("issues") or ()) for item in recovery if isinstance(item, Mapping)),
+        },
+        "source_boundary_violations_remaining": claim_counts.get("UNSUPPORTED", 0),
+        "publication_status": getattr(publication_quality_report, "final_publication_status", "NOT_APPROVED"),
+    }
+
+
+def render_preview_quality_markdown(report: Mapping[str, Any]) -> str:
+    """Render a compact human-facing report for PREVIEW_FULLBOOK artifacts."""
+
+    occurrences = report.get("occurrences") or {}
+    claims = report.get("claims") or {}
+    recovery = report.get("recovery") or {}
+    lines = [
+        "# Source-Bounded Full-Book Preview Quality",
+        "",
+        "> PREVIEW_ONLY = true；PUBLICATION_APPROVED = false。此报告不改变严格 production runtime 状态。",
+        "",
+        f"- sections with body: {report.get('sections_with_body', 0)}/{report.get('sections_total', 0)}",
+        f"- overview-only sections: {report.get('sections_overview_only', 0)}",
+        f"- DigitalBook tasks with body: {report.get('digital_book_tasks_with_body', 0)}",
+        f"- planned/rendered/blocked occurrences: {occurrences.get('planned', 0)}/{occurrences.get('rendered', 0)}/{occurrences.get('blocked', 0)}",
+        f"- verified grants: {occurrences.get('verified_grants', 0)} (preview does not grant availability)",
+        f"- source-boundary violations remaining: {report.get('source_boundary_violations_remaining', 0)}",
+        "",
+        "## Role distribution",
+        "",
+    ]
+    lines.extend(f"- {key}: {value}" for key, value in sorted((occurrences.get("roles") or {}).items()))
+    lines.extend(["", "## Claim audit", ""])
+    for key, value in sorted((claims.get("all") or {}).items()):
+        lines.append(f"- {key}: {value}")
+    lines.extend([
+        "",
+        "## Recovery diagnostics",
+        "",
+        f"- proposals: {recovery.get('proposals', 0)}",
+        f"- auto-applied repairs: {recovery.get('auto_applied_repairs', 0)}",
+        f"- remaining local issues: {recovery.get('remaining_local_issues', 0)}",
+        "",
+        f"- publication status (diagnostic only): {report.get('publication_status', 'NOT_APPROVED')}",
+    ])
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _digital_rendered_occurrence(digital_book: Any, occurrence_id: str) -> RenderedOccurrence | None:

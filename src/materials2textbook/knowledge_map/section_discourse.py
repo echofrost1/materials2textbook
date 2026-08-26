@@ -16,6 +16,30 @@ from materials2textbook.knowledge_map.models import LearningRole
 from materials2textbook.knowledge_map.writing_briefs import OccurrenceWritingBrief
 
 
+def build_chapter_synthesis(chapter: Any) -> dict[str, str]:
+    """Build a short, plan-derived chapter opening and summary.
+
+    The synthesis is discourse only: it uses the frozen section titles and
+    purposes to explain the learning path, but it never introduces a domain
+    claim or changes section order/ownership.
+    """
+
+    sections = list(getattr(chapter, "sections", ()) or ())
+    titles = [str(getattr(item, "title", "") or "").strip() for item in sections]
+    titles = [item for item in titles if item]
+    if not titles:
+        return {"opening": "", "summary": ""}
+    if len(titles) == 1:
+        path = f"“{titles[0]}”"
+        opening = f"本章先从{path}进入主题，帮助读者建立本章后续学习所需的基本认识。"
+        summary = f"读完本章，可以回到{path}，复述本节的核心对象、关系和学习要点。"
+    else:
+        path = " → ".join(f"“{item}”" for item in titles)
+        opening = f"本章按{path}的顺序推进：先建立前面的认识，再把它带入后续任务，最后回到本章的整体联系。"
+        summary = f"读完本章，可以沿着{path}回顾学习路径，并说明前后内容如何衔接。"
+    return {"opening": opening, "summary": summary}
+
+
 @dataclass(frozen=True)
 class SectionDiscourseTransition:
     occurrence_id: str

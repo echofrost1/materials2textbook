@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from typing import Any, Callable
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field, replace
+from typing import Any, Callable, Iterable, Mapping
 
 from materials2textbook.knowledge_map.availability import advance_verified_instructional_availability
 from materials2textbook.knowledge_map.models import (
@@ -45,9 +46,13 @@ class SemanticExecutionResult:
     section_assemblies: list[dict] = field(default_factory=list)
     transitions: list[dict] = field(default_factory=list)
     blocked_occurrences: list[dict] = field(default_factory=list)
+    # Audit-only view of occurrences that reached (or were stopped before)
+    # the section authoring frontier.  It never changes runtime state.
+    authoring_frontier: list[dict] = field(default_factory=list)
     verified_state: InstructionalAvailabilityState = field(default_factory=InstructionalAvailabilityState)
     semantic_evidence_call_count: int = 0
     semantic_evidence_model: str = ""
+    preview_mode: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -63,11 +68,13 @@ class SemanticExecutionResult:
             "section_assemblies": self.section_assemblies,
             "transitions": self.transitions,
             "blocked_occurrences": self.blocked_occurrences,
+            "authoring_frontier": self.authoring_frontier,
             "verified_state": asdict(self.verified_state),
             "semantic_evidence": {
                 "call_count": self.semantic_evidence_call_count,
                 "model": self.semantic_evidence_model,
             },
+            "preview_mode": self.preview_mode,
         }
 
 
@@ -81,6 +88,7 @@ def execute_verified_occurrences(
     render_occurrence: Callable[[OccurrenceWritingBrief], str],
     excluded_occurrence_ids: set[str] | None = None,
     semantic_entailment_judge: Any | None = None,
+    source_bounded_prerequisite_calibration: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None = None,
 ) -> SemanticExecutionResult:
     """Compile, render, verify, and grant each occurrence in book order.
 
@@ -154,6 +162,7 @@ def execute_verified_occurrences(
                 if item.position > seed.position and item.source_knowledge_point_id in sources
             ],
             first_position=first_position,
+            source_bounded_prerequisite_calibration=source_bounded_prerequisite_calibration,
         )
         if not compilation.executable or compilation.compiled_occurrence is None or compilation.effective_delta is None:
             blocked = {
@@ -304,6 +313,10 @@ def execute_verified_sections(
     section_writer: Callable[[Any, Any, list[EvidenceChunk]], dict[str, Any]],
     excluded_occurrence_ids: set[str] | None = None,
     semantic_entailment_judge: Any | None = None,
+    source_bounded_calibration: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None = None,
+    source_bounded_prerequisite_calibration: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None = None,
+    local_recovery_writer: Callable[[Any, Any, Any, Mapping[str, Any], list[EvidenceChunk]], str | None] | None = None,
+    preview_mode: bool = False,
 ) -> SemanticExecutionResult:
     """Run the completeness-first section authoring path.
 
@@ -322,6 +335,10 @@ def execute_verified_sections(
         build_section_authoring_brief,
     )
     from materials2textbook.knowledge_map.section_authoring_recovery import (
+        ACCEPTED,
+        MINIMAL_SUPPORTED_REWRITE,
+        apply_section_recovery,
+        apply_recovery_patch_to_draft,
         classify_section_recovery,
         plan_section_recovery,
     )
@@ -339,8 +356,70 @@ def execute_verified_sections(
     for item in ordered:
         by_section.setdefault(item.section_id, []).append(item)
     state = InstructionalAvailabilityState()
-    result = SemanticExecutionResult(coverage=WritingBriefCoverage(), verified_state=state)
+    result = SemanticExecutionResult(
+        coverage=WritingBriefCoverage(),
+        verified_state=state,
+        preview_mode=preview_mode,
+    )
     excluded = set(excluded_occurrence_ids or ())
+
+    def _brief_with_materialized_evidence(
+        brief: Any,
+        spans: Iterable[Mapping[str, Any]],
+        packet: Any,
+        occurrence_id: str = "",
+        section_brief: Any | None = None,
+    ) -> Any:
+        """Carry packet-authorized span evidence into occurrence-local audit.
+
+        Section authoring owns the evidence binding, while the sequential
+        runtime audits/grants one occurrence at a time.  A section writer may
+        therefore legitimately cite a packet chunk even when the occurrence's
+        planning delta did not carry that chunk ID.  Once the deterministic
+        materializer has produced a span, its IDs are already alias-resolved
+        and packet-validated; adding exactly those IDs to the immutable brief
+        keeps the occurrence-local claim audit bounded to the section packet.
+        No evidence is retrieved or expanded here.
+        """
+        packet_ids = {
+            str(item)
+            for item in (
+                *getattr(packet, "authorized_primary_evidence_ids", ()),
+                *getattr(packet, "authorized_reference_evidence_ids", ()),
+            )
+            if str(item).strip()
+        }
+        span_ids = []
+        for item in spans:
+            for evidence_id in item.get("evidence_ids", ()) or ():
+                value = str(evidence_id or "").strip()
+                if value and value in packet_ids and value in evidence_by_id and value not in span_ids:
+                    span_ids.append(value)
+        # A single-occurrence section may have a discourse/body block whose
+        # model association is intentionally empty; deterministic
+        # materialization already maps that block to the sole occurrence.
+        # In that narrow case, carry the packet IDs bound to obligations linked
+        # to this occurrence.  This is still packet-local and evidence-gated;
+        # it is not a section-wide or book-wide evidence fallback.
+        if not span_ids and occurrence_id and section_brief is not None:
+            linked_ids: list[str] = []
+            for obligation in getattr(section_brief, "all_obligations", ()):
+                if occurrence_id not in tuple(getattr(obligation, "linked_occurrence_ids", ())):
+                    continue
+                for evidence_id in getattr(obligation, "authorized_evidence_ids", ()):
+                    value = str(evidence_id or "").strip()
+                    if value and value in packet_ids and value in evidence_by_id and value not in linked_ids:
+                        linked_ids.append(value)
+            span_ids = linked_ids
+        if not span_ids:
+            return brief
+        source_ids = list(dict.fromkeys([*brief.source_chunk_ids, *span_ids]))
+        delta_ids = list(dict.fromkeys([*brief.semantic_delta_evidence_ids, *span_ids]))
+        return replace(
+            brief,
+            source_chunk_ids=source_ids,
+            semantic_delta_evidence_ids=delta_ids,
+        )
 
     for section_id, seeds in by_section.items():
         compiled_items: list[tuple[PlannedOccurrence, Any, SemanticDelta, Any]] = []
@@ -369,8 +448,28 @@ def execute_verified_sections(
                     if item.position > seed.position and item.source_knowledge_point_id in sources
                 ],
                 first_position=first_position,
+                preview_mode=preview_mode,
+                source_bounded_prerequisite_calibration=source_bounded_prerequisite_calibration,
             )
             if not compilation.executable or compilation.compiled_occurrence is None or compilation.effective_delta is None:
+                result.authoring_frontier.append(
+                    _frontier_record(
+                        seed,
+                        role=seed.role,
+                        prerequisite_status=(
+                            "UNSATISFIED_CROSS_PREREQUISITE"
+                            if compilation.issue_code == "CROSS_PREREQUISITE_NOT_VERIFIED"
+                            else "NOT_COMPILED"
+                        ),
+                        authoring_status=(
+                            "PREREQUISITE_BLOCKED"
+                            if compilation.issue_code == "CROSS_PREREQUISITE_NOT_VERIFIED"
+                            else "NOT_REACHED"
+                        ),
+                        exact_first_failure=compilation.issue_code or "RUNTIME_COMPILATION_FAILED",
+                        audit=compilation.audit,
+                    )
+                )
                 section_blocked.append(_section_block(seed, compilation.issue_code or "RUNTIME_COMPILATION_FAILED", compilation.issue_details))
                 continue
             occurrence = compilation.compiled_occurrence
@@ -382,6 +481,16 @@ def execute_verified_sections(
             )
             compiled_items.append((seed, occurrence, effective_delta, zero))
             constraints.append(_section_constraint(occurrence, effective_delta, state, zero))
+            result.authoring_frontier.append(
+                _frontier_record(
+                    seed,
+                    role=occurrence.role,
+                    prerequisite_status="SATISFIED_OR_NONE",
+                    authoring_status="ZERO_RENDER" if zero is not None else "AUTHORING_FRONTIER",
+                    exact_first_failure="",
+                    audit=compilation.audit,
+                )
+            )
 
         # Build the section contracts against the frozen plan.  A failed
         # completeness gate is a production admission failure, not permission
@@ -394,6 +503,7 @@ def execute_verified_sections(
                 source_book_plan_signature=book_plan_fingerprint(book_plan),
                 prior_verified_support=_state_dict(state),
                 occurrences=constraints,
+                source_bounded_calibration=source_bounded_calibration,
             )
             packet = build_section_evidence_packet(
                 book_plan,
@@ -401,6 +511,7 @@ def execute_verified_sections(
                 blueprint,
                 chunks,
                 prior_verified_support=_state_dict(state),
+                source_bounded_calibration=source_bounded_calibration,
             )
             brief = build_section_authoring_brief(
                 book_plan,
@@ -445,6 +556,10 @@ def execute_verified_sections(
             rendered = author_section(brief, packet, lambda _brief: draft, claim_judge=semantic_entailment_judge)
         except Exception as exc:
             render_error = f"{type(exc).__name__}: {exc}"
+            for item in result.authoring_frontier:
+                if item.get("section_id") == section_id and item.get("authoring_status") == "AUTHORING_FRONTIER":
+                    item["authoring_status"] = "SECTION_WRITER_FAILED"
+                    item["exact_first_failure"] = render_error
             for seed, _occurrence, _delta, _zero in compiled_items:
                 section_blocked.append(_section_block(seed, "SECTION_WRITER_FAILED", render_error))
             _append_section_blocks(result, section_blocked, state)
@@ -458,13 +573,142 @@ def execute_verified_sections(
             })
             continue
 
+        # Recovery is executed before occurrence-level validation.  A safe
+        # local contraction can therefore repair the exact text that will be
+        # wrapped and checked below; it never changes the Brief, Packet,
+        # occurrence role, or evidence ownership.
+        initial_rendered = rendered
+        recovery_issues = classify_section_recovery(rendered, brief, packet)
+        recovery_proposals = plan_section_recovery(
+            recovery_issues,
+            brief=brief,
+            packet=packet,
+        )
+        recovery_attempts: list[dict[str, Any]] = []
+        working_draft = deepcopy(draft)
+
+        def _section_occurrence_conformance(candidate: Any) -> dict[str, Any]:
+            for candidate_seed, candidate_occurrence, candidate_delta, candidate_zero in compiled_items:
+                if candidate_zero is not None:
+                    continue
+                candidate_spans = tuple(candidate.occurrence_span_map.get(candidate_occurrence.occurrence_id, ()))
+                if not candidate_spans:
+                    return {"overall": ConformanceStatus.VIOLATION, "reason": "EXPECTED_RENDER_MISSING"}
+                candidate_source = sources[candidate_seed.source_knowledge_point_id]
+                candidate_point = points[candidate_occurrence.knowledge_id]
+                candidate_brief = build_verified_occurrence_writing_brief(
+                    occurrence=candidate_occurrence,
+                    delta=candidate_delta,
+                    source=candidate_source,
+                    point=candidate_point,
+                    verified_before=state,
+                )
+                # A section-level occurrence may legitimately be represented
+                # by several ordered body/activity spans.  Conformance must
+                # inspect the complete mapped contribution, not only the
+                # first span (which caused false VIOLATION results in the
+                # real equipment-recognition replay).
+                candidate_body = "\n\n".join(
+                    str(item.get("text") or "").strip()
+                    for item in candidate_spans
+                    if str(item.get("text") or "").strip()
+                ).strip()
+                candidate_brief = _brief_with_materialized_evidence(
+                    candidate_brief,
+                    candidate_spans,
+                    packet,
+                    candidate_occurrence.occurrence_id,
+                    brief,
+                )
+                candidate_wrapped = wrap_rendered_occurrence(
+                    candidate_brief,
+                    candidate_body,
+                    generation_provenance=str(candidate.generation_provenance.get("writer") or "section-writer"),
+                )
+                candidate_result = check_rendered_conformance([candidate_brief], candidate_wrapped).results[0]
+                if candidate_result.overall != ConformanceStatus.MATCH:
+                    return {
+                        "overall": candidate_result.overall,
+                        "occurrence_id": candidate_occurrence.occurrence_id,
+                    }
+            return {"overall": ConformanceStatus.MATCH}
+
+        for proposal in recovery_proposals:
+            if not proposal.retry_allowed:
+                continue
+            attempt_proposal = proposal
+            replacement_text = None
+            # A recovery writer may only return a replacement for this exact
+            # block.  It receives the immutable Brief/Packet and the original
+            # draft; it cannot replan roles, obligations, or evidence scope.
+            # If it returns nothing, the existing deterministic contraction is
+            # retained as the fail-closed fallback.
+            if local_recovery_writer is not None and proposal.action == "CONTRACT_BLOCK":
+                try:
+                    replacement_text = local_recovery_writer(
+                        proposal,
+                        brief,
+                        packet,
+                        draft,
+                        chunks,
+                    )
+                except Exception as exc:
+                    replacement_text = None
+                    proposal_provenance = dict(proposal.provenance)
+                    proposal_provenance["local_recovery_writer_error"] = f"{type(exc).__name__}: {exc}"
+                    attempt_proposal = replace(proposal, provenance=proposal_provenance)
+                if replacement_text and replacement_text.strip():
+                    proposal_provenance = dict(attempt_proposal.provenance)
+                    proposal_provenance.update({
+                        "recovery_strategy": "minimal_supported_rewrite",
+                        "same_brief": True,
+                        "same_packet": True,
+                        "same_evidence_scope": True,
+                    })
+                    attempt_proposal = replace(
+                        attempt_proposal,
+                        action=MINIMAL_SUPPORTED_REWRITE,
+                        provenance=proposal_provenance,
+                    )
+                else:
+                    replacement_text = None
+            attempt = apply_section_recovery(
+                brief=brief,
+                packet=packet,
+                original_draft=working_draft,
+                proposal=attempt_proposal,
+                replacement_text=replacement_text,
+                claim_judge=semantic_entailment_judge,
+                occurrence_conformance_checker=_section_occurrence_conformance,
+                allow_unresolved_other_issues=True,
+            )
+            recovery_attempts.append(attempt.to_dict())
+            if attempt.status == ACCEPTED and attempt.post_rendered is not None:
+                try:
+                    working_draft = apply_recovery_patch_to_draft(
+                        working_draft,
+                        attempt_proposal,
+                        replacement_text=replacement_text,
+                    )
+                except Exception:
+                    # The acceptance gate and deterministic patch helper share
+                    # the same operation; a mismatch is fail-closed.
+                    break
+                rendered = attempt.post_rendered
+
         section_assembly = {
             "section_id": section_id,
             "status": rendered.render_status,
             "brief": brief.to_dict(),
             "packet": packet.to_dict(),
+            "initial_rendered_section": initial_rendered.to_dict(),
             "rendered_section": rendered.to_dict(),
-            "recovery": [],
+            "recovery": {
+                "issues": [item.to_dict() for item in recovery_issues],
+                "proposals": [item.to_dict() for item in recovery_proposals],
+                "attempts": recovery_attempts,
+                "auto_applied": any(item.get("status") == ACCEPTED for item in recovery_attempts),
+            },
         }
         result.section_assemblies.append(section_assembly)
         _append_section_blocks(result, section_blocked, state)
@@ -473,6 +717,13 @@ def execute_verified_sections(
         # own locally verified student-visible text.
         for seed, occurrence, effective_delta, zero in compiled_items:
             if zero is not None:
+                _update_frontier_status(
+                    result.authoring_frontier,
+                    occurrence.occurrence_id,
+                    authoring_status="ZERO_RENDER",
+                    exact_first_failure="",
+                    grant_applied=False,
+                )
                 result.coverage.zero_render_occurrences.append(zero)
                 result.transitions.append({
                     "occurrence_id": occurrence.occurrence_id,
@@ -495,12 +746,33 @@ def execute_verified_sections(
             )
             spans = tuple(rendered.occurrence_span_map.get(occurrence.occurrence_id, ()))
             if not spans:
+                _update_frontier_status(
+                    result.authoring_frontier,
+                    occurrence.occurrence_id,
+                    authoring_status="EXPECTED_RENDER_MISSING",
+                    exact_first_failure="EXPECTED_RENDER_MISSING",
+                    grant_applied=False,
+                )
                 blocked = _section_block(seed, "EXPECTED_RENDER_MISSING", "section materialization did not map the occurrence")
                 _append_section_blocks(result, [blocked], state)
                 state.position = seed.position
                 continue
             span = spans[0]
-            body = str(span.get("text") or "").strip()
+            occurrence_brief = _brief_with_materialized_evidence(
+                occurrence_brief,
+                spans,
+                packet,
+                occurrence.occurrence_id,
+                brief,
+            )
+            # Validate/grant against the complete deterministic occurrence
+            # contribution.  The first span remains the stable audit anchor,
+            # while all mapped spans participate in semantic conformance.
+            body = "\n\n".join(
+                str(item.get("text") or "").strip()
+                for item in spans
+                if str(item.get("text") or "").strip()
+            ).strip()
             wrapped = wrap_rendered_occurrence(
                 occurrence_brief,
                 body,
@@ -543,13 +815,25 @@ def execute_verified_sections(
                 semantic_claim_statuses=tuple(item.final_status for item in own_records),
                 semantic_audit_records=tuple(item.to_dict() for item in own_records),
             )
-            transition = advance_verified_instructional_availability(state=state, occurrence=occurrence, execution=execution)
+            transition = advance_verified_instructional_availability(
+                state=deepcopy(state) if preview_mode else state,
+                occurrence=occurrence,
+                execution=execution,
+            )
+            # PREVIEW_FULLBOOK is a human-readable inspection run.  It may
+            # show a later section even when strict sequential prerequisites
+            # are not verified, but it is never allowed to establish runtime
+            # availability or alter the strict state machine.
+            preview_grant = transition.grant_applied
+            if preview_mode:
+                state.position = seed.position
             result.transitions.append({
                 "occurrence_id": occurrence.occurrence_id,
                 "render_decision": "RENDER",
-                "grant_applied": transition.grant_applied,
-                "granted_facets": list(transition.granted_facets),
-                "granted_extension_keys": list(transition.granted_extension_keys),
+                "grant_applied": False if preview_mode else transition.grant_applied,
+                "preview_grant_candidate": preview_grant if preview_mode else False,
+                "granted_facets": [] if preview_mode else list(transition.granted_facets),
+                "granted_extension_keys": [] if preview_mode else list(transition.granted_extension_keys),
                 "blocked_reasons": list(transition.blocked_reasons),
                 "before": _state_dict(transition.before),
                 "after": _state_dict(transition.after),
@@ -561,6 +845,9 @@ def execute_verified_sections(
                 "semantic_claim_statuses": list(execution.semantic_claim_statuses),
                 "semantic_evidence": list(execution.semantic_audit_records),
                 "authoring_granularity": "section",
+                "preview_runtime_status": (
+                    "NOT_APPLIED_PREVIEW_ONLY" if preview_mode else "STRICT_RUNTIME"
+                ),
             })
             result.coverage.briefs.append(occurrence_brief)
             result.markdown_occurrences.append({
@@ -582,24 +869,23 @@ def execute_verified_sections(
                     "materialized": bool(record),
                 })
                 result.coverage.execution_blocked_occurrences.append(result.blocked_occurrences[-1])
-            state = transition.after
-
-        # Recovery is part of the official section execution audit.  This
-        # first integration only classifies and plans local actions; it does
-        # not silently retry or rewrite a section.  Any future accepted patch
-        # must still pass the existing recovery revalidation gates before a
-        # verified grant can be established.
-        recovery_issues = classify_section_recovery(rendered, brief, packet)
-        recovery_proposals = plan_section_recovery(
-            recovery_issues,
-            brief=brief,
-            packet=packet,
-        )
-        section_assembly["recovery"] = {
-            "issues": [item.to_dict() for item in recovery_issues],
-            "proposals": [item.to_dict() for item in recovery_proposals],
-            "auto_applied": False,
-        }
+            if not preview_mode:
+                state = transition.after
+            _update_frontier_status(
+                result.authoring_frontier,
+                occurrence.occurrence_id,
+                authoring_status=("VERIFIED_GRANT" if transition.grant_applied and not preview_mode else "RENDERED_NOT_GRANTED"),
+                exact_first_failure=(
+                    ""
+                    if transition.grant_applied and not preview_mode
+                    else "; ".join(transition.blocked_reasons)
+                    or (str(conformance.overall) if conformance.overall != ConformanceStatus.MATCH else "")
+                    or (str(evidence_status) if evidence_status != SupportStatus.SUPPORTED else "")
+                ),
+                grant_applied=bool(transition.grant_applied and not preview_mode),
+                granted_facets=[] if preview_mode else list(transition.granted_facets),
+                granted_extension_keys=[] if preview_mode else list(transition.granted_extension_keys),
+            )
 
     result.verified_state = state
     result.semantic_evidence_call_count = int(getattr(semantic_entailment_judge, "call_count", 0) if semantic_entailment_judge else 0)
@@ -610,6 +896,9 @@ def execute_verified_sections(
 def _section_constraint(occurrence: PlannedOccurrence, delta: SemanticDelta, state: InstructionalAvailabilityState, zero: Any) -> dict[str, Any]:
     return {
         "occurrence_id": occurrence.occurrence_id,
+        "section_id": occurrence.section_id,
+        "knowledge_id": occurrence.knowledge_id,
+        "canonical_knowledge_id": occurrence.knowledge_id,
         "role": occurrence.role,
         "already_available_facets": list(_available_facets(state, occurrence.knowledge_id)),
         "required_facets": list(occurrence.required_self_facets),
@@ -618,6 +907,10 @@ def _section_constraint(occurrence: PlannedOccurrence, delta: SemanticDelta, sta
         "extension_keys": list(occurrence.intended_extension_keys),
         "required_current_contribution": [occurrence.intended_contribution] if occurrence.intended_contribution else [],
         "contribution_goal": occurrence.intended_contribution,
+        "intended_contribution": occurrence.intended_contribution,
+        "new_context": occurrence.new_context,
+        "contribution_evidence_chunk_ids": list(occurrence.contribution_evidence_chunk_ids),
+        "planning_evidence_chunk_ids": list(occurrence.planning_evidence_chunk_ids),
         "new_facets": list(delta.new_facets),
         "new_extension_keys": list(delta.new_extension_keys),
         "render_decision": "ZERO_RENDER" if zero is not None else "RENDER",
@@ -695,3 +988,67 @@ def _source_occurrences(state: InstructionalAvailabilityState, knowledge_id: str
 
 def _state_dict(state: InstructionalAvailabilityState) -> dict:
     return asdict(state)
+
+
+def _frontier_record(
+    seed: PlannedOccurrence,
+    *,
+    role: str,
+    prerequisite_status: str,
+    authoring_status: str,
+    exact_first_failure: str,
+    audit: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "frontier_status": "AUTHORING_FRONTIER" if prerequisite_status == "SATISFIED_OR_NONE" else "NOT_FRONTIER",
+        "section_id": seed.section_id,
+        "occurrence_id": seed.occurrence_id,
+        "canonical_knowledge_id": seed.knowledge_id,
+        "role": role,
+        "required_facets": list(seed.required_self_facets),
+        "required_prerequisites": [
+            {
+                "knowledge_id": item.knowledge_id,
+                "required_facets": list(item.required_facets),
+                "minimum_required_facet": getattr(item, "minimum_required_facet", ""),
+                "necessity": getattr(item, "necessity", "HARD"),
+                "relation": item.relation,
+            }
+            for item in seed.required_prerequisites
+        ],
+        "prerequisite_status": prerequisite_status,
+        "authoring_status": authoring_status,
+        "exact_first_failure": exact_first_failure,
+        "grant_applied": False,
+        "granted_facets": [],
+        "granted_extension_keys": [],
+            # Compilation diagnostics are normally a mapping, but the
+            # deterministic compiler may return an ordered list of audit
+            # records for an untrusted/blocked plan.  Preserve that shape in
+            # the frontier artifact instead of coercing it through ``dict``
+            # (which would raise for a list and hide the real first failure).
+            "compilation_audit": deepcopy(audit) if audit is not None else {},
+        }
+
+
+def _update_frontier_status(
+    frontier: list[dict[str, Any]],
+    occurrence_id: str,
+    *,
+    authoring_status: str,
+    exact_first_failure: str,
+    grant_applied: bool,
+    granted_facets: list[str] | None = None,
+    granted_extension_keys: list[str] | None = None,
+) -> None:
+    for item in frontier:
+        if item.get("occurrence_id") != occurrence_id:
+            continue
+        item["authoring_status"] = authoring_status
+        item["exact_first_failure"] = exact_first_failure
+        item["grant_applied"] = bool(grant_applied)
+        if granted_facets is not None:
+            item["granted_facets"] = list(granted_facets)
+        if granted_extension_keys is not None:
+            item["granted_extension_keys"] = list(granted_extension_keys)
+        return

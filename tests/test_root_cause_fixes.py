@@ -13,7 +13,10 @@ from materials2textbook.knowledge_map.models import (
     SourceKnowledgePoint,
 )
 from materials2textbook.knowledge_map.rendered_conformance import wrap_rendered_occurrence
-from materials2textbook.knowledge_map.semantic_evaluation import compile_occurrence_for_verified_availability
+from materials2textbook.knowledge_map.semantic_evaluation import (
+    _apply_source_facet_ceiling,
+    compile_occurrence_for_verified_availability,
+)
 from materials2textbook.schemas import EvidenceChunk, EvidenceLocator, EvidenceScore
 
 
@@ -220,3 +223,256 @@ def test_untrusted_cross_prerequisite_is_audited_but_cannot_block_runtime() -> N
     assert compiled.compiled_occurrence is not None
     assert compiled.compiled_occurrence.required_prerequisites == []
     assert any(item["classification"] == "UNTRUSTED_PREREQUISITE_PROPOSAL" for item in compiled.audit)
+
+
+def test_source_bounded_facet_ceiling_clamps_requested_facet_without_rewriting_task_intent() -> None:
+    occurrence = _occurrence("A1")
+    delta = _delta("A1", new_facets=["EXPLAIN"])
+    audit: list[dict] = []
+    capped = _apply_source_facet_ceiling(
+        delta,
+        occurrence,
+        {
+            "obligation_calibrations": [{
+                "obligation_id": "section_01:obligation:concept_principle:01",
+                "calibrated_status": "SOURCE_SUPPORTED_REQUIRED",
+                "max_source_supported_facet": "ORIENTED",
+                "supporting_evidence_ids": ["C1"],
+            }]
+        },
+        audit,
+    )
+    assert capped.task_required_facet == "EXPLAIN"
+    assert capped.max_source_supported_facet == "ORIENTED"
+    assert capped.effective_required_facet == "ORIENTED"
+    assert capped.new_facets == ["ORIENTED"]
+    assert audit and audit[0]["classification"] == "SOURCE_BOUNDED_FACET_CEILING_APPLIED"
+
+
+def test_source_bounded_facet_ceiling_preserves_highest_supported_lower_facet() -> None:
+    occurrence = _occurrence("A1")
+    delta = _delta("A1", new_facets=["ANALYZE"])
+    audit: list[dict] = []
+    capped = _apply_source_facet_ceiling(
+        delta,
+        occurrence,
+        {
+            "obligation_calibrations": [{
+                "obligation_id": "section_01:obligation:concept_principle:01",
+                "calibrated_status": "SOURCE_SUPPORTED_REQUIRED",
+                "max_source_supported_facet": "EXPLAIN",
+            }]
+        },
+        audit,
+    )
+    assert capped.task_required_facet == "ANALYZE"
+    assert capped.max_source_supported_facet == "EXPLAIN"
+    assert capped.effective_required_facet == "EXPLAIN"
+    assert capped.new_facets == ["EXPLAIN"]
+
+
+def test_prerequisite_minimum_facet_is_independent_of_upstream_planned_facet() -> None:
+    current = _occurrence("B1")
+    delta = _delta("B1", new_facets=["EXPLAIN"])
+    delta.cross_prerequisite_uses = [PrerequisiteUse(
+        knowledge_id="kp:generic-method",
+        required_facets=["EXPLAIN"],
+        minimum_required_facet="ORIENTED",
+        necessity="HARD",
+        relation="HARD",
+        use_type="DIRECT",
+        rationale="The task only needs recognition of the earlier equipment.",
+        evidence_chunk_ids=["C1"],
+        provenance="task analysis",
+        confidence=0.95,
+        trusted_for_runtime=True,
+    )]
+    state = InstructionalAvailabilityState()
+    state.availability_by_knowledge["kp:generic-method"] = type(
+        "Record", (), {"available_facets": ["ORIENTED"], "available_extension_keys": []}
+    )()
+    compiled = compile_occurrence_for_verified_availability(
+        seed=current,
+        delta=delta,
+        verified_before=state,
+        has_previous=False,
+        source_context="equipment setup",
+        first_position={"kp:generic-method": BookPosition(1, 0, 0)},
+    )
+    assert compiled.executable is True
+    assert compiled.compiled_occurrence is not None
+    assert compiled.compiled_occurrence.required_prerequisites[0].required_facets == ["ORIENTED"]
+
+
+def test_source_bounded_prerequisite_overlay_uses_effective_graph_not_candidate_facets() -> None:
+    current = _occurrence("B1")
+    delta = _delta("B1", new_facets=["EXPLAIN"])
+    delta.cross_prerequisite_uses = [
+        PrerequisiteUse(
+            knowledge_id="kp:equipment",
+            required_facets=["EXPLAIN"],
+            relation="HARD",
+            use_type="DIRECT",
+            rationale="planner candidate",
+            evidence_chunk_ids=["C1"],
+            provenance="planner",
+            confidence=0.95,
+            trusted_for_runtime=True,
+        ),
+        PrerequisiteUse(
+            knowledge_id="kp:ppe",
+            required_facets=["EXPLAIN"],
+            relation="HARD",
+            use_type="DIRECT",
+            rationale="planner candidate",
+            evidence_chunk_ids=["C1"],
+            provenance="planner",
+            confidence=0.95,
+            trusted_for_runtime=True,
+        ),
+    ]
+    state = InstructionalAvailabilityState()
+    state.availability_by_knowledge["kp:equipment"] = type(
+        "Record", (), {"available_facets": ["EXPLAIN"], "available_extension_keys": []}
+    )()
+    overlay = {
+        "constraints": [
+            {
+                "downstream_occurrence_id": "B1",
+                "prerequisite_knowledge_id": "kp:equipment",
+                "necessity": "HARD",
+                "minimum_required_facet": "ORIENTED",
+                "rationale": "The task needs recognition of the earlier equipment.",
+                "provenance": "source-bounded task audit",
+                "supporting_evidence_ids": ["C1"],
+            },
+            {
+                "downstream_occurrence_id": "B1",
+                "prerequisite_knowledge_id": "kp:ppe",
+                "necessity": "NOT_REQUIRED",
+                "minimum_required_facet": "",
+                "rationale": "PPE selection is not a prerequisite for this task.",
+                "provenance": "source-bounded task audit",
+                "supporting_evidence_ids": ["C1"],
+            },
+        ]
+    }
+    compiled = compile_occurrence_for_verified_availability(
+        seed=current,
+        delta=delta,
+        verified_before=state,
+        has_previous=False,
+        source_context="equipment setup",
+        first_position={"kp:equipment": BookPosition(1, 0, 0), "kp:ppe": BookPosition(1, 0, 1)},
+        source_bounded_prerequisite_calibration=overlay,
+    )
+    assert compiled.executable is True
+    assert compiled.compiled_occurrence is not None
+    assert [item.knowledge_id for item in compiled.compiled_occurrence.required_prerequisites] == ["kp:equipment"]
+    assert compiled.compiled_occurrence.required_prerequisites[0].required_facets == ["ORIENTED"]
+    assert any(item["classification"] == "SOURCE_BOUNDED_PREREQUISITE_CALIBRATION_APPLIED" for item in compiled.audit)
+
+
+def test_invalid_source_bounded_prerequisite_overlay_fails_closed() -> None:
+    current = _occurrence("B1")
+    delta = _delta("B1", new_facets=["EXPLAIN"])
+    delta.cross_prerequisite_uses = [PrerequisiteUse(
+        knowledge_id="kp:equipment",
+        required_facets=["EXPLAIN"],
+        relation="HARD",
+        use_type="DIRECT",
+        rationale="planner candidate",
+        evidence_chunk_ids=["C1"],
+        provenance="planner",
+        confidence=0.95,
+        trusted_for_runtime=True,
+    )]
+    state = InstructionalAvailabilityState()
+    state.availability_by_knowledge["kp:equipment"] = type(
+        "Record", (), {"available_facets": ["ORIENTED"], "available_extension_keys": []}
+    )()
+    compiled = compile_occurrence_for_verified_availability(
+        seed=current,
+        delta=delta,
+        verified_before=state,
+        has_previous=False,
+        source_context="equipment setup",
+        first_position={"kp:equipment": BookPosition(1, 0, 0)},
+        source_bounded_prerequisite_calibration={"constraints": [{
+            "downstream_occurrence_id": "B1",
+            "prerequisite_knowledge_id": "kp:equipment",
+            "necessity": "HARD",
+            "minimum_required_facet": "",
+            "rationale": "",
+            "provenance": "",
+        }]},
+    )
+    assert compiled.executable is True
+    assert compiled.compiled_occurrence is not None
+    assert compiled.compiled_occurrence.required_prerequisites == []
+    assert any(item["classification"] == "INVALID_SOURCE_BOUNDED_PREREQUISITE_CALIBRATION" for item in compiled.audit)
+
+
+def test_complete_prerequisite_calibration_rejects_unlisted_planner_edge() -> None:
+    current = _occurrence("B1")
+    delta = _delta("B1", new_facets=["EXPLAIN"])
+    delta.cross_prerequisite_uses = [
+        PrerequisiteUse(
+            knowledge_id="kp:equipment",
+            required_facets=["EXPLAIN"],
+            relation="HARD",
+            use_type="DIRECT",
+            rationale="planner candidate",
+            evidence_chunk_ids=["C1"],
+            provenance="planner",
+            confidence=0.95,
+            trusted_for_runtime=True,
+        ),
+        PrerequisiteUse(
+            knowledge_id="kp:workplace",
+            required_facets=["EXPLAIN"],
+            relation="HARD",
+            use_type="DIRECT",
+            rationale="planner candidate",
+            evidence_chunk_ids=["C1"],
+            provenance="planner",
+            confidence=0.95,
+            trusted_for_runtime=True,
+        ),
+    ]
+    state = InstructionalAvailabilityState()
+    state.availability_by_knowledge["kp:equipment"] = type(
+        "Record", (), {"available_facets": ["ORIENTED"], "available_extension_keys": []}
+    )()
+    compiled = compile_occurrence_for_verified_availability(
+        seed=current,
+        delta=delta,
+        verified_before=state,
+        has_previous=False,
+        source_context="equipment setup",
+        first_position={
+            "kp:equipment": BookPosition(1, 0, 0),
+            "kp:workplace": BookPosition(1, 0, 1),
+        },
+        source_bounded_prerequisite_calibration={
+            "complete_for_occurrence_ids": ["B1"],
+            "constraints": [{
+                "downstream_occurrence_id": "B1",
+                "prerequisite_knowledge_id": "kp:equipment",
+                "necessity": "HARD",
+                "minimum_required_facet": "ORIENTED",
+                "rationale": "The task needs recognition of the equipment.",
+                "provenance": "source-bounded task audit",
+                "supporting_evidence_ids": ["C1"],
+            }],
+        },
+    )
+    assert compiled.compiled_occurrence is not None
+    assert [item.knowledge_id for item in compiled.compiled_occurrence.required_prerequisites] == [
+        "kp:equipment"
+    ]
+    assert any(
+        item["classification"] == "UNCALIBRATED_PREREQUISITE_EDGE"
+        and item["required_prerequisite_knowledge_id"] == "kp:workplace"
+        for item in compiled.audit
+    )

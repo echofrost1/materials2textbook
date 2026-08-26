@@ -75,6 +75,8 @@ def validate_planned_trajectory(
                 )
             )
         for requirement in occurrence.required_prerequisites:
+            if getattr(requirement, "necessity", "HARD") != "HARD":
+                continue
             record = snapshot.before.availability_by_knowledge.get(requirement.knowledge_id)
             facets_available = bool(record) and set(requirement.required_facets).issubset(record.available_facets)
             extensions_available = bool(record) and set(requirement.required_extension_keys).issubset(record.available_extension_keys)

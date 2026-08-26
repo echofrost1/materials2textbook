@@ -89,6 +89,12 @@ class Prerequisite:
     provenance: str = ""
     supporting_basis: str = ""
     trusted_for_runtime: bool = False
+    # ``required_facets`` is retained as the planner's raw proposal for
+    # auditability.  ``minimum_required_facet`` is the independently derived
+    # runtime threshold and must not be inferred from the upstream occurrence's
+    # planned teaching facet.
+    minimum_required_facet: str = ""
+    necessity: str = "HARD"  # HARD | SOFT_CONTEXT | NOT_REQUIRED
 
 
 @dataclass
@@ -105,6 +111,27 @@ class PrerequisiteUse:
     provenance: str = ""
     supporting_basis: str = ""
     trusted_for_runtime: bool = False
+    minimum_required_facet: str = ""
+    necessity: str = "HARD"  # HARD | SOFT_CONTEXT | NOT_REQUIRED
+
+
+@dataclass(frozen=True)
+class SourceBoundedPrerequisiteConstraint:
+    """Audited source-bounded override for one prerequisite edge.
+
+    Semantic planning proposes a candidate edge; this sidecar is the
+    independent calibration record consumed by the effective runtime graph.
+    It is deliberately keyed by downstream occurrence and prerequisite
+    knowledge so it cannot silently rewrite BookPlan structure or ownership.
+    """
+
+    downstream_occurrence_id: str
+    prerequisite_knowledge_id: str
+    necessity: str
+    minimum_required_facet: str
+    rationale: str
+    provenance: str
+    supporting_evidence_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -129,6 +156,14 @@ class SemanticDelta:
     orientation_only: bool = False
     restores_prior_context: bool = False
     repeats_complete_teaching: bool = False
+    # The planner's requested facet, source-bounded ceiling, and effective
+    # facet are kept separate.  ``new_facets`` remains the effective value for
+    # existing consumers; these fields make the clamp auditable.
+    task_required_facets: list[str] = field(default_factory=list)
+    task_required_facet: str = ""
+    max_source_supported_facet: str = ""
+    effective_required_facets: list[str] = field(default_factory=list)
+    effective_required_facet: str = ""
 
 
 @dataclass

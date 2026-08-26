@@ -10,6 +10,9 @@ from materials2textbook.knowledge_map.rendered_claim_semantic_audit import (
     DeterministicStatus,
     audit_rendered_claims,
     calibrate_lexically_supported_claims,
+    ContentType,
+    classify_content_type,
+    classify_claim_failure,
 )
 from materials2textbook.schemas import EvidenceChunk, EvidenceLocator, EvidenceScore
 
@@ -206,3 +209,34 @@ def test_calibrated_routing_policy_is_recorded_in_audit_summary():
     )
     summary = report.to_dict()["summary"]
     assert summary["semantic_routing_categories"] == sorted(CALIBRATED_SEMANTIC_ROUTING_CATEGORIES)
+
+
+def test_pedagogical_synthesis_is_not_treated_as_source_fact():
+    assert classify_content_type("本节将这些关系整理成一条学习路径。") == ContentType.PEDAGOGICAL_SYNTHESIS
+
+
+def test_derived_instruction_does_not_require_source_sentence_but_domain_assertion_does():
+    prompt = "请将以下步骤按正确顺序排列："
+    assertion = "焊接作业前只需检查设备，无需关注环境。"
+    assert classify_content_type(prompt, channel="exercise", hint=ContentType.DERIVED_INSTRUCTION) == ContentType.DERIVED_INSTRUCTION
+    assert classify_content_type(assertion, channel="exercise", hint=ContentType.DERIVED_INSTRUCTION) == ContentType.SOURCE_FACT
+
+
+def test_real_unsupported_domain_claim_remains_fail_closed():
+    judge = FakeJudge({
+        "status": "UNSUPPORTED",
+        "supporting_evidence_ids": [],
+        "rationale": "The evidence only says risk is reduced, not eliminated.",
+        "confidence": 1.0,
+        "unsupported_part": "完全避免所有故障",
+    })
+    report = audit_rendered_claims(
+        markdown=_markdown("设备一定能完全避免所有故障。"),
+        briefs=_brief(),
+        evidence_by_id={"C1": _evidence("C1", "设备检查有助于降低故障风险。")},
+        judge=judge,
+    )
+    assert report.records[0].content_type == ContentType.UNSUPPORTED_DOMAIN_CLAIM
+    assert report.records[0].final_status == ClaimStatus.UNSUPPORTED
+    assert classify_claim_failure(report.records[0]) == "MODALITY_OVERREACH"
+    assert report.records[0].to_dict()["failure_class"] == "MODALITY_OVERREACH"

@@ -163,7 +163,9 @@ def cross_requirements_available(state: InstructionalAvailabilityState, occurren
     blocking = [
         requirement
         for requirement in occurrence.required_prerequisites
-        if requirement.relation == "HARD" and requirement.use_type == "DIRECT"
+        if requirement.relation == "HARD"
+        and requirement.use_type == "DIRECT"
+        and getattr(requirement, "necessity", "HARD") == "HARD"
     ]
     return all(
         _record_has(
@@ -178,7 +180,23 @@ def cross_requirements_available(state: InstructionalAvailabilityState, occurren
 def _record_has(record: KnowledgeAvailabilityRecord | None, facets: list[str], extension_keys: list[str]) -> bool:
     if record is None:
         return False
-    return set(facets).issubset(record.available_facets) and set(extension_keys).issubset(record.available_extension_keys)
+    # A verified stronger instructional facet satisfies a weaker prerequisite
+    # (for example, EXPLAIN satisfies an ORIENTED requirement).  This is a
+    # deterministic capability ordering, not a grant: the state still only
+    # contains facets proved by the preceding rendered occurrence.
+    facet_rank = {"ORIENTED": 0, "EXPLAIN": 1, "PERFORM": 2, "ANALYZE": 3}
+    available = {str(item).upper() for item in record.available_facets}
+    for required in facets:
+        required_name = str(required).upper()
+        if required_name in facet_rank:
+            if not any(
+                available_name in facet_rank and facet_rank[available_name] >= facet_rank[required_name]
+                for available_name in available
+            ):
+                return False
+        elif required_name not in available:
+            return False
+    return set(extension_keys).issubset(record.available_extension_keys)
 
 
 def _apply_transition(state: InstructionalAvailabilityState, occurrence: PlannedOccurrence) -> None:

@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from materials2textbook.llm.provider import LLMProvider
+from materials2textbook.llm.provider import DEFAULT_CONTEXT_WINDOW, LLMProvider
 from materials2textbook.prompts.knowledge_map import build_identity_messages, build_semantic_delta_messages
 
 
@@ -41,9 +41,9 @@ class LLMSemanticPlanningAgent:
         messages = build_identity_messages(candidates)
         return _json_object(self._budgeted_generate(messages, "identity"))
 
-    def plan_semantic_deltas(self, trajectory: dict) -> dict:
+    def plan_semantic_deltas(self, trajectory: dict, *, retry: bool = False) -> dict:
         self.call_counts["semantic_delta"] += 1
-        messages = build_semantic_delta_messages(trajectory)
+        messages = build_semantic_delta_messages(trajectory, retry=retry)
         occurrence_ids = [
             str(item.get("occurrence_id"))
             for item in trajectory.get("occurrences", [])
@@ -59,7 +59,7 @@ class LLMSemanticPlanningAgent:
         occurrence_ids: list[str] | None = None,
     ) -> str:
         config = _provider_config(self.llm_provider)
-        context_window = self.context_window or int(getattr(config, "context_window", 8192))
+        context_window = self.context_window or int(getattr(config, "context_window", DEFAULT_CONTEXT_WINDOW))
         requested = int(getattr(config, "max_tokens", 4096))
         cap = int(self.max_output_cap or requested)
         cap = max(1, cap)

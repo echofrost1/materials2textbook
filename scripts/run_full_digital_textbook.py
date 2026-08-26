@@ -81,6 +81,12 @@ def build_llm_provider(args: argparse.Namespace, output_dir: Path):
             "OPENAI_BASE_URL, OPENAI_MODEL or pass --llm-* options."
         )
     provider = OpenAICompatibleProvider(llm_config)
+    server_max_model_len = provider.validate_server_context()
+    print(
+        f"[llm] server context validated: client={llm_config.context_window} "
+        f"server_max_model_len={server_max_model_len}",
+        flush=True,
+    )
     if args.llm_max_retries:
         provider = RetryingLLMProvider(
             provider,
@@ -141,6 +147,14 @@ def main() -> None:
         help=(
             "Use SectionTeachingBlueprint/SectionEvidencePacket and section-level authoring "
             "in semantic production mode (default: enabled)."
+        ),
+    )
+    parser.add_argument(
+        "--preview-fullbook",
+        action="store_true",
+        help=(
+            "Generate a source-bounded full-book reading preview. Requires a validated frozen BookPlan; "
+            "never establishes strict verified availability and is never publication-approved."
         ),
     )
     parser.add_argument(
@@ -366,6 +380,7 @@ def main() -> None:
         book_plan_is_frozen=args.book_plan_is_frozen,
         freeze_calibration_input=args.freeze_calibration_input.resolve() if args.freeze_calibration_input else None,
         completeness_first_authoring=args.completeness_first_authoring,
+        preview_fullbook=args.preview_fullbook,
     )
 
     print("Full digital textbook generated:")
@@ -380,6 +395,7 @@ def main() -> None:
     print(f"- summarize_over_budget: {args.summarize_over_budget}")
     print(f"- book_mode: {args.book_mode or args.semantic_book_mode}")
     print(f"- semantic_book_mode: {args.semantic_book_mode}")
+    print(f"- preview_fullbook: {args.preview_fullbook}")
     print(f"- domain_name: {domain_config.domain_name}")
     if args.manifest_xlsx:
         print(f"- manifest_xlsx: {args.manifest_xlsx.resolve()}")

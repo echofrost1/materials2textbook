@@ -9,7 +9,7 @@ creates prerequisites, or binds individual EvidenceChunks.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Iterable, Mapping
 
 from materials2textbook.agents.book_plan_completeness import (
@@ -49,6 +49,19 @@ ALLOWED_OBLIGATION_KINDS = frozenset(
 )
 ALLOWED_REQUIREMENT_STATUSES = frozenset({REQUIRED, OPTIONAL, NOT_APPLICABLE})
 
+# Source-bounded calibration is an overlay contract.  These values are kept
+# distinct from the Blueprint's small REQUIRED/OPTIONAL/NOT_APPLICABLE
+# vocabulary so the original decision and the calibrated boundary remain
+# auditable downstream.
+SOURCE_SUPPORTED_REQUIRED = "SOURCE_SUPPORTED_REQUIRED"
+SOURCE_SUPPORTED_OPTIONAL = "SOURCE_SUPPORTED_OPTIONAL"
+OUT_OF_SOURCE_SCOPE = "OUT_OF_SOURCE_SCOPE"
+SOURCE_BOUNDED_CALIBRATION_STATUSES = frozenset(
+    {SOURCE_SUPPORTED_REQUIRED, SOURCE_SUPPORTED_OPTIONAL, OUT_OF_SOURCE_SCOPE}
+)
+
+_FACET_ORDER = ("ORIENTED", "EXPLAIN", "PERFORM", "ANALYZE")
+
 
 class SectionTeachingBlueprintError(ValueError):
     """Raised when a blueprint is requested for an invalid/unfrozen plan."""
@@ -67,12 +80,15 @@ class TeachingObligation:
     evidence_requirement: str = ""
     depth: str = "FOCUSED"
     provenance: Mapping[str, Any] = field(default_factory=dict)
+    max_source_supported_facet: str = ""
+    facet_calibration_provenance: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["target_knowledge_ids"] = list(self.target_knowledge_ids)
         value["linked_occurrence_ids"] = list(self.linked_occurrence_ids)
         value["provenance"] = deepcopy(dict(self.provenance))
+        value["facet_calibration_provenance"] = deepcopy(dict(self.facet_calibration_provenance))
         return value
 
 
@@ -119,6 +135,7 @@ def build_section_teaching_blueprint(
     prior_verified_support: Mapping[str, Any] | None = None,
     occurrences: Iterable[Any] | None = None,
     authorized_evidence_ids: Iterable[str] | None = None,
+    source_bounded_calibration: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None = None,
 ) -> SectionTeachingBlueprint:
     """Build one blueprint without mutating the supplied plan.
 
@@ -159,6 +176,8 @@ def build_section_teaching_blueprint(
         target_knowledge_ids=target_ids,
         linked_occurrence_ids=linked_occurrence_ids,
     )
+    calibration_rows = _calibration_rows(source_bounded_calibration)
+    obligations = _apply_source_bounded_calibration(obligations, calibration_rows)
     source_gaps = _source_gaps(obligations, evidence_ids)
     blueprint_id = f"blueprint:{section_id}:{expected_signature[:12]}"
     provenance = {
@@ -170,6 +189,11 @@ def build_section_teaching_blueprint(
         "evidence_binding_deferred": True,
         "book_plan_mutated": False,
         "occurrence_role_decision": "deferred to occurrence semantic layer",
+        "source_bounded_calibration": {
+            "applied": bool(calibration_rows),
+            "obligation_count": len(calibration_rows),
+            "obligations": deepcopy(calibration_rows),
+        },
     }
     return SectionTeachingBlueprint(
         blueprint_id=blueprint_id,
@@ -247,6 +271,130 @@ def _linked_occurrence_ids(occurrences: Iterable[Any] | None, section_id: str) -
         if occurrence_id and occurrence_section == section_id:
             result.append(occurrence_id)
     return tuple(_dedupe_strings(result))
+
+
+def _calibration_rows(
+    calibration: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """Normalize the source-bounded overlay without widening its scope.
+
+    Production artifacts store rows as a list under ``obligation_calibrations``;
+    focused callers may pass an already-indexed mapping.  Unknown/malformed
+    rows are rejected rather than silently restoring the original REQUIRED
+    status.
+    """
+
+    if calibration is None:
+        return {}
+    if isinstance(calibration, Mapping):
+        raw_rows = calibration.get("obligation_calibrations", calibration)
+        if isinstance(raw_rows, Mapping):
+            items = []
+            for key, value in raw_rows.items():
+                if isinstance(value, Mapping):
+                    items.append({"obligation_id": str(key), **dict(value)})
+        elif isinstance(raw_rows, (list, tuple)):
+            items = list(raw_rows)
+        else:
+            raise SectionTeachingBlueprintError("source-bounded calibration rows must be a mapping or list")
+    elif isinstance(calibration, (list, tuple)):
+        items = list(calibration)
+    else:
+        raise SectionTeachingBlueprintError("source-bounded calibration must be a mapping or list")
+
+    result: dict[str, dict[str, Any]] = {}
+    for raw in items:
+        if not isinstance(raw, Mapping):
+            raise SectionTeachingBlueprintError("source-bounded calibration row must be an object")
+        obligation_id = str(raw.get("obligation_id") or "").strip()
+        status = str(raw.get("calibrated_status") or "").strip().upper()
+        if not obligation_id or status not in SOURCE_BOUNDED_CALIBRATION_STATUSES:
+            raise SectionTeachingBlueprintError(
+                "source-bounded calibration row requires obligation_id and a valid calibrated_status"
+            )
+        if obligation_id in result:
+            raise SectionTeachingBlueprintError(f"duplicate source-bounded calibration row: {obligation_id}")
+        result[obligation_id] = deepcopy(dict(raw))
+    return result
+
+
+def _apply_source_bounded_calibration(
+    obligations: Iterable[TeachingObligation],
+    calibration_rows: Mapping[str, Mapping[str, Any]],
+) -> list[TeachingObligation]:
+    """Apply only the source-bounded necessity overlay to obligations.
+
+    The BookPlan and its ownership are untouched.  OUT_OF_SOURCE_SCOPE is
+    deliberately mapped to NOT_APPLICABLE so it cannot enter a required
+    evidence gate or writer factual responsibility, while the complete source
+    row is retained in obligation provenance for audit.
+    """
+
+    result: list[TeachingObligation] = []
+    status_to_requirement = {
+        SOURCE_SUPPORTED_REQUIRED: REQUIRED,
+        SOURCE_SUPPORTED_OPTIONAL: OPTIONAL,
+        OUT_OF_SOURCE_SCOPE: NOT_APPLICABLE,
+    }
+    for obligation in obligations:
+        row = calibration_rows.get(obligation.obligation_id)
+        if row is None:
+            result.append(obligation)
+            continue
+        status = str(row["calibrated_status"]).strip().upper()
+        provenance = {
+            **dict(obligation.provenance),
+            "original_necessity": str(row.get("original_required") or obligation.required),
+            "source_bounded_calibrated_necessity": status,
+            "source_boundary_status": status,
+            "calibration_provenance": deepcopy(dict(row)),
+        }
+        calibrated_scope = str(row.get("calibrated_scope") or "").strip()
+        max_facet = _source_max_facet(row, obligation, calibrated_scope)
+        if calibrated_scope:
+            provenance["original_objective"] = obligation.objective
+        provenance["max_source_supported_facet"] = max_facet
+        provenance["facet_calibration_provenance"] = deepcopy(dict(row))
+        result.append(
+            replace(
+                obligation,
+                required=status_to_requirement[status],
+                objective=calibrated_scope or obligation.objective,
+                provenance=provenance,
+                max_source_supported_facet=max_facet,
+                facet_calibration_provenance=deepcopy(dict(row)),
+            )
+        )
+    return result
+
+
+def _source_max_facet(
+    row: Mapping[str, Any],
+    obligation: TeachingObligation,
+    calibrated_scope: str,
+) -> str:
+    """Resolve the source-bounded facet ceiling without inventing taxonomy.
+
+    New calibration artifacts may carry an explicit ceiling.  Older validated
+    artifacts predate that field, so we conservatively derive one from the
+    calibrated scope/status for replay.  OUT_OF_SOURCE_SCOPE never enters a
+    factual writer obligation and is capped at orientation only.
+    """
+
+    explicit = row.get("max_source_supported_facet") or row.get("max_supported_facet") or row.get("calibrated_facet")
+    if isinstance(explicit, str) and explicit.strip().upper() in _FACET_ORDER:
+        return explicit.strip().upper()
+    status = str(row.get("calibrated_status") or "").strip().upper()
+    if status == OUT_OF_SOURCE_SCOPE:
+        return "ORIENTED"
+    text = f"{calibrated_scope} {row.get('original_learning_outcome') or ''} {obligation.objective}".lower()
+    if any(token in text for token in ("analyze", "analyse", "分析", "判断影响", "比较影响")):
+        return "ANALYZE"
+    if any(token in text for token in ("perform", "execute", "complete the operation", "执行", "完成操作", "完成步骤")):
+        return "PERFORM"
+    if any(token in text for token in ("explain", "describe the relationship", "说明", "解释", "认知", "关系", "作用")):
+        return "EXPLAIN"
+    return "ORIENTED"
 
 
 def _derive_obligations(

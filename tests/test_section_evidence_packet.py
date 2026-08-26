@@ -140,6 +140,122 @@ def test_packet_keeps_primary_and_reference_ownership_separate() -> None:
     assert accepted <= {"chunk-1", "chunk-2"}
 
 
+def test_obligation_can_be_supported_by_a_minimal_multi_evidence_set() -> None:
+    plan = _plan(primary=["chunk-1"], reference=["chunk-2"])
+    blueprint = _blueprint(plan, authorized=["chunk-1", "chunk-2"])
+    chunks = [
+        _chunk("chunk-1", "Explain the basic operation and its key objects."),
+        _chunk("chunk-2", "Explain the quality conditions and the relation between operation and result."),
+    ]
+    packet = build_section_evidence_packet(plan, "section-01", blueprint, chunks)
+    concept_id = next(
+        item.obligation_id for item in blueprint.obligations if item.kind == "concept_principle"
+    )
+    binding = next(item for item in packet.obligation_bindings if item.obligation_id == concept_id)
+    assert binding.status == SUPPORTED_OBLIGATION
+    assert set(binding.accepted_evidence_ids) == {"chunk-1", "chunk-2"}
+    assert binding.provenance["evidence_set_support"]["selection_strategy"]
+
+
+def test_validated_source_bounded_calibration_can_bind_semantic_multi_evidence_set() -> None:
+    plan = _plan(primary=["chunk-1"], reference=["chunk-2"])
+    blueprint = _blueprint(plan, authorized=["chunk-1", "chunk-2"])
+    chunks = [
+        _chunk("chunk-1", "Object and function of the basic operation."),
+        _chunk("chunk-2", "Relation between the operation and its quality result."),
+    ]
+    concept_id = next(item.obligation_id for item in blueprint.obligations if item.kind == "concept_principle")
+    calibration = {
+        concept_id: {
+            "obligation_id": concept_id,
+            "evidence_result": "SUPPORTED",
+            "supporting_evidence_ids": ["chunk-1", "chunk-2"],
+            "supported_requirements": ["objects", "function", "relationship"],
+            "rationale": "The authorized pair jointly covers the calibrated concept responsibility.",
+        }
+    }
+
+    packet = build_section_evidence_packet(
+        plan,
+        "section-01",
+        blueprint,
+        chunks,
+        source_bounded_calibration=calibration,
+    )
+    binding = next(item for item in packet.obligation_bindings if item.obligation_id == concept_id)
+    assert binding.status == SUPPORTED_OBLIGATION
+    assert binding.accepted_evidence_ids == ("chunk-1", "chunk-2")
+    assert binding.provenance["source_bounded_semantic_support"] is True
+    assert packet.retrieval_audit["source_bounded_semantic_support_used"] is True
+
+
+def test_source_bounded_calibration_cannot_expand_evidence_ownership() -> None:
+    plan = _plan(primary=["chunk-1"])
+    blueprint = _blueprint(plan, authorized=["chunk-1"])
+    concept_id = next(item.obligation_id for item in blueprint.obligations if item.kind == "concept_principle")
+    packet = build_section_evidence_packet(
+        plan,
+        "section-01",
+        blueprint,
+        [_chunk("chunk-1", "Basic operation."), _chunk("chunk-2", "Additional relation.")],
+        source_bounded_calibration={
+            concept_id: {
+                "obligation_id": concept_id,
+                "evidence_result": "SUPPORTED",
+                "supporting_evidence_ids": ["chunk-2"],
+            }
+        },
+    )
+    binding = next(item for item in packet.obligation_bindings if item.obligation_id == concept_id)
+    assert "chunk-2" not in binding.accepted_evidence_ids
+    assert packet.retrieval_audit["unauthorized_accepted_evidence_count"] == 0
+
+
+def test_out_of_source_scope_calibration_never_reenters_writer_packet() -> None:
+    plan = _plan(primary=["chunk-1"])
+    blueprint = _blueprint(plan, authorized=["chunk-1"])
+    concept_id = next(item.obligation_id for item in blueprint.obligations if item.kind == "concept_principle")
+    packet = build_section_evidence_packet(
+        plan,
+        "section-01",
+        blueprint,
+        [_chunk("chunk-1", "Basic operation." )],
+        source_bounded_calibration={
+            concept_id: {
+                "obligation_id": concept_id,
+                "calibrated_status": "OUT_OF_SOURCE_SCOPE",
+                "evidence_result": "SUPPORTED",
+                "supporting_evidence_ids": ["chunk-1"],
+            }
+        },
+    )
+    binding = next(item for item in packet.obligation_bindings if item.obligation_id == concept_id)
+    assert binding.provenance.get("source_bounded_semantic_support") is not True
+
+
+def test_calibrated_no_support_cannot_be_upgraded_by_lexical_fallback() -> None:
+    plan = _plan(primary=["chunk-1"])
+    blueprint = _blueprint(plan, authorized=["chunk-1"])
+    concept_id = next(item.obligation_id for item in blueprint.obligations if item.kind == "concept_principle")
+    packet = build_section_evidence_packet(
+        plan,
+        "section-01",
+        blueprint,
+        [_chunk("chunk-1", "Explain basic operation and quality conditions with all matching words.")],
+        source_bounded_calibration={
+            concept_id: {
+                "obligation_id": concept_id,
+                "calibrated_status": "SOURCE_SUPPORTED_REQUIRED",
+                "evidence_result": "NO_SUPPORT",
+                "rationale": "The calibrated obligation has no complete authorized support.",
+            }
+        },
+    )
+    binding = next(item for item in packet.obligation_bindings if item.obligation_id == concept_id)
+    assert binding.status == SOURCE_GAP
+    assert not binding.accepted_evidence_ids
+
+
 def test_out_of_scope_candidate_is_rejected_and_never_accepted() -> None:
     plan = _plan(primary=["chunk-1"])
     blueprint = _blueprint(plan, authorized=["chunk-1"])

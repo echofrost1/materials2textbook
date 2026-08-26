@@ -15,8 +15,8 @@ def build_identity_messages(candidates: list[dict]) -> list[dict[str, str]]:
     )
 
 
-def build_semantic_delta_messages(trajectory: dict) -> list[dict[str, str]]:
-    return _messages(
+def build_semantic_delta_messages(trajectory: dict, *, retry: bool = False) -> list[dict[str, str]]:
+    instruction = (
         "For each occurrence in one complete canonical knowledge trajectory, report semantic facts only. "
         "Do NOT emit INTRO, TEACH, RECALL, APPLY, or EXTEND; deterministic code will derive the role. "
         "Compare each occurrence with earlier occurrences. A new_facet is only a genuinely new instructional facet, "
@@ -33,20 +33,33 @@ def build_semantic_delta_messages(trajectory: dict) -> list[dict[str, str]]:
         "For the first occurrence, required_self_facets and required_self_extension_keys must both be empty. "
         "A same-canonical prerequisite is always represented by required_self_facets, never cross_prerequisite_uses. "
         "Use a cross prerequisite only when needed knowledge is a DIFFERENT canonical ID from canonical_id_whitelist; "
-        "never output source IDs or unknown IDs. "
+        "never output source IDs or unknown IDs. For each cross prerequisite, minimum_required_facet is the lowest "
+        "capability the CURRENT task actually needs, independently of the upstream occurrence's planned facet. "
+        "Use HARD only when absence must block execution; use SOFT_CONTEXT for helpful context and NOT_REQUIRED when "
+        "the task does not depend on that knowledge. Do not infer a hard EXPLAIN prerequisite merely because the "
+        "upstream plan says EXPLAIN. "
         "Return exactly {\"deltas\":[{\"occurrence_id\":str,\"repeats_prior_explanation\":bool,"
         "\"uses_prior_knowledge\":bool,\"recall_needed\":bool,\"orientation_only\":bool,"
         "\"restores_prior_context\":bool,\"repeats_complete_teaching\":bool,\"required_self_facets\":[\"ORIENTED|EXPLAIN|PERFORM|ANALYZE\"],"
         "\"required_self_extension_keys\":[str],\"cross_prerequisite_uses\":[{\"knowledge_id\":str,"
-        "\"required_facets\":[\"ORIENTED|EXPLAIN|PERFORM|ANALYZE\"],\"required_extension_keys\":[str],"
+        "\"required_facets\":[\"ORIENTED|EXPLAIN|PERFORM|ANALYZE\"],\"minimum_required_facet\":\"ORIENTED|EXPLAIN|PERFORM|ANALYZE\","
+        "\"necessity\":\"HARD|SOFT_CONTEXT|NOT_REQUIRED\",\"required_extension_keys\":[str],"
         "\"relation\":\"HARD|SUPPORTING\",\"use_type\":\"DIRECT|BACKGROUND\","
         "\"rationale\":str,\"evidence_ids\":[str],\"provenance\":str,\"supporting_basis\":str,"
         "\"confidence\":0..1}],"
         "\"new_facets\":[\"ORIENTED|EXPLAIN|PERFORM|ANALYZE\"],\"new_extension_keys\":[str],"
         "\"new_context\":str,\"repeated_aspects\":[str],\"contribution_summary\":str,"
-        "\"confidence\":0..1,\"rationale\":str,\"evidence_ids\":[str]}]}.",
-        trajectory,
-    )
+        "\"confidence\":0..1,\"rationale\":str,\"evidence_ids\":[str]}]}.")
+    if retry:
+        instruction += (
+            " This is a bounded retry for only the failed occurrence(s). Return one compact, valid JSON object. "
+            "Include exactly one delta for each supplied occurrence_id; do not omit required keys, add commentary, "
+            "or repeat the full evidence text. Keep rationale, contribution_summary, and new_context concise while "
+            "remaining evidence-grounded. For the first occurrence in the supplied trajectory, set "
+            "required_self_facets and required_self_extension_keys to empty arrays. Never put a facet in both "
+            "required_self_facets and new_facets."
+        )
+    return _messages(instruction, trajectory)
 
 
 def _messages(instruction: str, payload: object) -> list[dict[str, str]]:

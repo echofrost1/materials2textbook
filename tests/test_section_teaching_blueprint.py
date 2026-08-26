@@ -261,3 +261,84 @@ def test_blueprint_does_not_mechanically_emit_irrelevant_obligations() -> None:
     )
 
     assert not any(item.kind == CASE_ACTIVITY and item.required == REQUIRED for item in blueprint.obligations)
+
+
+def test_source_bounded_calibration_propagates_necessity_and_preserves_audit() -> None:
+    plan, report = _valid_inputs()
+    blueprint = build_section_teaching_blueprint(
+        plan,
+        "section-01",
+        completeness_report=report,
+        source_book_plan_signature=book_plan_fingerprint(plan),
+        authorized_evidence_ids=["chunk-1"],
+        source_bounded_calibration={
+            "obligation_calibrations": [
+                {
+                    "obligation_id": "section-01:obligation:concept_principle:01",
+                    "original_required": "REQUIRED",
+                    "calibrated_status": "SOURCE_SUPPORTED_REQUIRED",
+                    "calibrated_scope": "Explain only the supported operation concept.",
+                    "rationale": "authorized source supports the calibrated scope",
+                    "supporting_evidence_ids": ["chunk-1"],
+                },
+                {
+                    "obligation_id": "section-01:obligation:procedure_operation:01",
+                    "original_required": "REQUIRED",
+                    "calibrated_status": "SOURCE_SUPPORTED_OPTIONAL",
+                    "calibrated_scope": "Optionally describe the supported procedure.",
+                    "rationale": "procedure is not a core source-bounded responsibility",
+                    "supporting_evidence_ids": ["chunk-1"],
+                },
+                {
+                    "obligation_id": "section-01:obligation:parameter_condition:01",
+                    "original_required": "REQUIRED",
+                    "calibrated_status": "OUT_OF_SOURCE_SCOPE",
+                    "calibrated_scope": "",
+                    "rationale": "the supplied material does not support parameter selection",
+                    "supporting_evidence_ids": [],
+                },
+            ]
+        },
+    )
+
+    concept = next(item for item in blueprint.obligations if item.kind == CONCEPT_PRINCIPLE)
+    procedure = next(item for item in blueprint.obligations if item.kind == PROCEDURE_OPERATION)
+    parameter = next(item for item in blueprint.obligations if item.kind == "parameter_condition")
+    assert concept.required == REQUIRED
+    assert concept.objective == "Explain only the supported operation concept."
+    assert procedure.required == OPTIONAL
+    assert parameter.required == NOT_APPLICABLE
+    for item, status in (
+        (concept, "SOURCE_SUPPORTED_REQUIRED"),
+        (procedure, "SOURCE_SUPPORTED_OPTIONAL"),
+        (parameter, "OUT_OF_SOURCE_SCOPE"),
+    ):
+        assert item.provenance["original_necessity"] == "REQUIRED"
+        assert item.provenance["source_bounded_calibrated_necessity"] == status
+        assert item.provenance["source_boundary_status"] == status
+        assert item.provenance["calibration_provenance"]["obligation_id"] == item.obligation_id
+    assert blueprint.provenance["source_bounded_calibration"]["applied"] is True
+
+
+def test_source_bounded_calibration_preserves_facet_ceiling_and_provenance() -> None:
+    plan, report = _valid_inputs()
+    blueprint = build_section_teaching_blueprint(
+        plan,
+        "section-01",
+        completeness_report=report,
+        source_book_plan_signature=book_plan_fingerprint(plan),
+        authorized_evidence_ids=["chunk-1"],
+        source_bounded_calibration={
+            "obligation_calibrations": [{
+                "obligation_id": "section-01:obligation:concept_principle:01",
+                "original_required": "REQUIRED",
+                "calibrated_status": "SOURCE_SUPPORTED_REQUIRED",
+                "max_source_supported_facet": "ORIENTED",
+                "supporting_evidence_ids": ["chunk-1"],
+                "rationale": "only recognition is supported",
+            }]
+        },
+    )
+    concept = next(item for item in blueprint.obligations if item.kind == CONCEPT_PRINCIPLE)
+    assert concept.max_source_supported_facet == "ORIENTED"
+    assert concept.facet_calibration_provenance["supporting_evidence_ids"] == ["chunk-1"]

@@ -48,6 +48,21 @@ class ClaimResolution:
     MODEL_ERROR = "MODEL_ERROR"
 
 
+class ContentType:
+    """Student-facing content taxonomy used before evidence adjudication.
+
+    Only SOURCE_FACT and UNSUPPORTED_DOMAIN_CLAIM are evidence-gated factual
+    claims.  The other two categories describe instructional organization and
+    learner-facing tasks; they must still remain inside the already validated
+    section scope, but they do not need a sentence-level source citation.
+    """
+
+    SOURCE_FACT = "SOURCE_FACT"
+    PEDAGOGICAL_SYNTHESIS = "PEDAGOGICAL_SYNTHESIS"
+    DERIVED_INSTRUCTION = "DERIVED_INSTRUCTION"
+    UNSUPPORTED_DOMAIN_CLAIM = "UNSUPPORTED_DOMAIN_CLAIM"
+
+
 class CalibrationResolution:
     SEMANTIC = "SEMANTIC"
     MODEL_ERROR = "MODEL_ERROR"
@@ -162,12 +177,14 @@ class RenderedClaimAuditRecord:
     evidence_provenance_valid: bool = True
     strengthening_signals: tuple[str, ...] = ()
     error: str = ""
+    content_type: str = ContentType.SOURCE_FACT
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         # `rationale` is the internal name; expose the audit contract's
         # neutral `explanation` field as well for downstream reviewers.
         data["explanation"] = self.rationale
+        data["failure_class"] = classify_claim_failure(self)
         return data
 
 
@@ -364,6 +381,35 @@ class RenderedClaimSemanticEvidenceAudit:
         }
 
 
+def classify_claim_failure(record: RenderedClaimAuditRecord) -> str:
+    """Classify an unresolved factual claim for local recovery routing.
+
+    This is an audit label, not a publication decision.  It deliberately uses
+    only the existing claim/evidence result and strengthening signals; it never
+    infers a missing source or weakens the evidence gate.
+    """
+
+    if record.final_status == ClaimStatus.SUPPORTED:
+        return ""
+    signals = {str(item).casefold() for item in record.strengthening_signals}
+    if any("causal" in item for item in signals):
+        return "CAUSAL_OVERREACH"
+    if any("modality" in item for item in signals):
+        return "MODALITY_OVERREACH"
+    if any("scope" in item for item in signals):
+        return "SCOPE_OVERREACH"
+    if record.deterministic_result == DeterministicStatus.SUPPORTED and record.semantic_result in {
+        ClaimStatus.PARTIALLY_SUPPORTED,
+        ClaimStatus.UNSUPPORTED,
+    }:
+        return "UNSUPPORTED_DETAIL"
+    if not record.authorized_evidence_ids:
+        return "EVIDENCE_BINDING_MISS"
+    if record.resolution in {ClaimResolution.SEMANTIC_UNRESOLVED, ClaimResolution.MODEL_ERROR}:
+        return "SEMANTIC_JUDGE_FALSE_NEGATIVE"
+    return "CLAIM_STRENGTHENING"
+
+
 PROMPT_VERSION = "rendered-claim-entailment-v1"
 ENTAILMENT_PROMPT = """You are an evidence entailment auditor. Judge only whether the claim is supported by the authorized evidence below.
 Do not use outside knowledge. Do not infer new evidence. Do not rewrite the claim.
@@ -376,6 +422,11 @@ Claim:
 
 Fixed current-occurrence context:
 {context}
+
+The supported claim envelope in the context is a factual boundary, not a
+source of new facts.  A claim outside its supported propositions, relations,
+scope, modality, or conditions is not SUPPORTED.  Do not complete missing
+technical details from general knowledge.
 
 Authorized evidence spans (the only evidence you may use):
 {evidence}
@@ -473,6 +524,33 @@ def _audit_claim(
     cited_ids = tuple(dict.fromkeys(_EVIDENCE_ID.findall(claim_text)))
     clean_claim = _EVIDENCE_ID.sub("", claim_text).strip()
     claim_type = _claim_type(clean_claim)
+    content_type = classify_content_type(
+        clean_claim,
+        channel=str(brief.get("content_channel") or ""),
+        hint=str(brief.get("content_type") or ""),
+    )
+    # A task prompt or discourse-only synthesis is not a source-fact claim.
+    # It is nevertheless recorded in the same audit so reviewers can see why
+    # no evidence sentence was required.
+    if content_type in {ContentType.PEDAGOGICAL_SYNTHESIS, ContentType.DERIVED_INSTRUCTION}:
+        return RenderedClaimAuditRecord(
+            claim_id=claim_id,
+            occurrence_id=rendered.occurrence_id,
+            claim_text=clean_claim,
+            claim_type=claim_type,
+            authorized_evidence_ids=allowed_ids,
+            evidence_spans=tuple(_evidence_spans(allowed_chunks)),
+            supporting_span="",
+            deterministic_result=DeterministicStatus.SUPPORTED,
+            semantic_result="NOT_REQUIRED",
+            final_status=ClaimStatus.SUPPORTED,
+            resolution=ClaimResolution.DETERMINISTIC,
+            unsupported_part="",
+            rationale=f"{content_type} is checked for scope/answerability separately; no direct source sentence is required.",
+            confidence=1.0,
+            source_span=claim_text,
+            content_type=content_type,
+        )
     strengthening = tuple(_strengthening_signals(clean_claim, allowed_chunks))
     deterministic, deterministic_ids, deterministic_span, deterministic_reason = _deterministic_result(
         clean_claim,
@@ -487,6 +565,12 @@ def _audit_claim(
     )
     evidence_spans = tuple(_evidence_spans(allowed_chunks))
     if deterministic in {DeterministicStatus.SUPPORTED, DeterministicStatus.UNSUPPORTED} and not force_semantic:
+        final_content_type = (
+            ContentType.UNSUPPORTED_DOMAIN_CLAIM
+            if deterministic == DeterministicStatus.UNSUPPORTED
+            and content_type == ContentType.SOURCE_FACT
+            else content_type
+        )
         return RenderedClaimAuditRecord(
             claim_id=claim_id,
             occurrence_id=rendered.occurrence_id,
@@ -504,6 +588,7 @@ def _audit_claim(
             confidence=0.98 if deterministic == DeterministicStatus.SUPPORTED else 1.0,
             source_span=claim_text,
             strengthening_signals=strengthening,
+            content_type=final_content_type,
         )
     if judge is None:
         return RenderedClaimAuditRecord(
@@ -527,6 +612,7 @@ def _audit_claim(
             confidence=0.0,
             source_span=claim_text,
             strengthening_signals=strengthening,
+            content_type=content_type,
         )
     try:
         proposal_payload = judge.judge(
@@ -536,6 +622,10 @@ def _audit_claim(
                 "role": str(brief.get("role", "")),
                 "section_id": str(brief.get("section_id", "")),
                 "current_occurrence": rendered.occurrence_id,
+                # The envelope is a writer/audit factual boundary compiled
+                # from the same authorized packet.  It contains no external
+                # retrieval and no writer-owned evidence identifiers.
+                "supported_claim_envelope": brief.get("supported_claim_envelope") or {},
             },
         )
         proposal = _validate_proposal(proposal_payload, allowed_ids)
@@ -561,6 +651,11 @@ def _audit_claim(
             source_span=claim_text,
             evidence_provenance_valid=True,
             strengthening_signals=strengthening,
+            content_type=(
+                ContentType.UNSUPPORTED_DOMAIN_CLAIM
+                if proposal.status == ClaimStatus.UNSUPPORTED and content_type == ContentType.SOURCE_FACT
+                else content_type
+            ),
         )
     except Exception as exc:  # fail closed; preserve the audit cause
         return RenderedClaimAuditRecord(
@@ -582,7 +677,102 @@ def _audit_claim(
             evidence_provenance_valid=False,
             strengthening_signals=strengthening,
             error=f"{type(exc).__name__}: {exc}",
+            content_type=(
+                ContentType.UNSUPPORTED_DOMAIN_CLAIM
+                if content_type == ContentType.SOURCE_FACT
+                else content_type
+            ),
         )
+
+
+def classify_content_type(text: str, *, channel: str = "", hint: str = "") -> str:
+    """Classify a statement before evidence verification.
+
+    This is intentionally domain-independent.  A caller may provide the
+    deterministic channel classification from the section block contract;
+    otherwise only generic discourse/task language is recognized.  Domain
+    assertions remain SOURCE_FACT and therefore continue through the existing
+    evidence gate.
+    """
+
+    requested = str(hint or "").strip().upper()
+    if requested == ContentType.SOURCE_FACT:
+        return requested
+    if requested == ContentType.DERIVED_INSTRUCTION and _looks_like_task_prompt(text):
+        return requested
+    if requested == ContentType.PEDAGOGICAL_SYNTHESIS and not _contains_domain_assertion(text):
+        return requested
+    if requested == ContentType.DERIVED_INSTRUCTION and not _contains_domain_assertion(text):
+        return requested
+    normalized_channel = str(channel or "").strip().lower()
+    if requested == ContentType.DERIVED_INSTRUCTION:
+        # The hint came from a task channel, but this sentence is an explicit
+        # domain assertion; route it through SOURCE_FACT verification instead
+        # of letting the channel shortcut hide it.
+        normalized_channel = ""
+    if normalized_channel in {"case_activity", "exercise", "assessment"}:
+        return ContentType.DERIVED_INSTRUCTION
+    value = str(text or "").strip()
+    if not value:
+        return ContentType.PEDAGOGICAL_SYNTHESIS
+    # Generic teaching organization and learner guidance.  These markers do
+    # not assert a domain fact by themselves; a sentence containing an
+    # explicit factual predicate is left as SOURCE_FACT.
+    synthesis_markers = (
+        "本节", "本章", "下面", "接下来", "通过这些内容", "由此可见",
+        "需要记住", "学习重点", "总的来说", "this section", "this chapter",
+        "next", "in summary", "remember",
+    )
+    task_markers = (
+        "请", "假设", "将以下", "列出", "说明", "判断", "选择", "排序", "匹配",
+        "练习", "practice", "identify", "compare", "classify", "order", "explain",
+    )
+    lowered = value.casefold()
+    if any(marker.casefold() in lowered for marker in task_markers) and (
+        "?" in value or normalized_channel in {"exercise", "assessment", "case_activity"}
+    ):
+        return ContentType.DERIVED_INSTRUCTION
+    if any(marker.casefold() in lowered for marker in synthesis_markers):
+        # Summary/transition language can still contain an explicit factual
+        # assertion; obvious connective clauses are the safe synthesis case.
+        if not any(token in value for token in ("是", "包括", "需要", "必须", "导致", "影响", "参数", "步骤")):
+            return ContentType.PEDAGOGICAL_SYNTHESIS
+    return ContentType.SOURCE_FACT
+
+
+def _contains_domain_assertion(text: str) -> bool:
+    """Recognize a declarative domain assertion conservatively.
+
+    Prompts, labels, and fragments in exercise blocks remain derived
+    instruction.  A sentence that asserts a relation, requirement, cause,
+    modality, or guarantee is routed back to SOURCE_FACT even when it appears
+    inside an exercise/assessment block.
+    """
+
+    value = str(text or "").strip()
+    if not value or value.endswith(("?", "？", ":", "：")):
+        return False
+    markers = (
+        "是", "包括", "需要", "必须", "应当", "应该", "通常", "可能", "可以", "只需",
+        "导致", "造成", "影响", "称为", "因此", "保证", "避免", "用于",
+        " is ", " are ", " includes ", " requires ", " must ", " should ",
+        " usually ", " may ", " can ", " causes ", " affects ", " guarantees ",
+    )
+    lowered = f" {value.casefold()} "
+    return any(marker.casefold() in lowered for marker in markers) and len(value) >= 8
+
+
+def _looks_like_task_prompt(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return True
+    if value.endswith(("?", "？", ":", "：")):
+        return True
+    prefixes = (
+        "请", "假设", "将以下", "列出", "说明", "判断", "选择", "排序", "匹配",
+        "练习", "practice", "identify", "compare", "classify", "order", "explain",
+    )
+    return value.casefold().startswith(tuple(item.casefold() for item in prefixes))
 
 
 def _allowed_evidence_ids(brief: dict[str, Any]) -> tuple[str, ...]:

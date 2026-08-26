@@ -3,7 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import replace
 from dataclasses import dataclass, field
-from typing import Any
+import json
+from typing import Any, Mapping
 
 from materials2textbook.agents.knowledge_semantic_planner import LLMSemanticPlanningAgent, SemanticPlannerContextOverflow
 from materials2textbook.knowledge_map.availability import (
@@ -21,6 +22,7 @@ from materials2textbook.knowledge_map.models import (
     PrerequisiteUse,
     RuntimeOccurrenceCompilation,
     SemanticDelta,
+    SourceBoundedPrerequisiteConstraint,
 )
 from materials2textbook.knowledge_map.semantic import (
     HeuristicSemanticPlanner,
@@ -52,6 +54,8 @@ class SemanticPlanningEvaluation:
 
 def evaluate_semantic_planning(
     *, knowledge_map: KnowledgeMap, chunks: list[EvidenceChunk], agent: LLMSemanticPlanningAgent, recall_after_tasks: int = 3,
+    source_bounded_calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
+    source_bounded_prerequisite_calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
 ) -> SemanticPlanningEvaluation:
     """Use the LLM for semantic facts only; derive every LearningRole locally."""
     evaluated = deepcopy(knowledge_map)
@@ -88,6 +92,7 @@ def evaluate_semantic_planning(
         if not current:
             continue
         payload = _trajectory_payload(trajectory.knowledge_id, points[trajectory.knowledge_id].title, current, sources, chunk_lookup, canonical_whitelist)
+        rejected_before_first = len(rejected)
         response, first_call = _call_semantic_delta(agent, payload, rejected)
         if first_call["status"] == "RESPONSE" and not isinstance(response.get("deltas"), list):
             first_call["status"] = "MISSING_OR_INVALID_DELTAS"
@@ -102,7 +107,12 @@ def evaluate_semantic_planning(
             if delta is None:
                 failed_occurrences.append((index, occurrence))
                 continue
+            delta = _apply_source_facet_ceiling(
+                delta, occurrence, source_bounded_calibration, normalizations
+            )
             deltas.append(delta)
+
+        first_validation_errors = list(rejected[rejected_before_first:])
 
         # A malformed/truncated response or a single schema-invalid item must
         # not force us to re-run successful trajectory items.  Retry once with
@@ -120,8 +130,11 @@ def evaluate_semantic_planning(
                 sources,
                 chunk_lookup,
                 canonical_whitelist,
+                evidence_excerpt_chars=96,
             )
-            retry_response, retry_call = _call_semantic_delta(agent, retry_payload, rejected)
+            rejected_before_retry = len(rejected)
+            retry_response, retry_call = _call_semantic_delta(agent, retry_payload, rejected, retry=True)
+            retry_validation_errors = list(rejected[rejected_before_retry:])
             retry_delta_by_id = {
                 item.get("occurrence_id"): item
                 for item in _list_response(retry_response, "deltas", rejected, "semantic_delta_retry")
@@ -141,6 +154,9 @@ def evaluate_semantic_planning(
                 if delta is None:
                     occurrence.trusted_for_state = False
                     continue
+                delta = _apply_source_facet_ceiling(
+                    delta, occurrence, source_bounded_calibration, normalizations
+                )
                 deltas.append(delta)
                 recovered_ids.append(occurrence.occurrence_id)
             if recovered_ids:
@@ -154,10 +170,18 @@ def evaluate_semantic_planning(
                 "first_response_status": first_call["status"],
                 "first_parse_error": first_call.get("parse_error", ""),
                 "first_error": first_call.get("error", ""),
+                "first_response_finish_reason": first_call.get("response_metadata", {}).get("finish_reason"),
+                "first_input": first_call.get("input", {}),
+                "first_output": first_call.get("output", {}),
+                "first_validation_errors": first_validation_errors,
                 "first_budget_audit": first_call.get("budget_audit", []),
                 "retry_response_status": retry_status if retry_call["status"] == "RESPONSE" else retry_call["status"],
                 "retry_parse_error": retry_call.get("parse_error", "") or "; ".join(retry_errors),
                 "retry_error": retry_call.get("error", ""),
+                "retry_validation_errors": retry_validation_errors,
+                "retry_response_finish_reason": retry_call.get("response_metadata", {}).get("finish_reason"),
+                "retry_input": retry_call.get("input", {}),
+                "retry_output": retry_call.get("output", {}),
                 "retry_budget_audit": retry_call.get("budget_audit", []),
                 "retry_context_occurrence_ids": [item.occurrence_id for item in retry_items],
                 "recovered_occurrence_ids": recovered_ids,
@@ -168,6 +192,8 @@ def evaluate_semantic_planning(
         knowledge_map=evaluated,
         deltas=deltas,
         sources=sources,
+        source_bounded_calibration=source_bounded_calibration,
+        source_bounded_prerequisite_calibration=source_bounded_prerequisite_calibration,
     )
     evaluated.planned_occurrences = compiled_occurrences
 
@@ -207,6 +233,8 @@ def _compile_final_occurrences(
     knowledge_map: KnowledgeMap,
     deltas: list[SemanticDelta],
     sources: dict[str, Any],
+    source_bounded_calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
+    source_bounded_prerequisite_calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
 ) -> tuple[list[Any], list[SemanticDelta], list[dict[str, Any]]]:
     """Compile the final normalized delta into occurrences in book order.
 
@@ -231,6 +259,9 @@ def _compile_final_occurrences(
         if delta is None:
             compiled.append(replace(seed, trusted_for_state=False))
             continue
+        delta = _apply_source_facet_ceiling(
+            delta, seed, source_bounded_calibration, prerequisite_audit
+        )
         snapshots = simulate_planned_instructional_availability(compiled)
         before = snapshots[-1].after if snapshots else InstructionalAvailabilityState()
         prior = [item for item in compiled if item.knowledge_id == seed.knowledge_id]
@@ -256,6 +287,7 @@ def _compile_final_occurrences(
             delta=delta,
             before=before,
             first_position=first_position,
+            source_bounded_prerequisite_calibration=source_bounded_prerequisite_calibration,
         )
         prerequisite_audit.extend(cross_audit)
         final_delta = replace(delta, cross_prerequisite_uses=effective_cross)
@@ -294,6 +326,8 @@ def compile_occurrence_for_verified_availability(
     source_context: str = "",
     future_contexts: list[str] | None = None,
     first_position: dict[str, Any] | None = None,
+    preview_mode: bool = False,
+    source_bounded_prerequisite_calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
 ) -> RuntimeOccurrenceCompilation:
     """Compile one occurrence immediately before writing against verified state.
 
@@ -318,6 +352,7 @@ def compile_occurrence_for_verified_availability(
         delta=normalized_delta,
         before=before,
         first_position=first_position or {},
+        source_bounded_prerequisite_calibration=source_bounded_prerequisite_calibration,
     )
     audit.extend(cross_audit)
     final_delta = replace(normalized_delta, cross_prerequisite_uses=effective_cross)
@@ -358,7 +393,7 @@ def compile_occurrence_for_verified_availability(
             "CROSS_PREREQUISITE_NOT_VERIFIED",
             "A HARD/DIRECT cross-knowledge prerequisite is not verified available before writing.",
         ))
-    if blockers:
+    if blockers and not preview_mode:
         issue_code, issue_details = blockers[0]
         audit.append({
             "occurrence_id": seed.occurrence_id,
@@ -379,6 +414,18 @@ def compile_occurrence_for_verified_availability(
             issue_details=issue_details,
             audit=audit,
         )
+
+    if blockers and preview_mode:
+        # Preview authoring is deliberately not a second runtime state.  It
+        # may render a later section so a human can inspect the complete
+        # source-bounded book, but it must retain the strict runtime findings
+        # and it must never turn them into verified availability.
+        audit.append({
+            "occurrence_id": seed.occurrence_id,
+            "classification": "PREVIEW_STRICT_RUNTIME_BLOCK_RETAINED",
+            "strict_blockers": [item[0] for item in blockers],
+            "reason": "Preview rendering bypassed execution blocking for inspection only; no runtime grant is authorized.",
+        })
 
     compiled = replace(seed)
     _apply_delta(
@@ -403,6 +450,118 @@ def compile_occurrence_for_verified_availability(
         cross_requirements_available=cross_available,
         executable=True,
         audit=audit,
+    )
+
+
+_FACET_RANK = {"ORIENTED": 0, "EXPLAIN": 1, "PERFORM": 2, "ANALYZE": 3}
+
+
+def _calibration_rows_for_section(
+    calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None,
+    section_id: str,
+) -> list[Mapping[str, Any]]:
+    if calibration is None:
+        return []
+    raw: Any = calibration
+    if isinstance(calibration, Mapping):
+        raw = calibration.get("obligation_calibrations", calibration)
+        if isinstance(raw, Mapping):
+            raw = [{"obligation_id": key, **dict(value)} for key, value in raw.items() if isinstance(value, Mapping)]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    prefix = f"{section_id}:obligation:"
+    return [item for item in raw if isinstance(item, Mapping) and str(item.get("obligation_id") or "").startswith(prefix)]
+
+
+def _facet_ceiling_for_section(
+    calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None,
+    section_id: str,
+) -> tuple[str, list[str], str]:
+    rows = _calibration_rows_for_section(calibration, section_id)
+    if not rows:
+        return "", [], ""
+    supported = []
+    evidence_ids: list[str] = []
+    for row in rows:
+        status = str(row.get("calibrated_status") or "").upper()
+        facet = str(
+            row.get("max_source_supported_facet")
+            or row.get("max_supported_facet")
+            or row.get("calibrated_facet")
+            or ""
+        ).upper()
+        if status == "OUT_OF_SOURCE_SCOPE":
+            continue
+        if facet in _FACET_RANK:
+            supported.append(facet)
+        evidence_ids.extend(str(value) for value in (row.get("supporting_evidence_ids") or []) if str(value).strip())
+    if not supported:
+        # Legacy source-bounded artifacts do not carry an explicit facet.  The
+        # calibrated scope is still a bounded source capability signal; use a
+        # conservative textual derivation rather than allowing the planner's
+        # requested facet to pass through unchecked.
+        for row in rows:
+            if str(row.get("calibrated_status") or "").upper() == "OUT_OF_SOURCE_SCOPE":
+                continue
+            text = f"{row.get('calibrated_scope') or ''} {row.get('original_learning_outcome') or ''}"
+            if any(token in text for token in ("分析", "判断影响", "analy")):
+                supported.append("ANALYZE")
+            elif any(token in text for token in ("执行", "完成操作", "perform", "execute")):
+                supported.append("PERFORM")
+            elif any(token in text for token in ("说明", "解释", "认知", "关系", "作用", "explain", "describe")):
+                supported.append("EXPLAIN")
+            else:
+                supported.append("ORIENTED")
+    ceiling = max(supported, key=lambda item: _FACET_RANK[item]) if supported else "ORIENTED"
+    return ceiling, list(dict.fromkeys(evidence_ids)), "source-bounded calibration"
+
+
+def _clamp_facets(facets: list[str], ceiling: str) -> list[str]:
+    if ceiling not in _FACET_RANK:
+        return list(facets)
+    clamped = [facet for facet in facets if facet in _FACET_RANK and _FACET_RANK[facet] <= _FACET_RANK[ceiling]]
+    # The ceiling is an upper bound, not a veto.  If the task asks for a
+    # higher facet than the source can support, retain the highest facet the
+    # source can actually support rather than dropping the contribution to an
+    # empty list (which would lose the calibrated teaching target).
+    return clamped or ([ceiling] if facets else [])
+
+
+def _apply_source_facet_ceiling(
+    delta: SemanticDelta,
+    occurrence: PlannedOccurrence,
+    calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None,
+    audit: list[dict[str, Any]],
+) -> SemanticDelta:
+    ceiling, evidence_ids, provenance = _facet_ceiling_for_section(calibration, occurrence.section_id)
+    if not ceiling:
+        return delta
+    requested = list(delta.task_required_facets or delta.new_facets)
+    effective = _clamp_facets(list(delta.new_facets), ceiling)
+    if requested and not effective:
+        effective = ["ORIENTED"] if _FACET_RANK[ceiling] == 0 else []
+    changed = requested != effective and not (
+        delta.max_source_supported_facet == ceiling
+        and list(delta.effective_required_facets) == effective
+    )
+    if changed:
+        audit.append({
+            "occurrence_id": occurrence.occurrence_id,
+            "classification": "SOURCE_BOUNDED_FACET_CEILING_APPLIED",
+            "task_required_facets": requested,
+            "max_source_supported_facet": ceiling,
+            "effective_required_facets": effective,
+            "supporting_evidence_ids": evidence_ids,
+            "provenance": provenance,
+        })
+    return replace(
+        delta,
+        new_facets=effective,
+        task_required_facets=requested,
+        task_required_facet=requested[0] if requested else "",
+        max_source_supported_facet=ceiling,
+        effective_required_facets=effective,
+        effective_required_facet=effective[0] if effective else "",
     )
 
 
@@ -444,12 +603,81 @@ def _normalize_delta_for_availability(
     }]
 
 
+def _source_bounded_prerequisite_lookup(
+    value: Mapping[str, Any] | list[Mapping[str, Any]] | None,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Normalize the independently audited prerequisite sidecar.
+
+    The sidecar is deliberately kept separate from ``SemanticDelta``: the
+    planner may propose a candidate edge, but only a validated source-bounded
+    row can change the effective runtime graph.  Accept a few artifact wrapper
+    shapes so archived calibration files can be consumed without a migration,
+    while keeping the row key explicit and deterministic.
+    """
+    if value is None:
+        return {}
+    rows: list[Mapping[str, Any]] = []
+
+    def collect(item: Any) -> None:
+        if isinstance(item, Mapping):
+            if item.get("downstream_occurrence_id") and item.get("prerequisite_knowledge_id"):
+                rows.append(item)
+                return
+            for key in ("constraints", "prerequisite_constraints", "source_bounded_prerequisites"):
+                if key in item:
+                    collect(item.get(key))
+                    return
+            for child in item.values():
+                if isinstance(child, (Mapping, list, tuple)):
+                    collect(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                collect(child)
+
+    collect(value)
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        downstream = str(row.get("downstream_occurrence_id") or "").strip()
+        prerequisite = str(row.get("prerequisite_knowledge_id") or "").strip()
+        if downstream and prerequisite:
+            result[(downstream, prerequisite)] = dict(row)
+    return result
+
+
+def _source_bounded_prerequisite_scope(
+    value: Mapping[str, Any] | list[Mapping[str, Any]] | None,
+) -> set[str]:
+    """Return occurrences for which the sidecar declares a complete edge set.
+
+    A partial sidecar remains an additive audit overlay for legacy callers.
+    Production callers may declare ``complete_for_occurrence_ids`` so every
+    planner candidate edge for those occurrences must have an explicit
+    HARD/SOFT_CONTEXT/NOT_REQUIRED calibration row; an unlisted edge cannot
+    silently inherit planner EXPLAIN/HARD semantics.
+    """
+
+    if not isinstance(value, Mapping):
+        return set()
+    raw = (
+        value.get("complete_for_occurrence_ids")
+        or value.get("calibrated_occurrence_ids")
+        or value.get("prerequisite_calibration_complete_for")
+        or ()
+    )
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple, set)):
+        return set()
+    return {str(item).strip() for item in raw if str(item).strip()}
+
+
 def _compile_cross_prerequisites(
     *,
     occurrence,
     delta: SemanticDelta,
     before: InstructionalAvailabilityState,
     first_position: dict[str, Any],
+    source_bounded_prerequisite_calibration: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
 ) -> tuple[list[PrerequisiteUse], list[dict[str, Any]]]:
     """Retain only blocking prerequisites that can precede this occurrence.
 
@@ -460,24 +688,138 @@ def _compile_cross_prerequisites(
     """
     effective: list[PrerequisiteUse] = []
     audit: list[dict[str, Any]] = []
+    calibration = _source_bounded_prerequisite_lookup(source_bounded_prerequisite_calibration)
+    complete_scope = _source_bounded_prerequisite_scope(source_bounded_prerequisite_calibration)
+    if occurrence.occurrence_id in complete_scope:
+        candidate_ids = {
+            str(getattr(item, "knowledge_id", "") or "").strip()
+            for item in delta.cross_prerequisite_uses
+            if str(getattr(item, "knowledge_id", "") or "").strip()
+        }
+        calibrated_ids = {
+            prerequisite_id
+            for (downstream_id, prerequisite_id) in calibration
+            if downstream_id == occurrence.occurrence_id
+        }
+        for missing_id in sorted(candidate_ids - calibrated_ids):
+            audit.append({
+                "occurrence_id": occurrence.occurrence_id,
+                "required_prerequisite_knowledge_id": missing_id,
+                "classification": "UNCALIBRATED_PREREQUISITE_EDGE",
+                "retained": False,
+                "truly_necessary": False,
+                "reason": (
+                    "This occurrence declared a complete source-bounded prerequisite calibration, "
+                    "but the planner candidate edge has no explicit final HARD/SOFT_CONTEXT/NOT_REQUIRED decision."
+                ),
+            })
     for requirement in delta.cross_prerequisite_uses:
+        candidate_necessity = str(getattr(requirement, "necessity", "HARD") or "HARD").upper()
+        candidate_minimum_facet = str(getattr(requirement, "minimum_required_facet", "") or "").upper()
+        overlay = calibration.get((occurrence.occurrence_id, requirement.knowledge_id))
+        if occurrence.occurrence_id in complete_scope and overlay is None:
+            # The audit above records the exact missing edge.  Do not allow
+            # the raw planner candidate to enter the effective runtime graph.
+            continue
+        overlay_error = ""
+        if overlay is not None:
+            necessity = str(overlay.get("necessity") or "").upper()
+            minimum_facet = str(overlay.get("minimum_required_facet") or "").upper()
+            rationale = str(overlay.get("rationale") or "").strip()
+            provenance = str(overlay.get("provenance") or "").strip()
+            if necessity not in {"HARD", "SOFT_CONTEXT", "NOT_REQUIRED"}:
+                overlay_error = "invalid necessity"
+            elif necessity != "NOT_REQUIRED" and minimum_facet not in _FACETS:
+                overlay_error = "missing or invalid minimum_required_facet"
+            elif not rationale or not provenance:
+                overlay_error = "rationale and provenance are required"
+            if not overlay_error:
+                effective_required_facets = [minimum_facet] if minimum_facet in _FACETS else []
+                requirement = replace(
+                    requirement,
+                    required_facets=effective_required_facets,
+                    minimum_required_facet=minimum_facet,
+                    necessity=necessity,
+                    rationale=rationale,
+                    provenance=provenance,
+                    supporting_basis="SOURCE_BOUNDED_PREREQUISITE_CALIBRATION",
+                    evidence_chunk_ids=list(overlay.get("supporting_evidence_ids") or ()),
+                    confidence=max(float(getattr(requirement, "confidence", 0.0) or 0.0), 1.0),
+                    trusted_for_runtime=True,
+                )
+                audit.append({
+                    "occurrence_id": occurrence.occurrence_id,
+                    "required_prerequisite_knowledge_id": requirement.knowledge_id,
+                    "classification": "SOURCE_BOUNDED_PREREQUISITE_CALIBRATION_APPLIED",
+                    "retained": necessity != "NOT_REQUIRED",
+                    "candidate_necessity": candidate_necessity,
+                    "candidate_minimum_required_facet": candidate_minimum_facet,
+                    "necessity": necessity,
+                    "minimum_required_facet": minimum_facet,
+                    "rationale": rationale,
+                    "provenance": provenance,
+                    "supporting_evidence_ids": list(overlay.get("supporting_evidence_ids") or ()),
+                })
+            else:
+                audit.append({
+                    "occurrence_id": occurrence.occurrence_id,
+                    "required_prerequisite_knowledge_id": requirement.knowledge_id,
+                    "classification": "INVALID_SOURCE_BOUNDED_PREREQUISITE_CALIBRATION",
+                    "retained": False,
+                    "candidate_necessity": candidate_necessity,
+                    "candidate_minimum_required_facet": candidate_minimum_facet,
+                    "reason": overlay_error,
+                })
+                # An invalid sidecar must not silently fall back to the
+                # planner's stronger candidate.  Fail closed instead.
+                continue
+        else:
+            necessity = candidate_necessity
+            minimum_facet = candidate_minimum_facet
+        effective_required_facets = (
+            [minimum_facet]
+            if minimum_facet in _FACETS
+            else list(requirement.required_facets)
+        )
         record = before.availability_by_knowledge.get(requirement.knowledge_id)
         prior_position = first_position.get(requirement.knowledge_id)
+        if necessity == "NOT_REQUIRED":
+            audit.append({
+                "occurrence_id": occurrence.occurrence_id,
+                "required_prerequisite_knowledge_id": requirement.knowledge_id,
+                "classification": "PREREQUISITE_NOT_REQUIRED",
+                "truly_necessary": False,
+                "retained": False,
+                "raw_required_facets": list(requirement.required_facets),
+                "minimum_required_facet": minimum_facet,
+                "necessity": necessity,
+                "reason": "The downstream task does not require this knowledge as a prerequisite.",
+            })
+            continue
         trusted_for_runtime = bool(requirement.trusted_for_runtime) and prerequisite_has_runtime_basis(
             knowledge_id=requirement.knowledge_id,
-            required_facets=list(requirement.required_facets),
+            required_facets=effective_required_facets,
             required_extension_keys=list(requirement.required_extension_keys),
             rationale=requirement.rationale,
             evidence_chunk_ids=list(requirement.evidence_chunk_ids),
             provenance=requirement.provenance,
             supporting_basis=requirement.supporting_basis,
             confidence=requirement.confidence,
+            necessity=necessity,
+        )
+        effective_requirement = replace(
+            requirement,
+            required_facets=effective_required_facets,
+            necessity=necessity,
         )
         base = {
             "occurrence_id": occurrence.occurrence_id,
             "knowledge_id": occurrence.knowledge_id,
             "required_prerequisite_knowledge_id": requirement.knowledge_id,
-            "required_facets": list(requirement.required_facets),
+            "required_facets": effective_required_facets,
+            "raw_required_facets": list(requirement.required_facets),
+            "minimum_required_facet": minimum_facet,
+            "necessity": necessity,
             "required_extension_keys": list(requirement.required_extension_keys),
             # Do not borrow the occurrence-level rationale/evidence for a
             # cross-knowledge prerequisite.  That would make an unsupported
@@ -504,7 +846,7 @@ def _compile_cross_prerequisites(
                 ),
             })
             continue
-        if requirement.relation != "HARD" or requirement.use_type != "DIRECT":
+        if necessity == "SOFT_CONTEXT" or requirement.relation != "HARD" or requirement.use_type != "DIRECT":
             audit.append({
                 **base,
                 "classification": "NON_BLOCKING_CONTEXT",
@@ -512,7 +854,7 @@ def _compile_cross_prerequisites(
                 "retained": True,
                 "reason": "SUPPORTING or BACKGROUND context must not block instructional availability.",
             })
-            effective.append(requirement)
+            effective.append(effective_requirement)
             continue
         if prior_position is None or prior_position >= occurrence.position:
             audit.append({
@@ -523,7 +865,7 @@ def _compile_cross_prerequisites(
                 "reason": "The claimed prerequisite first appears at or after the current fixed outline position.",
             })
             continue
-        available = bool(record) and set(requirement.required_facets).issubset(record.available_facets) and set(requirement.required_extension_keys).issubset(record.available_extension_keys)
+        available = bool(record) and set(effective_required_facets).issubset(record.available_facets) and set(requirement.required_extension_keys).issubset(record.available_extension_keys)
         audit.append({
             **base,
             "classification": "VALID_PREREQUISITE" if available else "VALID_PREREQUISITE_GAP",
@@ -531,7 +873,7 @@ def _compile_cross_prerequisites(
             "retained": True,
             "reason": "The requirement is a HARD/DIRECT dependency with an earlier canonical occurrence.",
         })
-        effective.append(requirement)
+        effective.append(effective_requirement)
     return effective, audit
 
 
@@ -852,7 +1194,13 @@ def _valid_cross_uses(value: Any, points: dict[str, Any], current_id: str, rejec
             rejected.append({"stage": "schema", "reason": "noncanonical_prerequisite_rejected", "occurrence_id": occurrence_id, "candidate_id": candidate_id})
             continue
         required_facets = _valid_facets(item.get("required_facets"), rejected, occurrence_id, "cross_required_facets")
+        minimum_required_facet = str(item.get("minimum_required_facet") or "").strip().upper()
+        if minimum_required_facet not in _FACETS:
+            minimum_required_facet = ""
         required_extension_keys = _strings(item.get("required_extension_keys"))
+        necessity = str(item.get("necessity") or "HARD").strip().upper()
+        if necessity not in {"HARD", "SOFT_CONTEXT", "NOT_REQUIRED"}:
+            necessity = "HARD"
         rationale = str(item.get("rationale") or "").strip()
         evidence_ids = _strings(item.get("evidence_ids"))
         provenance = str(item.get("provenance") or "").strip()
@@ -867,6 +1215,7 @@ def _valid_cross_uses(value: Any, points: dict[str, Any], current_id: str, rejec
             provenance=provenance,
             supporting_basis=supporting_basis,
             confidence=confidence,
+            necessity=necessity,
         )
         if not trusted_for_runtime:
             rejected.append({
@@ -881,6 +1230,8 @@ def _valid_cross_uses(value: Any, points: dict[str, Any], current_id: str, rejec
                 "provenance": provenance,
                 "supporting_basis": supporting_basis,
                 "confidence": confidence,
+                "minimum_required_facet": minimum_required_facet,
+                "necessity": necessity,
             })
         result.append(PrerequisiteUse(
             knowledge_id=candidate_id,
@@ -895,11 +1246,22 @@ def _valid_cross_uses(value: Any, points: dict[str, Any], current_id: str, rejec
             provenance=provenance,
             supporting_basis=supporting_basis,
             trusted_for_runtime=trusted_for_runtime,
+            minimum_required_facet=minimum_required_facet,
+            necessity=necessity,
         ))
     return result
 
 
-def _trajectory_payload(knowledge_id: str, title: str, occurrences: list, sources: dict[str, Any], lookup: dict[str, EvidenceChunk], canonical_whitelist: list[dict[str, str]]) -> dict[str, Any]:
+def _trajectory_payload(
+    knowledge_id: str,
+    title: str,
+    occurrences: list,
+    sources: dict[str, Any],
+    lookup: dict[str, EvidenceChunk],
+    canonical_whitelist: list[dict[str, str]],
+    *,
+    evidence_excerpt_chars: int = 700,
+) -> dict[str, Any]:
     return {
         "knowledge_id": knowledge_id,
         "canonical_title": title,
@@ -910,15 +1272,26 @@ def _trajectory_payload(knowledge_id: str, title: str, occurrences: list, source
                 "position": {"chapter_ordinal": item.position.chapter_ordinal, "task_ordinal": item.position.task_ordinal, "occurrence_ordinal": item.position.occurrence_ordinal},
                 "context_title": item.context_title,
                 "source_title": sources[item.source_knowledge_point_id].title,
-                "evidence": _evidence_for(item.source_chunk_ids, lookup),
+                "evidence": _evidence_for(item.source_chunk_ids, lookup, excerpt_chars=evidence_excerpt_chars),
             }
             for item in occurrences
         ],
     }
 
 
-def _evidence_for(ids: list[str], lookup: dict[str, EvidenceChunk]) -> list[dict[str, str]]:
-    return [{"id": item, "title": lookup[item].title, "excerpt": (lookup[item].summary or lookup[item].content)[:700]} for item in ids if item in lookup]
+def _evidence_for(ids: list[str], lookup: dict[str, EvidenceChunk], *, excerpt_chars: int = 700) -> list[dict[str, str]]:
+    result = []
+    for item in ids:
+        if item not in lookup:
+            continue
+        source = str(lookup[item].summary or lookup[item].content or "")
+        result.append({
+            "id": item,
+            "title": lookup[item].title,
+            "excerpt": source[:excerpt_chars],
+            "excerpt_truncated": len(source) > excerpt_chars,
+        })
+    return result
 
 
 def _list_response(response: dict, key: str, rejected: list[dict[str, Any]], stage: str) -> list[dict[str, Any]]:
@@ -933,6 +1306,8 @@ def _call_semantic_delta(
     agent: LLMSemanticPlanningAgent,
     payload: dict[str, Any],
     rejected: list[dict[str, Any]],
+    *,
+    retry: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Make one semantic-delta call and retain enough provenance for one retry.
 
@@ -942,11 +1317,26 @@ def _call_semantic_delta(
     """
     audit_before = len(getattr(agent, "budget_audit", []))
     try:
-        response = agent.plan_semantic_deltas(payload)
+        try:
+            response = agent.plan_semantic_deltas(payload, retry=retry)
+        except TypeError as exc:
+            # Keep small test doubles/legacy adapters usable while the
+            # production agent receives the explicit bounded-retry contract.
+            if "unexpected keyword argument 'retry'" in str(exc) or "got an unexpected keyword argument" in str(exc):
+                response = agent.plan_semantic_deltas(payload)
+            else:
+                raise
         if not isinstance(response, dict):
             raise ValueError("Semantic planner response must be a JSON object.")
         budget = list(getattr(agent, "budget_audit", [])[audit_before:])
-        return response, {"status": "RESPONSE", "budget_audit": budget}
+        metadata = _provider_response_metadata(agent)
+        return response, {
+            "status": "RESPONSE",
+            "budget_audit": budget,
+            "response_metadata": metadata,
+            "input": _semantic_call_input_audit(payload),
+            "output": {"response_chars": len(json.dumps(response, ensure_ascii=False))},
+        }
     except Exception as exc:
         budget = list(getattr(agent, "budget_audit", [])[audit_before:])
         record = {"stage": "semantic_delta", "reason": "planner_call_failed", "error": str(exc)[:500]}
@@ -959,7 +1349,37 @@ def _call_semantic_delta(
             "parse_error": str(exc)[:500],
             "error": str(exc)[:500],
             "budget_audit": budget,
+            "response_metadata": _provider_response_metadata(agent),
+            "input": _semantic_call_input_audit(payload),
+            "output": {"response_chars": 0},
         }
+
+
+def _provider_response_metadata(agent: Any) -> dict[str, Any]:
+    provider = getattr(agent, "llm_provider", None)
+    metadata = getattr(provider, "last_response_metadata", {})
+    return dict(metadata) if isinstance(metadata, dict) else {}
+
+
+def _semantic_call_input_audit(payload: dict[str, Any]) -> dict[str, Any]:
+    occurrences = payload.get("occurrences") if isinstance(payload, dict) else []
+    occurrences = occurrences if isinstance(occurrences, list) else []
+    evidence_ids = []
+    for item in occurrences:
+        if isinstance(item, dict):
+            for evidence in item.get("evidence", []) if isinstance(item.get("evidence"), list) else []:
+                if isinstance(evidence, dict) and evidence.get("id"):
+                    evidence_ids.append(str(evidence["id"]))
+    return {
+        "knowledge_id": payload.get("knowledge_id"),
+        "occurrence_ids": [item.get("occurrence_id") for item in occurrences if isinstance(item, dict)],
+        "evidence_ids": list(dict.fromkeys(evidence_ids)),
+        "evidence_count": len(evidence_ids),
+        "evidence_excerpt_chars": max(
+            [len(str(evidence.get("excerpt") or "")) for item in occurrences if isinstance(item, dict) for evidence in (item.get("evidence") or []) if isinstance(evidence, dict)]
+            or [0]
+        ),
+    }
 
 
 def _safe_call(call, rejected: list[dict[str, Any]], stage: str) -> dict:

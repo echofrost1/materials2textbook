@@ -26,7 +26,9 @@ from materials2textbook.knowledge_map.outline import book_plan_fingerprint
 from materials2textbook.knowledge_map.rendered_claim_semantic_audit import (
     CALIBRATED_SEMANTIC_ROUTING_CATEGORIES,
     ClaimStatus,
+    ContentType,
     audit_rendered_claims,
+    classify_content_type,
 )
 from materials2textbook.knowledge_map.teaching_blueprint import (
     CASE_ACTIVITY,
@@ -73,9 +75,11 @@ def build_section_authoring_messages(
     """
 
     chunk_by_id = {item.chunk_id: item for item in evidence_chunks}
-    evidence_aliases = build_evidence_alias_map(packet)
-    alias_by_id = {evidence_id: alias for alias, evidence_id in evidence_aliases.items()}
     bindings = {item.obligation_id: item for item in packet.obligation_bindings}
+    envelope_by_obligation: dict[str, SupportedClaimEnvelope] = {}
+    for envelope in brief.supported_claim_envelopes:
+        for obligation_id in envelope.obligation_ids:
+            envelope_by_obligation[obligation_id] = envelope
     obligations: list[dict[str, Any]] = []
     for item in brief.all_obligations:
         binding = bindings[item.obligation_id]
@@ -93,7 +97,6 @@ def build_section_authoring_messages(
                 for evidence_id in binding.accepted_evidence_ids
                 if evidence_id in chunk_by_id
             ]
-        accepted_ids = [str(value) for value in binding.accepted_evidence_ids]
         obligations.append(
             {
                 "obligation_id": item.obligation_id,
@@ -101,11 +104,16 @@ def build_section_authoring_messages(
                 "required": item.required,
                 "objective": item.objective,
                 "evidence_status": binding.status,
-                # The writer must never receive source EvidenceChunk IDs.  It
-                # can only cite the packet-local aliases; deterministic code
-                # resolves them after the model returns.
-                "authorized_evidence_aliases": [alias_by_id[value] for value in accepted_ids if value in alias_by_id],
-                "evidence_spans": spans,
+                # Evidence ownership is deterministic metadata.  The model
+                # receives only the selected source excerpts needed for this
+                # obligation; it never receives packet aliases/IDs and never
+                # has to choose them in its response.
+                "selected_evidence_contents": spans[:12],
+                "supported_claim_envelope": (
+                    envelope_by_obligation[item.obligation_id].to_dict(include_internal_ids=False)
+                    if item.obligation_id in envelope_by_obligation
+                    else {}
+                ),
                 "forbidden_scope": (
                     "all professional claims for this obligation"
                     if binding.status == SOURCE_GAP
@@ -129,7 +137,9 @@ def build_section_authoring_messages(
         "must_teach": list(brief.must_teach),
         "may_recap": list(brief.may_recap),
         "forbidden_reteach": list(brief.forbidden_reteach),
+        "section_new_contribution": list(brief.section_new_contribution),
         "required_current_contribution": list(brief.required_current_contribution),
+        "activity_guidance": build_section_activity_guidance(brief),
         "occurrence_constraints": [deepcopy(dict(item)) for item in brief.occurrence_constraints],
         "module_requirements": {
             "case_activity": brief.case_activity_requirement,
@@ -138,45 +148,112 @@ def build_section_authoring_messages(
             "summary": brief.summary_requirement,
         },
         "obligations": obligations,
-        "source_gaps": [deepcopy(dict(item)) for item in brief.source_gaps],
-        "evidence_aliases": [
+        "planned_block_contracts": [
             {
-                "alias": alias,
-                "title": str(chunk_by_id[evidence_id].title or ""),
-                "summary": str(chunk_by_id[evidence_id].summary or ""),
-                "excerpt": str(chunk_by_id[evidence_id].content or "")[:240],
+                "block_id": f"obligation-{index:02d}",
+                "intended_obligation_ids": [item.obligation_id],
+                "teaching_responsibility": item.objective,
+                "selected_evidence_contents": [
+                    str(span.get("text") or "").strip()[:256]
+                    for span in bindings[item.obligation_id].accepted_evidence_spans
+                    if str(span.get("text") or "").strip()
+                ][:12],
+                "supported_claim_envelope": (
+                    envelope_by_obligation[item.obligation_id].to_dict(include_internal_ids=False)
+                    if item.obligation_id in envelope_by_obligation
+                    else {}
+                ),
             }
-            for alias, evidence_id in evidence_aliases.items()
-            if evidence_id in chunk_by_id
+            for index, item in enumerate(brief.all_obligations, start=1)
+        ],
+        "source_gaps": [deepcopy(dict(item)) for item in brief.source_gaps],
+        "supported_claim_envelopes": [
+            item.to_dict(include_internal_ids=False)
+            for item in brief.supported_claim_envelopes
         ],
     }
     system = (
         "You are the section-level author for a vocational digital textbook. "
         "Write one coherent student-visible section from this immutable contract. "
-        "Use only the evidence spans and IDs supplied in the contract; do not use "
+        "Use only the evidence spans supplied in the contract; do not use "
         "outside knowledge or broaden evidence ownership. Do not replan roles, "
         "facets, prerequisites, obligations, or module requirements. Internal "
         "labels such as EXPLAIN, PERFORM, ANALYZE, TEACH, APPLY, RECALL, and "
-        "EXTEND must never appear in student-visible text. Return only one JSON "
+        "EXTEND must never appear in student-visible text. Do not complete "
+        "missing technical details from general knowledge. If a technically "
+        "plausible detail is outside the supported claim envelope, omit it. "
+        "Return only one JSON "
         "object with ordered semantic blocks and no Markdown fences or commentary."
     )
     user = (
         "Return exactly this shape:\n"
         '{"blocks":[{"block_id":"b01","channel":"body|case_activity|exercise|assessment|summary",'
-        '"text":"student-visible text","intended_obligation_ids":[],"intended_occurrence_ids":[],"evidence_ids":["E1"]}],'
+        '"text":"student-visible text","intended_obligation_ids":[],"intended_occurrence_ids":[]}],'
         '"generation_provenance":{"writer":"section-qwen"}}\n\n'
         "The blocks array is the complete section in reading order. Every block "
-        "must contain all six block keys. Do not return body/summary/offset/span "
-        "fields outside blocks. Evidence references on a block must be packet-local "
-        "aliases (E1, E2, ...), never real EvidenceChunk IDs, and must be authorized for "
-        "every obligation named by that block. For PARTIAL evidence, write only "
+        "must contain block_id, channel, text, intended_obligation_ids, and "
+        "intended_occurrence_ids. Do not return body/summary/offset/span or "
+        "evidence_ids fields. Evidence ownership is attached by deterministic "
+        "code from the selected evidence bound to the block's intended obligations; "
+        "the model must not choose aliases or source IDs. Separate blocks are "
+        "optional when obligations use different evidence. For PARTIAL evidence, write only "
         "the supported portion; for SOURCE_GAP, do not write a professional fact. "
+        "The planned_block_contracts list is deterministic guidance containing the "
+        "selected source excerpts for each planned responsibility. "
         "Make the teaching sequence natural and concrete when the evidence "
-        "supports it, including procedures, conditions, observable results, "
-        "case/activity, exercise, assessment, and summary only when required.\n\n"
+        "supports it: move from a fact to its explanation, relation, and a "
+        "student takeaway. Teach the section_new_contribution first; recap "
+        "prior support only within may_recap and never re-teach forbidden content. "
+        "Choose exercise and assessment forms from activity_guidance, keep them "
+        "different, and make both answerable from the preceding section. Do not "
+        "write system language such as source, evidence, semantic, occurrence, "
+        "prerequisite, or source gap for students. Include procedures, conditions, "
+        "observable results, case/activity, exercise, assessment, and summary only "
+        "when the immutable contract requires them. The supported claim envelope "
+        "controls WHAT technical facts, relations, conditions, modalities, and "
+        "professional judgements may be asserted; you control HOW those facts "
+        "are taught. Do not turn a general source statement into a richer scene, "
+        "complete risk chain, or complete inspection sequence.\n\n"
         "IMMUTABLE AUTHORING CONTRACT:\n" + json.dumps(contract, ensure_ascii=False, indent=2)
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def build_section_activity_guidance(brief: "SectionAuthoringBrief") -> list[dict[str, str]]:
+    """Compile responsibility-specific activity forms without adding facts.
+
+    This is a writer constraint only.  It selects a pedagogical operation from
+    the already-authorized obligation kind; it never decides whether an
+    obligation is required and never supplies domain content.
+    """
+
+    guidance = {
+        CONCEPT_PRINCIPLE: ("classification_or_comparison", "identify the relationship"),
+        PROCEDURE_OPERATION: ("ordering_or_missing_step", "organize the documented flow"),
+        PARAMETER_CONDITION: ("parameter_identification_or_comparison", "compare the supported role of each parameter"),
+        OBSERVATION_QUALITY_JUDGEMENT: ("observation_matching_or_classification", "match an observed description to the taught criterion"),
+        SAFETY_COMMON_ERROR: ("risk_to_measure_matching_or_checklist", "match a taught risk with its stated measure"),
+        CASE_ACTIVITY: ("bounded_scenario_application", "apply only the section's supported facts to a bounded situation"),
+        "assessment_exercise": ("responsibility_check", "check the section's core responsibility without copying the exercise"),
+        SUMMARY: ("relationship_summary", "state the key relation and takeaway"),
+    }
+    result: list[dict[str, str]] = []
+    for obligation in brief.all_obligations:
+        if obligation.required == "NOT_APPLICABLE":
+            continue
+        exercise, purpose = guidance.get(
+            obligation.kind,
+            ("responsibility_check", "use only the supported section responsibility"),
+        )
+        result.append(
+            {
+                "obligation_id": obligation.obligation_id,
+                "kind": obligation.kind,
+                "exercise_type": exercise,
+                "assessment_purpose": purpose,
+            }
+        )
+    return result
 
 
 def build_evidence_alias_map(packet: SectionEvidencePacket) -> dict[str, str]:
@@ -196,6 +273,40 @@ def build_evidence_alias_map(packet: SectionEvidencePacket) -> dict[str, str]:
         if value and value not in ordered_ids:
             ordered_ids.append(value)
     return {f"E{index}": evidence_id for index, evidence_id in enumerate(ordered_ids, start=1)}
+
+
+def build_evidence_id_to_alias_map(packet: SectionEvidencePacket) -> dict[str, str]:
+    """Return the inverse of :func:`build_evidence_alias_map` explicitly.
+
+    Retry/materialization code must never infer the direction from a generic
+    ``alias_map`` variable: evidence IDs and writer aliases are different
+    domains even when they are both strings.
+    """
+
+    return {evidence_id: alias for alias, evidence_id in build_evidence_alias_map(packet).items()}
+
+
+def allowed_evidence_aliases_for_block(
+    obligation_ids: Iterable[str],
+    brief: SectionAuthoringBrief,
+    evidence_id_to_alias: Mapping[str, str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Compute a block whitelist in the evidence-ID domain, then alias it."""
+
+    ids = [str(item).strip() for item in obligation_ids if str(item).strip()]
+    authorized_sets = [set(brief.authorized_evidence_per_obligation.get(item, ())) for item in ids]
+    # A block may synthesize several obligations.  Its evidence whitelist is
+    # the union of the selected evidence for those obligations (all are still
+    # packet-authorized), not an intersection that becomes empty whenever two
+    # obligations rely on complementary chunks.
+    allowed_ids = set.union(*authorized_sets) if authorized_sets else set()
+    ordered_ids = tuple(sorted(allowed_ids))
+    ordered_aliases = tuple(
+        evidence_id_to_alias[evidence_id]
+        for evidence_id in ordered_ids
+        if evidence_id in evidence_id_to_alias
+    )
+    return ordered_ids, ordered_aliases
 
 
 def parse_section_authoring_response(raw: str) -> dict[str, Any]:
@@ -221,6 +332,70 @@ def parse_section_authoring_response(raw: str) -> dict[str, Any]:
     return dict(value)
 
 
+WRITER_FAILURE_INVALID_JSON = "INVALID_JSON"
+WRITER_FAILURE_SCHEMA_MISMATCH = "SCHEMA_MISMATCH"
+WRITER_FAILURE_TRUNCATED_OUTPUT = "TRUNCATED_OUTPUT"
+WRITER_FAILURE_INVALID_ALIAS = "INVALID_ALIAS"
+WRITER_FAILURE_MISSING_REQUIRED_BLOCK = "MISSING_REQUIRED_BLOCK"
+WRITER_FAILURE_OTHER = "OTHER"
+
+
+def classify_section_writer_failure(error: str, raw: str = "") -> str:
+    """Classify a section-writer failure without changing its safety result."""
+
+    message = str(error or "").casefold()
+    text = str(raw or "").strip()
+    if "alias" in message or "evidence" in message or "invalid_evidence_reference" in message:
+        return WRITER_FAILURE_INVALID_ALIAS
+    if "missing" in message and ("required" in message or "module" in message or "block" in message):
+        return WRITER_FAILURE_MISSING_REQUIRED_BLOCK
+    if "invalid json" in message or "jsondecodeerror" in message:
+        # A response that never closes its object/array is a distinct model
+        # truncation signal; it is eligible for a syntax-only repair attempt.
+        if text and (
+            not text.rstrip().endswith(("}", "]"))
+            or text.count("{") > text.count("}")
+            or text.count("[") > text.count("]")
+        ):
+            return WRITER_FAILURE_TRUNCATED_OUTPUT
+        return WRITER_FAILURE_INVALID_JSON
+    if "must return" in message or "must be" in message or "schema" in message or "object" in message:
+        return WRITER_FAILURE_SCHEMA_MISMATCH
+    return WRITER_FAILURE_OTHER
+
+
+def validate_structural_repair_preserves_content(original_raw: str, repaired: Mapping[str, Any]) -> bool:
+    """Accept only a syntax/shape repair that preserves model-authored text.
+
+    The original response may be truncated, so it cannot be parsed as JSON.
+    We conservatively collect complete JSON string values that are present in
+    the raw response and require every repaired block's text and identity to
+    have already appeared there.  This prevents a "structural repair" call from
+    quietly becoming a semantic rewrite.
+    """
+
+    blocks = repaired.get("blocks") if isinstance(repaired, Mapping) else None
+    if not isinstance(blocks, (list, tuple)) or not blocks:
+        return False
+    raw_values: set[str] = set()
+    for match in re.finditer(r'"(?:text|block_id|channel)"\s*:\s*"((?:\\.|[^"\\])*)"', str(original_raw or "")):
+        try:
+            raw_values.add(str(json.loads('"' + match.group(1) + '"')))
+        except json.JSONDecodeError:
+            continue
+    if not raw_values:
+        return False
+    for block in blocks:
+        if not isinstance(block, Mapping):
+            return False
+        text = str(block.get("text") or "").strip()
+        block_id = str(block.get("block_id") or "").strip()
+        channel = str(block.get("channel") or "").strip()
+        if not text or text not in raw_values or block_id not in raw_values or channel not in raw_values:
+            return False
+    return True
+
+
 @dataclass(frozen=True)
 class SectionAuthoringObligation:
     obligation_id: str
@@ -235,6 +410,12 @@ class SectionAuthoringObligation:
     depth: str = "FOCUSED"
     source_gap: bool = False
     source_field: str = ""
+    original_necessity: str = ""
+    calibrated_necessity: str = ""
+    source_boundary_status: str = ""
+    calibration_provenance: Mapping[str, Any] = field(default_factory=dict)
+    max_source_supported_facet: str = ""
+    facet_calibration_provenance: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -250,7 +431,52 @@ class SectionAuthoringObligation:
             "depth": self.depth,
             "source_gap": self.source_gap,
             "source_field": self.source_field,
+            "original_necessity": self.original_necessity,
+            "calibrated_necessity": self.calibrated_necessity,
+            "source_boundary_status": self.source_boundary_status,
+            "calibration_provenance": deepcopy(dict(self.calibration_provenance)),
+            "max_source_supported_facet": self.max_source_supported_facet,
+            "facet_calibration_provenance": deepcopy(dict(self.facet_calibration_provenance)),
         }
+
+
+@dataclass(frozen=True)
+class SupportedClaimEnvelope:
+    """Deterministic factual boundary for one planned authoring block.
+
+    The envelope is not student-facing prose and is not a replacement for
+    the rendered-claim auditor.  It is the narrow contract between the
+    obligation/evidence binding and the writer: the writer may choose how to
+    teach the supported propositions, but may not add a new technical
+    proposition, condition, modality, or professional judgement.
+    ``supporting_evidence_ids`` is audit metadata only; it is deliberately not
+    sent as a writer-selected alias/ID field.
+    """
+
+    block_id: str
+    obligation_ids: tuple[str, ...]
+    supported_propositions: tuple[str, ...] = ()
+    supported_relations: tuple[str, ...] = ()
+    permitted_scope: tuple[str, ...] = ()
+    permitted_modality: tuple[str, ...] = ()
+    unsupported_extensions: tuple[str, ...] = ()
+    supporting_evidence_ids: tuple[str, ...] = ()
+    provenance: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self, *, include_internal_ids: bool = True) -> dict[str, Any]:
+        value = {
+            "block_id": self.block_id,
+            "obligation_ids": list(self.obligation_ids),
+            "supported_propositions": list(self.supported_propositions),
+            "supported_relations": list(self.supported_relations),
+            "permitted_scope": list(self.permitted_scope),
+            "permitted_modality": list(self.permitted_modality),
+            "unsupported_extensions": list(self.unsupported_extensions),
+            "provenance": deepcopy(dict(self.provenance)),
+        }
+        if include_internal_ids:
+            value["supporting_evidence_ids"] = list(self.supporting_evidence_ids)
+        return value
 
 
 @dataclass(frozen=True)
@@ -278,11 +504,13 @@ class SectionAuthoringBrief:
     must_teach: tuple[str, ...] = ()
     may_recap: tuple[str, ...] = ()
     forbidden_reteach: tuple[str, ...] = ()
+    section_new_contribution: tuple[str, ...] = ()
     required_current_contribution: tuple[str, ...] = ()
     case_activity_requirement: str = "NOT_APPLICABLE"
     exercise_requirement: str = "NOT_APPLICABLE"
     assessment_requirement: str = "NOT_APPLICABLE"
     summary_requirement: str = "NOT_APPLICABLE"
+    supported_claim_envelopes: tuple[SupportedClaimEnvelope, ...] = ()
     provenance: Mapping[str, Any] = field(default_factory=dict)
 
     @property
@@ -314,11 +542,16 @@ class SectionAuthoringBrief:
             "must_teach": list(self.must_teach),
             "may_recap": list(self.may_recap),
             "forbidden_reteach": list(self.forbidden_reteach),
+            "section_new_contribution": list(self.section_new_contribution),
             "required_current_contribution": list(self.required_current_contribution),
             "case_activity_requirement": self.case_activity_requirement,
             "exercise_requirement": self.exercise_requirement,
             "assessment_requirement": self.assessment_requirement,
             "summary_requirement": self.summary_requirement,
+            "supported_claim_envelopes": [
+                item.to_dict(include_internal_ids=True)
+                for item in self.supported_claim_envelopes
+            ],
             "provenance": deepcopy(dict(self.provenance)),
         }
 
@@ -406,7 +639,9 @@ def build_section_authoring_brief(
         obligations.append(_compile_obligation(obligation, binding))
 
     required = tuple(item for item in obligations if item.required == REQUIRED)
-    optional = tuple(item for item in obligations if item.required != REQUIRED)
+    # NOT_APPLICABLE source-bounded obligations remain in the immutable
+    # Blueprint/Packet audit, but must not become writer responsibilities.
+    optional = tuple(item for item in obligations if item.required == OPTIONAL)
     constraints = tuple(_constraint_payload(item) for item in (occurrence_constraints or ()))
     must_teach = _collect_constraint_values(constraints, "must_teach_facets", "required_facets")
     may_recap = _collect_constraint_values(constraints, "already_available_facets", "available_facets", "prerequisite_context")
@@ -449,6 +684,10 @@ def build_section_authoring_brief(
         for item in obligations
         if item.evidence_status == PARTIAL_OBLIGATION
     )
+    supported_claim_envelopes = _build_supported_claim_envelopes(
+        obligations,
+        binding_by_id,
+    )
     requirements = _module_requirements(obligations)
     brief_id = f"authoring:{section_id}:{packet.packet_id.split(':')[-1]}"
     provenance = {
@@ -478,6 +717,22 @@ def build_section_authoring_brief(
             }
             for item in obligations
         },
+        "source_bounded_obligation_audit": {
+            item.obligation_id: {
+                "original_necessity": item.original_necessity,
+                "calibrated_necessity": item.calibrated_necessity,
+                "source_boundary_status": item.source_boundary_status,
+                "max_source_supported_facet": item.max_source_supported_facet,
+                "facet_calibration_provenance": deepcopy(dict(item.facet_calibration_provenance)),
+                "calibration_provenance": deepcopy(dict(item.calibration_provenance)),
+            }
+            for item in obligations
+            if item.source_boundary_status
+        },
+        "supported_claim_envelopes": [
+            item.to_dict(include_internal_ids=True)
+            for item in supported_claim_envelopes
+        ],
     }
     return SectionAuthoringBrief(
         brief_id=brief_id,
@@ -505,11 +760,13 @@ def build_section_authoring_brief(
         must_teach=must_teach,
         may_recap=may_recap,
         forbidden_reteach=forbidden,
+        section_new_contribution=contributions,
         required_current_contribution=contributions,
         case_activity_requirement=requirements["case_activity"],
         exercise_requirement=requirements["exercise"],
         assessment_requirement=requirements["assessment"],
         summary_requirement=requirements["summary"],
+        supported_claim_envelopes=supported_claim_envelopes,
         provenance=provenance,
     )
 
@@ -670,10 +927,18 @@ def materialize_section_draft(
         "writer_replanned": False,
         "writer_contract": "ordered_blocks_only",
         "model_authored_spans": False,
+        "deterministic_association_fallbacks": sum(
+            1 for item in blocks if item.get("_deterministic_association_fallback")
+        ),
         "span_coordinate_space": "materialized_student_visible_sequence",
         "obligation_coverage": coverage,
         "local_claim_evidence_audit": claim_audit,
         "local_claim_status_counts": _status_counts_from_claim_audit(claim_audit),
+        "local_claim_content_type_counts": _content_type_counts_from_claim_audit(claim_audit),
+        "supported_claim_envelopes": [
+            item.to_dict(include_internal_ids=True)
+            for item in brief.supported_claim_envelopes
+        ],
         "required_obligations_verified": required_coverage_verified,
         "verified_availability_eligible": not blocked and required_coverage_verified and not partial_claims,
         "grant_order": "materialization -> obligation coverage -> conformance -> local claim evidence audit",
@@ -698,6 +963,82 @@ def materialize_section_draft(
     )
 
 
+def _build_supported_claim_envelopes(
+    obligations: Iterable[SectionAuthoringObligation],
+    binding_by_id: Mapping[str, ObligationEvidenceBinding],
+) -> tuple[SupportedClaimEnvelope, ...]:
+    """Compile block-local factual envelopes from existing packet judgements.
+
+    This helper never calls a model and never searches evidence.  Semantic
+    calibration metadata is preferred; when older packets do not carry
+    proposition labels, the envelope records the exact authorized span as an
+    internal proposition reference.  The writer still receives only the
+    non-ID view, while deterministic audit state keeps the evidence IDs.
+    """
+
+    envelopes: list[SupportedClaimEnvelope] = []
+    for index, obligation in enumerate(obligations, start=1):
+        binding = binding_by_id[obligation.obligation_id]
+        support = binding.provenance.get("evidence_set_support", {})
+        if not isinstance(support, Mapping):
+            support = {}
+
+        def _values(*names: str) -> tuple[str, ...]:
+            values: list[str] = []
+            for name in names:
+                raw = support.get(name) or binding.provenance.get(name) or ()
+                if isinstance(raw, str):
+                    raw = [raw]
+                if isinstance(raw, Iterable):
+                    values.extend(str(item).strip() for item in raw if str(item).strip())
+            return tuple(dict.fromkeys(values))
+
+        propositions = _values("supported_propositions", "supported_requirements")
+        if not propositions:
+            propositions = tuple(
+                "authorized source proposition from the bound evidence"
+                for span in binding.accepted_evidence_spans
+                if str(span.get("evidence_id") or "").strip()
+            )
+        relations = _values("supported_relations")
+        scope = _values("permitted_scope", "supported_scope") or (
+            (obligation.objective.strip(),) if obligation.objective.strip() else ()
+        )
+        modality = _values("permitted_modality", "supported_modality") or (
+            ("retain the modality and conditions stated by the authorized evidence",)
+            if binding.accepted_evidence_ids
+            else ()
+        )
+        unsupported = list(_values("unsupported_extensions", "unsupported_requirements"))
+        if binding.status == SOURCE_GAP:
+            unsupported.append("no professional fact may be asserted for this source-gap obligation")
+        elif binding.status == PARTIAL_OBLIGATION:
+            unsupported.append("do not strengthen or complete the unsupported remainder")
+        else:
+            unsupported.append("new technical facts, conditions, relations, or judgements outside this envelope")
+        envelopes.append(
+            SupportedClaimEnvelope(
+                block_id=f"obligation-{index:02d}",
+                obligation_ids=(obligation.obligation_id,),
+                supported_propositions=propositions,
+                supported_relations=relations,
+                permitted_scope=scope,
+                permitted_modality=modality,
+                unsupported_extensions=tuple(dict.fromkeys(unsupported)),
+                supporting_evidence_ids=tuple(binding.accepted_evidence_ids),
+                provenance={
+                    "status": binding.status,
+                    "obligation_kind": obligation.kind,
+                    "source_bounded": bool(obligation.source_boundary_status),
+                    "semantic_evidence_judgement": bool(
+                        binding.provenance.get("source_bounded_semantic_support")
+                    ),
+                },
+            )
+        )
+    return tuple(envelopes)
+
+
 def _compile_obligation(
     obligation: TeachingObligation,
     binding: ObligationEvidenceBinding,
@@ -717,6 +1058,26 @@ def _compile_obligation(
         depth=obligation.depth,
         source_gap=binding.status == SOURCE_GAP,
         source_field=str(obligation.provenance.get("source_field") or ""),
+        original_necessity=str(obligation.provenance.get("original_necessity") or obligation.required),
+        calibrated_necessity=str(
+            obligation.provenance.get("source_bounded_calibrated_necessity") or obligation.required
+        ),
+        source_boundary_status=str(obligation.provenance.get("source_boundary_status") or ""),
+        calibration_provenance=deepcopy(
+            dict(obligation.provenance.get("calibration_provenance") or {})
+        ),
+        max_source_supported_facet=str(
+            obligation.max_source_supported_facet
+            or obligation.provenance.get("max_source_supported_facet")
+            or ""
+        ),
+        facet_calibration_provenance=deepcopy(
+            dict(
+                obligation.facet_calibration_provenance
+                or obligation.provenance.get("facet_calibration_provenance")
+                or {}
+            )
+        ),
     )
 
 
@@ -821,36 +1182,50 @@ def _normalize_writer_blocks(
         seen.add(block_id)
         obligation_ids = _block_id_list(raw.get("intended_obligation_ids"), "intended_obligation_ids", block_id)
         occurrence_ids = _block_id_list(raw.get("intended_occurrence_ids"), "intended_occurrence_ids", block_id)
-        evidence_aliases_in_block = tuple(_clean_strings(raw.get("evidence_ids") or ()))
-        unknown_aliases = sorted(set(evidence_aliases_in_block) - set(evidence_aliases))
-        if unknown_aliases:
-            raise SectionAuthoringError(
-                f"{INVALID_EVIDENCE_REFERENCE}: block {block_id} contains unknown aliases {unknown_aliases}"
-            )
-        evidence_ids = tuple(evidence_aliases[alias] for alias in evidence_aliases_in_block)
         unknown_obligations = sorted(set(obligation_ids) - allowed_obligation_ids)
         if unknown_obligations:
             raise SectionAuthoringError(f"block maps unknown obligations: {unknown_obligations}")
         unknown_occurrences = sorted(set(occurrence_ids) - allowed_occurrence_ids)
         if unknown_occurrences:
             raise SectionAuthoringError(f"block maps unknown occurrences: {unknown_occurrences}")
-        if not obligation_ids and evidence_ids:
+        legacy_aliases = tuple(_clean_strings(raw.get("evidence_ids") or ()))
+        unknown_aliases = sorted(set(legacy_aliases) - set(evidence_aliases))
+        if unknown_aliases:
+            raise SectionAuthoringError(
+                f"{INVALID_EVIDENCE_REFERENCE}: block {block_id} contains unknown aliases {unknown_aliases}"
+            )
+        if not obligation_ids and legacy_aliases:
             raise SectionAuthoringError(f"discourse-only block cannot claim evidence: {block_id}")
         if obligation_ids:
-            if any(binding_by_id[item].status == SOURCE_GAP for item in obligation_ids):
+            non_derivable_source_gaps = [
+                item
+                for item in obligation_ids
+                if binding_by_id[item].status == SOURCE_GAP
+                and not _is_derivable_obligation(item, brief, binding_by_id)
+            ]
+            if non_derivable_source_gaps:
                 raise SectionAuthoringError(
                     "source-gap obligation cannot receive generated content: "
-                    + ", ".join(item for item in obligation_ids if binding_by_id[item].status == SOURCE_GAP)
+                    + ", ".join(non_derivable_source_gaps)
                 )
-            authorized_sets = [
-                set(brief.authorized_evidence_per_obligation.get(item, ()))
-                for item in obligation_ids
-            ]
-            common_authorized = set.intersection(*authorized_sets) if authorized_sets else set()
-            if not evidence_ids:
-                raise SectionAuthoringError(f"teaching block must identify authorized evidence: {block_id}")
-            if not set(evidence_ids).issubset(common_authorized):
-                raise SectionAuthoringError(f"block uses unauthorized evidence: {block_id}")
+            evidence_id_to_alias = {value: alias for alias, value in evidence_aliases.items()}
+            common_authorized, _common_aliases = allowed_evidence_aliases_for_block(
+                obligation_ids, brief, evidence_id_to_alias
+            )
+            # Evidence ownership is code-owned.  New section-writer output
+            # does not contain evidence_ids; attach the deterministic union
+            # selected for the block's intended obligations.  A legacy fixture
+            # may still provide aliases, but they are validated and never
+            # allowed to expand or replace the deterministic ownership set.
+            if legacy_aliases:
+                legacy_ids = tuple(evidence_aliases[alias] for alias in legacy_aliases)
+                if not set(legacy_ids).issubset(set(common_authorized)):
+                    raise SectionAuthoringError(f"block uses unauthorized evidence: {block_id}")
+            evidence_ids = tuple(common_authorized)
+            if not evidence_ids and not all(_is_derivable_obligation(item, brief, binding_by_id) for item in obligation_ids):
+                raise SectionAuthoringError(f"teaching block has no deterministically bound evidence: {block_id}")
+        else:
+            evidence_ids = ()
         channel = str(raw.get("channel") or "body").strip().lower()
         if channel not in {"body", "case_activity", "exercise", "assessment", "summary"}:
             raise SectionAuthoringError(f"unknown writer block channel: {channel}")
@@ -906,6 +1281,17 @@ def _compute_deterministic_maps(
     # applied to multi-occurrence sections, where guessing would hide a
     # materialization error.
     sole_occurrence_id = next(iter(allowed_occurrence_ids)) if len(allowed_occurrence_ids) == 1 else None
+    constraint_by_occurrence = {
+        _constraint_value(item, "occurrence_id"): item
+        for item in brief.occurrence_constraints
+        if _constraint_value(item, "occurrence_id")
+    }
+    obligation_by_id = {item.obligation_id: item for item in brief.all_obligations}
+    body_has_explicit_obligations = any(
+        block["channel"] == "body" and block.get("intended_obligation_ids")
+        for block in ordered_blocks
+    )
+    fallback_body_assigned = False
     materialized_visible = "\n\n".join(block["text"] for block in ordered_blocks).strip()
     if materialized_visible != visible_text:
         raise SectionAuthoringError("deterministic block materialization changed the visible section unexpectedly")
@@ -917,6 +1303,51 @@ def _compute_deterministic_maps(
         start = cursor
         end = start + len(block["text"])
         cursor = end
+        occurrence_ids = block["intended_occurrence_ids"]
+        if not occurrence_ids:
+            occurrence_ids = _infer_block_occurrence_ids(
+                block,
+                allowed_occurrence_ids=allowed_occurrence_ids,
+                constraint_by_occurrence=constraint_by_occurrence,
+                obligation_by_id=obligation_by_id,
+            )
+        if not occurrence_ids and sole_occurrence_id and channel == "body":
+            occurrence_ids = (sole_occurrence_id,)
+
+        # A real single-occurrence section may contain a body block whose
+        # model association is omitted while the section still has explicit
+        # case/exercise blocks.  Preserve the existing deterministic
+        # sole-occurrence rule, but also bind the first such body block to the
+        # required obligations linked to that occurrence.  The evidence IDs
+        # come only from those accepted packet bindings; no new evidence is
+        # retrieved and multi-occurrence sections never use this fallback.
+        if (
+            sole_occurrence_id
+            and channel == "body"
+            and len(occurrence_ids) == 1
+            and occurrence_ids[0] == sole_occurrence_id
+            and not block.get("intended_obligation_ids")
+            and not body_has_explicit_obligations
+            and not fallback_body_assigned
+        ):
+            linked_obligations = tuple(
+                item.obligation_id
+                for item in obligation_by_id.values()
+                if sole_occurrence_id in tuple(item.linked_occurrence_ids)
+                and not item.source_gap
+            )
+            if linked_obligations:
+                block["intended_obligation_ids"] = linked_obligations
+                fallback_ids = tuple(
+                    evidence_id
+                    for obligation_id in linked_obligations
+                    for evidence_id in obligation_by_id[obligation_id].authorized_evidence_ids
+                    if evidence_id not in block["evidence_ids"]
+                )
+                block["evidence_ids"] = tuple(dict.fromkeys((*block["evidence_ids"], *fallback_ids)))
+                block["_deterministic_association_fallback"] = True
+                fallback_body_assigned = True
+
         base = {
             "span_id": block["block_id"],
             "block_id": block["block_id"],
@@ -942,9 +1373,6 @@ def _compute_deterministic_maps(
                     "text": block["text"],
                 }
             )
-        occurrence_ids = block["intended_occurrence_ids"]
-        if not occurrence_ids and sole_occurrence_id and channel == "body":
-            occurrence_ids = (sole_occurrence_id,)
         for occurrence_id in occurrence_ids:
             occurrence_map.setdefault(occurrence_id, []).append(dict(base))
     # A body span is expected to be exact in the materialized body.  This
@@ -957,6 +1385,114 @@ def _compute_deterministic_maps(
         {key: tuple(value) for key, value in occurrence_map.items()},
         evidence_usage,
     )
+
+
+def _infer_block_occurrence_ids(
+    block: Mapping[str, Any],
+    *,
+    allowed_occurrence_ids: set[str],
+    constraint_by_occurrence: Mapping[str, Mapping[str, Any]],
+    obligation_by_id: Mapping[str, SectionAuthoringObligation],
+) -> tuple[str, ...]:
+    """Resolve block ownership from immutable semantic metadata.
+
+    This deliberately has no ordinal or block-position fallback.  A block is
+    owned by an occurrence only when its intended obligations or target
+    knowledge identify exactly one occurrence.  Multiple valid owners are an
+    auditable ambiguity and fail closed in the caller.
+    """
+
+    linked: set[str] = set()
+    target_knowledge: set[str] = set()
+    for obligation_id in block.get("intended_obligation_ids", ()):
+        obligation = obligation_by_id.get(str(obligation_id))
+        if obligation is None:
+            continue
+        linked.update(str(item) for item in obligation.linked_occurrence_ids if str(item))
+        target_knowledge.update(str(item) for item in obligation.target_knowledge_ids if str(item))
+    linked &= set(allowed_occurrence_ids)
+    if len(linked) == 1:
+        return (next(iter(linked)),)
+
+    # Contribution/planning evidence is execution metadata, not a fuzzy text
+    # guess.  If the block's authorized evidence belongs to exactly one
+    # occurrence, that owner is deterministic even when the section contains
+    # several occurrences with the same obligation kind.
+    block_evidence = {str(item) for item in block.get("evidence_ids", ()) if str(item)}
+    if block_evidence:
+        evidence_matches = tuple(
+            occurrence_id
+            for occurrence_id in (linked or allowed_occurrence_ids)
+            if block_evidence.intersection(
+                {
+                    str(item)
+                    for item in (
+                        constraint_by_occurrence.get(occurrence_id, {}).get("contribution_evidence_chunk_ids", ())
+                        or constraint_by_occurrence.get(occurrence_id, {}).get("planning_evidence_chunk_ids", ())
+                        or ()
+                    )
+                    if str(item)
+                }
+            )
+        )
+        if len(evidence_matches) == 1:
+            return evidence_matches
+        if evidence_matches:
+            linked = set(evidence_matches)
+
+    # A shared obligation may link several occurrences.  An exact canonical
+    # knowledge owner resolves that case without relying on order or text
+    # similarity.
+    if target_knowledge:
+        exact = tuple(
+            occurrence_id
+            for occurrence_id in (linked or allowed_occurrence_ids)
+            if str(
+                constraint_by_occurrence.get(occurrence_id, {}).get("knowledge_id")
+                or constraint_by_occurrence.get(occurrence_id, {}).get("canonical_knowledge_id")
+                or ""
+            ) in target_knowledge
+        )
+        if len(exact) == 1:
+            return exact
+        if exact:
+            linked = set(exact)
+
+    # Finally use the explicit contribution target supplied by the semantic
+    # plan.  This is a deterministic metadata association, not an ordinal
+    # fallback.  A unique positive overlap is accepted; ties remain ambiguous
+    # and fail closed.
+    if len(linked) != 1:
+        block_terms = _metadata_bigrams(str(block.get("text") or ""))
+        scored = []
+        for occurrence_id in (linked or allowed_occurrence_ids):
+            constraint = constraint_by_occurrence.get(occurrence_id, {})
+            target = " ".join(
+                str(constraint.get(name) or "")
+                for name in ("intended_contribution", "contribution_goal", "new_context")
+            )
+            score = len(block_terms & _metadata_bigrams(target))
+            scored.append((score, occurrence_id))
+        scored.sort(reverse=True)
+        if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+            return (scored[0][1],)
+
+    if len(linked) > 1:
+        raise SectionAuthoringError(
+            "AMBIGUOUS_OCCURRENCE_MAPPING: block has multiple immutable owners "
+            + ", ".join(sorted(linked))
+        )
+    return ()
+
+
+def _metadata_bigrams(value: str) -> set[str]:
+    """Return conservative word/character features for metadata ownership."""
+
+    lowered = str(value or "").casefold()
+    terms = set(re.findall(r"[a-z0-9][a-z0-9_-]*", lowered))
+    for segment in re.findall(r"[\u4e00-\u9fff]+", lowered):
+        terms.update(segment[index : index + 2] for index in range(len(segment) - 1))
+    return {item for item in terms if len(item) >= 2}
 
 
 def _check_obligation_coverage(
@@ -1030,9 +1566,12 @@ def _run_local_claim_audit(
     }
     markdown_parts: list[str] = []
     briefs: list[dict[str, Any]] = []
+    envelope_by_obligation = {
+        obligation_id: envelope.to_dict(include_internal_ids=False)
+        for envelope in brief.supported_claim_envelopes
+        for obligation_id in envelope.obligation_ids
+    }
     for block in blocks:
-        if not block["evidence_ids"]:
-            continue
         occurrence_id = f"{brief.outline_node_id}:{block['block_id']}"
         markdown_parts.append(
             f'<!-- occurrence:start id="{occurrence_id}" chapter="{brief.chapter_id}" '
@@ -1045,6 +1584,33 @@ def _run_local_claim_audit(
                 "section_id": brief.outline_node_id,
                 "role": "SECTION",
                 "source_chunk_ids": list(block["evidence_ids"]),
+                # The section contract already knows whether a block is a
+                # learner task or a student-facing body.  Pass that
+                # deterministic classification into the shared claim audit;
+                # the audit still re-checks the statement itself and keeps
+                # source-fact claims on the evidence gate.
+                "content_channel": block["channel"],
+                # Do not classify an entire mixed body block once and reuse
+                # that answer for every sentence.  Only task channels receive
+                # the deterministic derived-instruction hint; body/summary
+                # claims are classified sentence-by-sentence by the shared
+                # audit so a factual sentence cannot be hidden by connective
+                # prose in the same block.
+                "content_type": (
+                    ContentType.DERIVED_INSTRUCTION
+                    if block["channel"] in {"case_activity", "exercise", "assessment"}
+                    else ContentType.PEDAGOGICAL_SYNTHESIS
+                    if block["channel"] == "summary"
+                    else ""
+                ),
+                "supported_claim_envelope": next(
+                    (
+                        envelope_by_obligation[obligation_id]
+                        for obligation_id in block.get("intended_obligation_ids", ())
+                        if obligation_id in envelope_by_obligation
+                    ),
+                    {},
+                ),
             }
         )
     if not markdown_parts:
@@ -1087,13 +1653,48 @@ def _status_counts_from_claim_audit(records: Iterable[Mapping[str, Any]]) -> dic
     return result
 
 
+def _is_derivable_obligation(
+    obligation_id: str,
+    brief: SectionAuthoringBrief,
+    binding_by_id: Mapping[str, ObligationEvidenceBinding],
+) -> bool:
+    """Whether an obligation may be synthesized from accepted section text.
+
+    This is intentionally narrow.  The first allowed case is the summary
+    obligation explicitly marked by the Section Evidence Packet.  It does not
+    make any factual teaching, procedure, parameter, or safety obligation
+    derivable by implication.
+    """
+
+    obligation = next(
+        (item for item in brief.all_obligations if item.obligation_id == obligation_id),
+        None,
+    )
+    binding = binding_by_id.get(obligation_id)
+    return bool(
+        obligation
+        and binding
+        and obligation.kind == SUMMARY
+        and binding.provenance.get("derivable_from_verified_content") is True
+    )
+
+
+def _content_type_counts_from_claim_audit(records: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for item in records:
+        content_type = str(item.get("content_type") or "SOURCE_FACT")
+        result[content_type] = result.get(content_type, 0) + 1
+    return result
+
+
 def _constraint_payload(item: Any) -> dict[str, Any]:
     if isinstance(item, Mapping):
         return deepcopy(dict(item))
     names = (
-        "occurrence_id", "role", "already_available_facets", "available_facets", "required_facets",
+        "occurrence_id", "section_id", "knowledge_id", "canonical_knowledge_id", "role", "already_available_facets", "available_facets", "required_facets",
         "must_teach_facets", "must_not_reteach_facets", "extension_keys", "repeated_aspects_to_avoid",
         "prerequisite_context", "contribution_goal", "intended_contribution", "new_facets",
+        "new_context", "contribution_evidence_chunk_ids", "planning_evidence_chunk_ids",
         "forbidden_content", "must_avoid_patterns", "availability_source_occurrence_ids",
     )
     return {name: deepcopy(getattr(item, name)) for name in names if hasattr(item, name)}

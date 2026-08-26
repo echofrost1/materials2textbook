@@ -39,6 +39,10 @@ FORBIDDEN_RETEACH = "FORBIDDEN_RETEACH"
 LOCAL_CONFORMANCE_FAILURE = "LOCAL_CONFORMANCE_FAILURE"
 
 PATCH_BLOCK = "PATCH_BLOCK"
+# A caller-supplied, block-local replacement whose inputs must remain the
+# original Brief/Packet/evidence scope.  It is deliberately distinct from a
+# whole-section writer retry and is accepted by the same deterministic gate.
+MINIMAL_SUPPORTED_REWRITE = "MINIMAL_SUPPORTED_REWRITE"
 CONTRACT_BLOCK = "CONTRACT_BLOCK"
 EVIDENCE_REVIEW = "EVIDENCE_REVIEW"
 SOURCE_GAP_REVIEW = "SOURCE_GAP_REVIEW"
@@ -293,7 +297,19 @@ def plan_section_recovery(
         elif issue.code == FORBIDDEN_RETEACH:
             action, retry = CONTRACT_BLOCK, bool(issue.block_id and issue.target_text)
         elif issue.code == PARTIAL_EVIDENCE:
-            action, retry = EVIDENCE_REVIEW, False
+            # A partial packet is not permission to invent facts.  When the
+            # local audit identifies an exact source-fact span, the safest
+            # bounded action is to remove that overreaching sentence and
+            # revalidate.  Otherwise retain the evidence-review route.
+            claim = issue.provenance.get("claim") if isinstance(issue.provenance, Mapping) else {}
+            claim_type = str(claim.get("content_type") or "") if isinstance(claim, Mapping) else ""
+            if issue.block_id and issue.target_text and claim_type in {
+                "SOURCE_FACT",
+                "UNSUPPORTED_DOMAIN_CLAIM",
+            }:
+                action, retry = CONTRACT_BLOCK, True
+            else:
+                action, retry = EVIDENCE_REVIEW, False
         elif issue.code == SOURCE_GAP:
             action, retry = SOURCE_GAP_REVIEW, False
         else:
@@ -339,6 +355,7 @@ def apply_section_recovery(
     replacement_block: Mapping[str, Any] | None = None,
     claim_judge: Any | None = None,
     occurrence_conformance_checker: Callable[[RenderedSection], Any] | None = None,
+    allow_unresolved_other_issues: bool = False,
 ) -> SectionRecoveryAttempt:
     """Apply one caller-supplied local patch and fully revalidate it.
 
@@ -387,7 +404,25 @@ def apply_section_recovery(
             status=ROLLED_BACK, reason="OCCURRENCE_CONFORMANCE_CHECKER_REQUIRED", targeted=(proposal.issue_id,),
         )
 
-    reason = _acceptance_failure(post_rendered, post_conformance, brief, packet)
+    # A source-bounded section may remain RENDERED_PARTIAL because an
+    # obligation binding is intentionally partial.  A local rewrite can be
+    # accepted when the occurrence itself and every remaining claim pass; it
+    # must not be promoted to a whole-section completeness result.
+    allow_partial_section_recovery = (
+        post_rendered is not None
+        and post_rendered.render_status == RENDERED
+        or post_rendered is not None
+        and post_rendered.render_status == "RENDERED_PARTIAL"
+    )
+    reason = _acceptance_failure(
+        post_rendered,
+        post_conformance,
+        brief,
+        packet,
+        allow_partial_section_recovery=allow_partial_section_recovery,
+        target_block_id=proposal.block_id,
+        allow_unresolved_other_issues=allow_unresolved_other_issues,
+    )
     status = ACCEPTED if reason == "" else ROLLED_BACK
     return _attempt(
         proposal,
@@ -408,29 +443,106 @@ def _acceptance_failure(
     occurrence_conformance: Any,
     brief: SectionAuthoringBrief,
     packet: SectionEvidencePacket,
+    *,
+    allow_partial_section_recovery: bool = False,
+    target_block_id: str = "",
+    allow_unresolved_other_issues: bool = False,
 ) -> str:
     if rendered is None:
         return "NO_POST_RENDERED_SECTION"
     if not _conformance_passes(occurrence_conformance):
         return "OCCURRENCE_CONFORMANCE_NOT_MATCH"
-    if rendered.render_status != RENDERED or rendered.blocked:
+    # RENDERED_PARTIAL is a legitimate section result when the remaining
+    # partial binding is optional/downstream.  It must still have no blocked
+    # core content and all accepted claims/occurrence checks must pass before
+    # a repair can be accepted.
+    if rendered.render_status not in {RENDERED, "RENDERED_PARTIAL"}:
+        return "SECTION_CONFORMANCE_NOT_MATCH"
+    if rendered.blocked and not allow_partial_section_recovery:
         return "SECTION_CONFORMANCE_NOT_MATCH"
     required_coverage = rendered.generation_provenance.get("obligation_coverage", {})
     required_ids = {item.obligation_id for item in brief.required_obligations}
+    if allow_unresolved_other_issues:
+        # A section may need several independent local repairs.  Validate the
+        # candidate block itself now, then let the caller re-run the complete
+        # section gate after all accepted patches have been applied.
+        target_obligation_ids = {
+            str(obligation_id)
+            for obligation_id, spans in rendered.obligation_span_map.items()
+            if target_block_id
+            and any(str(span.get("block_id") or span.get("span_id") or "") == target_block_id for span in spans)
+        }
+        if any(
+            required_coverage.get(obligation_id, "VIOLATION") != "MATCH"
+            for obligation_id in target_obligation_ids
+            if obligation_id in required_ids
+        ):
+            return "REQUIRED_OBLIGATION_NOT_MATCH"
+    else:
+        if any(
+            required_coverage.get(item.obligation_id, "VIOLATION") != "MATCH"
+            for item in packet.obligation_bindings
+            if item.obligation_id in required_ids
+            and item.status not in {SOURCE_GAP, PARTIAL_OBLIGATION}
+        ):
+            return "REQUIRED_OBLIGATION_NOT_MATCH"
+        if any(
+            item.status == PARTIAL_OBLIGATION
+            and required_coverage.get(item.obligation_id, "VIOLATION") == "VIOLATION"
+            and not allow_partial_section_recovery
+            for item in packet.obligation_bindings
+            if item.obligation_id in required_ids
+        ):
+            return "REQUIRED_OBLIGATION_NOT_MATCH"
+    # Optional/downstream source gaps are retained in the audit but do not
+    # invalidate a safe local rewrite for a supported occurrence.  Only a
+    # source gap on a REQUIRED obligation may block this recovery gate.
+    required_binding_ids = {item.obligation_id for item in brief.required_obligations}
     if any(
-        required_coverage.get(item.obligation_id, "VIOLATION") != "MATCH"
+        item.status == SOURCE_GAP and item.obligation_id in required_binding_ids
         for item in packet.obligation_bindings
-        if item.obligation_id in required_ids and item.status != SOURCE_GAP
     ):
-        return "REQUIRED_OBLIGATION_NOT_MATCH"
-    if any(item.status == SOURCE_GAP for item in packet.obligation_bindings):
         return "SOURCE_GAP_REMAINS"
     counts = rendered.generation_provenance.get("local_claim_status_counts", {})
-    if int(counts.get("PARTIALLY_SUPPORTED", 0) or 0) or int(counts.get("UNSUPPORTED", 0) or 0):
+    if allow_unresolved_other_issues:
+        target_claims = [
+            item
+            for item in rendered.generation_provenance.get("local_claim_evidence_audit", ()) or ()
+            if _claim_block_id(str(item.get("occurrence_id") or ""), rendered.section_id) == target_block_id
+        ]
+        if any(
+            str(item.get("final_status") or "").upper() in {"PARTIALLY_SUPPORTED", "UNSUPPORTED"}
+            for item in target_claims
+        ):
+            return "LOCAL_CLAIM_EVIDENCE_NOT_SUPPORTED"
+    elif int(counts.get("PARTIALLY_SUPPORTED", 0) or 0) or int(counts.get("UNSUPPORTED", 0) or 0):
         return "LOCAL_CLAIM_EVIDENCE_NOT_SUPPORTED"
-    if not rendered.generation_provenance.get("verified_availability_eligible", False):
+    if not rendered.generation_provenance.get("verified_availability_eligible", False) and not allow_partial_section_recovery:
         return "VERIFIED_AVAILABILITY_NOT_ELIGIBLE"
     return ""
+
+
+def apply_recovery_patch_to_draft(
+    original_draft: Mapping[str, Any],
+    proposal: SectionRecoveryProposal,
+    *,
+    replacement_text: str | None = None,
+    replacement_block: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Apply the same deterministic local patch used by the acceptance gate.
+
+    The execution orchestrator uses this helper only after an ACCEPTED local
+    attempt so subsequent block repairs build on the accepted candidate.  It
+    does not validate or widen any evidence/obligation scope.
+    """
+    candidate = deepcopy(dict(original_draft))
+    _apply_block_patch(
+        candidate,
+        proposal,
+        replacement_text=replacement_text,
+        replacement_block=replacement_block,
+    )
+    return candidate
 
 
 def _apply_block_patch(
@@ -459,7 +571,7 @@ def _apply_block_patch(
             blocks.pop(target_index)
         else:
             blocks[target_index] = {**dict(blocks[target_index]), "text": candidate}
-    elif proposal.action == PATCH_BLOCK:
+    elif proposal.action in {PATCH_BLOCK, MINIMAL_SUPPORTED_REWRITE}:
         if replacement_block is not None:
             patch = dict(replacement_block)
             block_id = str(patch.get("block_id") or proposal.block_id).strip()
@@ -554,6 +666,21 @@ def _allowed_evidence_for(issue: SectionRecoveryIssue, brief: SectionAuthoringBr
         values.extend(brief.authorized_evidence_per_obligation.get(obligation_id, ()))
     if not values:
         values.extend(issue.evidence_ids)
+    # A single-occurrence body/summary block may be deterministically mapped
+    # to its occurrence even when the model omitted obligation associations.
+    # Keep any local rewrite packet-bounded by deriving IDs only from
+    # obligations linked to that sole occurrence; never use this for a
+    # multi-occurrence section.
+    occurrence_ids = tuple(
+        str(item.get("occurrence_id") or "")
+        for item in brief.occurrence_constraints
+        if str(item.get("occurrence_id") or "")
+    )
+    if not values and len(set(occurrence_ids)) == 1:
+        sole_occurrence_id = occurrence_ids[0]
+        for obligation in brief.all_obligations:
+            if sole_occurrence_id in tuple(obligation.linked_occurrence_ids):
+                values.extend(brief.authorized_evidence_per_obligation.get(obligation.obligation_id, ()))
     authorized = set(packet.authorized_primary_evidence_ids) | set(packet.authorized_reference_evidence_ids)
     return tuple(sorted(set(values) & authorized))
 
