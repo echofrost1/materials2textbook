@@ -29,11 +29,14 @@ from materials2textbook.knowledge_map.section_authoring import (
     build_factual_claim_plan,
     build_section_authoring_messages,
     build_section_skeleton,
+    find_empty_required_writer_slots,
     build_section_activity_guidance,
     build_section_authoring_brief,
+    merge_slot_completion_text,
     classify_section_writer_failure,
     materialize_section_draft,
     _factual_claim_is_within_plan,
+    validate_retry_metadata_invariant,
     validate_structural_repair_preserves_content,
 )
 from materials2textbook.knowledge_map.teaching_blueprint import build_section_teaching_blueprint
@@ -387,6 +390,113 @@ def test_optional_slots_may_be_omitted_from_slot_filling() -> None:
     )
     assert rendered.body
     assert rendered.case_activity == ""
+
+
+def test_optional_empty_slot_is_treated_as_omission() -> None:
+    _, _, packet, brief = _inputs()
+    rendered = materialize_section_draft(
+        brief,
+        packet,
+        {
+            "blocks": [
+                {"block_id": "b01", "text": "The supported operation is explained."},
+                {"block_id": "b02", "text": ""},
+            ]
+        },
+    )
+    assert rendered.body
+
+
+def test_required_empty_slot_can_be_bounded_completed_before_materialization() -> None:
+    _, _, packet, brief = _inputs(
+        plan=_plan(needs_case=True, needs_exercises=True),
+        constraints=[{"occurrence_id": "occ-1", "role": "TEACH"}],
+    )
+    plan = build_factual_claim_plan(brief, packet, [_chunk()])
+    brief = replace(brief, factual_claim_plan=plan)
+    skeleton = build_section_skeleton(brief, packet)
+    draft = {
+        "blocks": [
+            {"block_id": "b01", "text": "The supported operation is introduced."},
+            {"block_id": "b02", "text": ""},
+        ]
+    }
+    assert find_empty_required_writer_slots(draft, skeleton) == ("b02", "b03", "b04")
+    completed = merge_slot_completion_text(
+        draft,
+        skeleton=skeleton,
+        block_id="b02",
+        text="The learner applies the documented operation in the bounded activity.",
+    )
+    assert find_empty_required_writer_slots(completed, skeleton) == ("b03", "b04")
+    assert completed["blocks"][1] == {
+        "block_id": "b02",
+        "text": "The learner applies the documented operation in the bounded activity.",
+    }
+
+
+def test_slot_completion_changes_text_only_and_keeps_system_metadata_and_evidence() -> None:
+    _, _, packet, brief = _inputs(
+        plan=_plan(needs_case=True),
+        constraints=[{"occurrence_id": "occ-1", "role": "TEACH"}],
+    )
+    skeleton = build_section_skeleton(brief, packet)
+    before = {
+        "blocks": [
+            {
+                "block_id": "b02",
+                "channel": "case_activity",
+                "intended_obligation_ids": list(skeleton["blocks"][1]["intended_obligation_ids"]),
+                "required_obligation_ids": list(skeleton["blocks"][1]["required_obligation_ids"]),
+                "intended_occurrence_ids": list(skeleton["blocks"][1]["intended_occurrence_ids"]),
+                "evidence_ids": list(skeleton["blocks"][1]["evidence_ids"]),
+                "text": "",
+            }
+        ]
+    }
+    after = merge_slot_completion_text(
+        before,
+        skeleton=skeleton,
+        block_id="b02",
+        text="Use the documented operation in the bounded activity.",
+    )
+    validate_retry_metadata_invariant(before, after, skeleton)
+    for field in (
+        "block_id",
+        "channel",
+        "intended_obligation_ids",
+        "required_obligation_ids",
+        "intended_occurrence_ids",
+        "evidence_ids",
+    ):
+        assert after["blocks"][0][field] == before["blocks"][0][field]
+    assert after["blocks"][0]["text"] != before["blocks"][0]["text"]
+
+
+def test_source_gap_only_optional_slot_is_dropped_deterministically() -> None:
+    _, _, packet, brief = _inputs(plan=_plan(needs_case=True))
+    packet = replace(
+        packet,
+        obligation_bindings=tuple(
+            replace(item, status=SOURCE_GAP, accepted_evidence_ids=(), accepted_evidence_spans=())
+            if item.obligation_kind == "case_activity"
+            else item
+            for item in packet.obligation_bindings
+        ),
+    )
+    skeleton = build_section_skeleton(brief, packet)
+    case_slot = next(item for item in skeleton["blocks"] if item["channel"] == "case_activity")
+    assert case_slot["required_for_authoring"] is False
+    draft = {
+        "blocks": [
+            {"block_id": "b01", "text": "The supported operation is introduced."},
+            {"block_id": case_slot["block_id"], "text": "Unsupported source-gap activity."},
+            {"block_id": "b04", "text": "Assess the supported operation and its result."},
+        ]
+    }
+    rendered = materialize_section_draft(brief, packet, draft, skeleton=skeleton)
+    assert rendered.case_activity == ""
+    assert case_slot["block_id"] in rendered.generation_provenance["dropped_optional_source_gap_blocks"]
 
 
 def test_skeleton_attaches_evidence_before_writer_and_keeps_order_deterministic() -> None:

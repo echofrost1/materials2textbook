@@ -131,9 +131,13 @@ from materials2textbook.knowledge_map.section_discourse import (
 from materials2textbook.knowledge_map.section_authoring import (
     build_section_authoring_messages,
     build_section_skeleton,
+    build_slot_completion_messages,
+    find_empty_required_writer_slots,
+    merge_slot_completion_text,
     classify_section_writer_failure,
     materialize_section_draft,
     parse_section_authoring_response,
+    validate_retry_metadata_invariant,
     validate_structural_repair_preserves_content,
 )
 from materials2textbook.knowledge_map.writing_briefs import (
@@ -1932,12 +1936,147 @@ class TextbookWorkflow:
             if not self.writer.use_llm or self.writer.llm_provider is None:
                 raise RuntimeError("completeness-first section authoring requires a configured LLM writer")
 
+            # One immutable skeleton is shared by the initial writer response,
+            # any bounded slot completion, and final materialization.  No retry
+            # is allowed to rebuild structural metadata or evidence ownership.
+            skeleton = build_section_skeleton(brief, packet)
+            slot_completion_attempted: set[str] = set()
+
+            def complete_empty_required_slots(draft: Mapping[str, Any]) -> dict[str, Any]:
+                """Fill empty required slots once, without changing metadata."""
+
+                missing = find_empty_required_writer_slots(draft, skeleton)
+                if not missing:
+                    return dict(draft)
+                result: Mapping[str, Any] = draft
+                records: list[dict[str, Any]] = []
+                provider = self.writer.llm_provider
+                provider_config = getattr(provider, "config", None)
+                context_window = int(
+                    getattr(provider_config, "context_window", DEFAULT_CONTEXT_WINDOW)
+                    or DEFAULT_CONTEXT_WINDOW
+                )
+                configured_max = int(getattr(provider_config, "max_tokens", 4096) or 4096)
+                safety_margin = max(128, min(256, context_window // 20))
+                for block_id in missing:
+                    if block_id in slot_completion_attempted:
+                        records.append({"block_id": block_id, "status": "ALREADY_ATTEMPTED"})
+                        raise RuntimeError(
+                            f"WRITER_UNDERDELIVERY: bounded slot completion already attempted for {block_id}"
+                        )
+                    slot_completion_attempted.add(block_id)
+                    slot = next(
+                        item
+                        for item in skeleton["blocks"]
+                        if str(item.get("block_id") or "") == block_id
+                    )
+                    approved_claim_ids = tuple(str(item) for item in slot.get("approved_claim_ids") or ())
+                    if not approved_claim_ids:
+                        records.append({"block_id": block_id, "status": "NO_APPROVED_CLAIMS"})
+                        raise RuntimeError(
+                            f"WRITER_UNDERDELIVERY: no approved factual claims for required slot {block_id}"
+                        )
+                    if not tuple(slot.get("evidence_ids") or ()):
+                        records.append({"block_id": block_id, "status": "NO_BOUND_EVIDENCE"})
+                        raise RuntimeError(
+                            f"WRITER_UNDERDELIVERY: no deterministic evidence for required slot {block_id}"
+                        )
+                    messages = build_slot_completion_messages(brief, skeleton, result, block_id)
+                    input_tokens = estimate_message_tokens(messages)
+                    output_budget = min(768, configured_max, context_window - input_tokens - safety_margin)
+                    if output_budget < 128:
+                        records.append(
+                            {
+                                "block_id": block_id,
+                                "status": "CONTEXT_OVERFLOW",
+                                "input_tokens": input_tokens,
+                                "output_budget": output_budget,
+                            }
+                        )
+                        raise RuntimeError(
+                            f"WRITER_UNDERDELIVERY: slot completion context overflow for {block_id}"
+                        )
+                    try:
+                        raw = provider.generate(messages, max_tokens=output_budget)
+                    except TypeError as exc:
+                        if "max_tokens" not in str(exc):
+                            records.append({"block_id": block_id, "status": "PROVIDER_ERROR"})
+                            raise
+                        raw = provider.generate(messages)
+                    try:
+                        completion = parse_section_authoring_response(raw)
+                    except Exception as exc:
+                        records.append(
+                            {
+                                "block_id": block_id,
+                                "status": "INVALID_JSON",
+                                "error": str(exc),
+                            }
+                        )
+                        raise RuntimeError(
+                            f"WRITER_UNDERDELIVERY: invalid slot completion JSON for {block_id}"
+                        ) from exc
+                    if set(completion) != {"block_id", "text"}:
+                        records.append(
+                            {
+                                "block_id": block_id,
+                                "status": "RETRY_METADATA_INVARIANT_VIOLATION",
+                                "fields": sorted(str(item) for item in completion),
+                            }
+                        )
+                        raise RuntimeError(
+                            f"RETRY_METADATA_INVARIANT_VIOLATION: slot completion metadata for {block_id}"
+                        )
+                    if str(completion.get("block_id") or "").strip() != block_id:
+                        records.append(
+                            {
+                                "block_id": block_id,
+                                "status": "RETRY_METADATA_INVARIANT_VIOLATION",
+                                "returned_block_id": completion.get("block_id"),
+                            }
+                        )
+                        raise RuntimeError(
+                            f"RETRY_METADATA_INVARIANT_VIOLATION: slot completion targeted the wrong block for {block_id}"
+                        )
+                    candidate = merge_slot_completion_text(
+                        result,
+                        skeleton=skeleton,
+                        block_id=block_id,
+                        text=str(completion.get("text") or ""),
+                    )
+                    validate_retry_metadata_invariant(result, candidate, skeleton)
+                    result = candidate
+                    records.append(
+                        {
+                            "block_id": block_id,
+                            "status": "ACCEPTED",
+                            "input_tokens": input_tokens,
+                            "output_budget": output_budget,
+                            "approved_claim_ids": list(approved_claim_ids),
+                        }
+                    )
+
+                provenance = result.get("generation_provenance")
+                if not isinstance(provenance, Mapping):
+                    provenance = {}
+                result = dict(result)
+                result["generation_provenance"] = {
+                    **dict(provenance),
+                    "slot_completion_attempts": records,
+                    "slot_completion_count": len(records),
+                }
+                return dict(result)
+
             def render_once(retry_reason: str = "", *, allow_structural_repair: bool = True):
                 # The skeleton/evidence contract is admitted before every
                 # writer invocation.  Retries reuse the same deterministic
                 # slots and cannot widen the section's evidence universe.
-                build_section_skeleton(brief, packet)
-                messages = build_section_authoring_messages(brief, packet, section_chunks)
+                messages = build_section_authoring_messages(
+                    brief,
+                    packet,
+                    section_chunks,
+                    skeleton=skeleton,
+                )
                 if retry_reason:
                     messages = [
                         *messages,
@@ -2066,6 +2205,11 @@ class TextbookWorkflow:
                     "effective_output_budget": effective_output,
                     **structural_repair_meta,
                 }
+                # A valid skeleton with an empty required slot is a bounded
+                # authoring underdelivery.  Complete only that slot once,
+                # using the approved claim plan and neighbouring prose; the
+                # skeleton/evidence metadata remains system-owned.
+                draft = complete_empty_required_slots(draft)
                 # Evidence ownership is now attached deterministically by the
                 # materializer from each block's intended obligations.  The
                 # writer has no alias-selection or evidence-ID retry path.
@@ -2081,10 +2225,18 @@ class TextbookWorkflow:
                 return draft
             except Exception as first_error:
                 message = str(first_error)
+                non_retryable = (
+                    "writer_underdelivery",
+                    "empty_required_block",
+                    "block_evidence_unavailable",
+                    "retry_metadata_invariant_violation",
+                )
                 retryable = any(
                     marker in message.lower()
-                    for marker in ("invalid json", "empty output", "alias", "evidence", "block")
+                    for marker in ("invalid json", "empty output", "alias", "evidence")
                 )
+                if any(marker in message.lower() for marker in non_retryable):
+                    retryable = False
                 if not retryable:
                     raise
                 # Exactly one same-section retry.  The immutable packet and

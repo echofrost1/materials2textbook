@@ -71,6 +71,7 @@ def build_section_authoring_messages(
     *,
     factual_claim_plan: "FactualClaimPlan | None" = None,
     claim_judge: Any | None = None,
+    skeleton: Mapping[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """Build the production section-writer contract.
 
@@ -96,7 +97,10 @@ def build_section_authoring_messages(
         if brief.factual_claim_plan is factual_claim_plan
         else replace(brief, factual_claim_plan=factual_claim_plan)
     )
-    skeleton = build_section_skeleton(brief_with_plan, packet)
+    if skeleton is None:
+        skeleton = build_section_skeleton(brief_with_plan, packet)
+    else:
+        validate_section_skeleton(skeleton, brief_with_plan, packet)
     bindings = {item.obligation_id: item for item in packet.obligation_bindings}
     approved_by_obligation: dict[str, list[FactualClaimPlanItem]] = {}
     approved_by_occurrence: dict[str, list[FactualClaimPlanItem]] = {}
@@ -149,6 +153,16 @@ def build_section_authoring_messages(
     prompt_planned_contracts = []
     for item in planned_contracts:
         slot = slots_by_id[str(item["block_id"])]
+        # Source-gap-only slots remain in the immutable audit skeleton, but
+        # are not shown as writable responsibilities.  This prevents a model
+        # from emitting a factual block that has no deterministic evidence
+        # binding; normalization still rejects unauthorized IDs if one is
+        # returned despite the omission.
+        if (
+            not slot.get("required_for_authoring")
+            and slot.get("evidence_binding_status") == "SOURCE_GAP_ONLY"
+        ):
+            continue
         prompt_planned_contracts.append(
             {
                 **item,
@@ -550,6 +564,244 @@ def validate_section_skeleton(
         if item.get("required_for_authoring")
     }:
         raise SectionAuthoringError("section skeleton required block set mismatch")
+
+
+def _skeleton_slot_aliases(skeleton: Mapping[str, Any]) -> dict[str, str]:
+    """Return accepted writer IDs mapped to canonical skeleton slot IDs.
+
+    The skeleton is the sole source of structural truth.  Legacy aliases are
+    accepted only so archived responses can still be replayed; they never
+    change the canonical metadata attached by the materializer.
+    """
+
+    result: dict[str, str] = {}
+    for slot in skeleton.get("blocks", ()):
+        if not isinstance(slot, Mapping):
+            continue
+        canonical = str(slot.get("block_id") or "").strip()
+        if not canonical:
+            continue
+        aliases = {canonical}
+        slot_index = canonical[1:] if canonical.startswith("b") else ""
+        if slot_index:
+            aliases.update({f"block-{slot_index}", f"block-{int(slot_index):02d}"})
+        # Archived skeletons may already carry a legacy alias explicitly.
+        for key in ("legacy_block_id", "legacy_block_ids"):
+            value = slot.get(key)
+            if isinstance(value, str):
+                aliases.add(value)
+            elif isinstance(value, (list, tuple, set)):
+                aliases.update(str(item).strip() for item in value if str(item).strip())
+        for alias in aliases:
+            if alias:
+                result.setdefault(alias, canonical)
+    return result
+
+
+def find_empty_required_writer_slots(
+    draft: Mapping[str, Any],
+    skeleton: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Find required skeleton slots that have no student-visible text.
+
+    This check intentionally runs before normal materialization.  A missing or
+    empty slot is an authoring underdelivery, not a missing system slot: the
+    deterministic skeleton already instantiated it.  Unknown writer IDs are
+    left for the normal fail-closed validator rather than being hidden here.
+    """
+
+    raw_blocks = draft.get("blocks") if isinstance(draft, Mapping) else ()
+    if not isinstance(raw_blocks, (list, tuple)):
+        return ()
+    aliases = _skeleton_slot_aliases(skeleton)
+    text_by_slot: dict[str, str] = {}
+    for raw in raw_blocks:
+        if not isinstance(raw, Mapping):
+            continue
+        raw_id = str(raw.get("block_id") or "").strip()
+        canonical = aliases.get(raw_id)
+        if canonical is not None:
+            text_by_slot[canonical] = str(raw.get("text") or "").strip()
+    missing = [
+        str(slot.get("block_id") or "")
+        for slot in skeleton.get("blocks", ())
+        if isinstance(slot, Mapping)
+        and slot.get("required_for_authoring")
+        and not text_by_slot.get(str(slot.get("block_id") or ""), "")
+    ]
+    return tuple(item for item in missing if item)
+
+
+def build_slot_completion_messages(
+    brief: "SectionAuthoringBrief",
+    skeleton: Mapping[str, Any],
+    draft: Mapping[str, Any],
+    block_id: str,
+) -> list[dict[str, str]]:
+    """Build a text-only prompt for one missing required skeleton slot.
+
+    Only the slot's approved factual propositions and nearby student-visible
+    text are exposed.  Evidence chunks, raw packet spans, and system-owned
+    associations never become a second source of facts during completion.
+    """
+
+    canonical = str(block_id or "").strip()
+    slot = next(
+        (
+            item
+            for item in skeleton.get("blocks", ())
+            if isinstance(item, Mapping) and str(item.get("block_id") or "") == canonical
+        ),
+        None,
+    )
+    if slot is None:
+        raise SectionAuthoringError(f"illegal slot completion block_id: {block_id}")
+    claims_by_id = {
+        item.claim_id: item
+        for item in (brief.factual_claim_plan.approved_claims if brief.factual_claim_plan else ())
+    }
+    approved_claims = [
+        {
+            "claim_id": claim_id,
+            "statement": claims_by_id[claim_id].statement,
+        }
+        for claim_id in slot.get("approved_claim_ids") or ()
+        if claim_id in claims_by_id
+    ]
+    neighbouring_text: list[str] = []
+    raw_blocks = draft.get("blocks") if isinstance(draft, Mapping) else ()
+    if isinstance(raw_blocks, (list, tuple)):
+        for item in raw_blocks:
+            if not isinstance(item, Mapping):
+                continue
+            text = str(item.get("text") or "").strip()
+            if text and str(item.get("block_id") or "") != canonical:
+                neighbouring_text.append(text)
+    context = {
+        "section_purpose": brief.section_purpose,
+        "expected_learning_outcome": brief.expected_learning_outcome,
+        "current_task_action": brief.current_task_action,
+        "section_new_contribution": list(brief.section_new_contribution),
+        "slot": {
+            "block_id": canonical,
+            "channel": slot.get("channel", "body"),
+            "objective": slot.get("teaching_responsibility", ""),
+            "obligation_ids": list(slot.get("intended_obligation_ids") or ()),
+            "approved_claims": approved_claims,
+        },
+        "neighbouring_student_text": neighbouring_text[-3:],
+    }
+    system = (
+        "Complete exactly one missing student-visible textbook slot. Return JSON only "
+        'in the shape {"block_id":"...","text":"..."}. The block_id must be the '
+        "supplied target and the response must contain no other fields. Write only a "
+        "short, natural realization of the approved factual propositions for this slot. "
+        "Do not add domain facts, causal consequences, conditions, examples, evidence "
+        "IDs, aliases, occurrence metadata, or internal labels. Preserve the section's "
+        "student-facing language and connect to nearby text without re-teaching forbidden content."
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)},
+    ]
+
+
+def merge_slot_completion_text(
+    draft: Mapping[str, Any],
+    *,
+    skeleton: Mapping[str, Any],
+    block_id: str,
+    text: str,
+) -> dict[str, Any]:
+    """Merge one bounded slot completion while preserving all system metadata.
+
+    The completion response is deliberately accepted as ``block_id`` plus
+    ``text`` only.  Existing model metadata is retained for the deterministic
+    normalizer to validate/ignore; the completion itself can never overwrite
+    channel, ordering, ownership, or evidence fields.
+    """
+
+    canonical = str(block_id or "").strip()
+    expected = {str(slot.get("block_id") or "") for slot in skeleton.get("blocks", ()) if isinstance(slot, Mapping)}
+    if canonical not in expected:
+        canonical = _skeleton_slot_aliases(skeleton).get(canonical, "")
+    if not canonical:
+        raise SectionAuthoringError(f"illegal slot completion block_id: {block_id}")
+    clean_text = str(text or "").strip()
+    if not clean_text:
+        raise SectionAuthoringError(f"{EMPTY_REQUIRED_BLOCK}: slot completion has empty text: {canonical}")
+
+    result = deepcopy(dict(draft))
+    raw_blocks = result.get("blocks")
+    if raw_blocks is None:
+        raw_blocks = []
+    if not isinstance(raw_blocks, (list, tuple)):
+        raise SectionAuthoringError("section writer must return an ordered blocks list")
+    blocks = [deepcopy(dict(item)) if isinstance(item, Mapping) else item for item in raw_blocks]
+    aliases = _skeleton_slot_aliases(skeleton)
+    replaced = False
+    for item in blocks:
+        if not isinstance(item, Mapping):
+            continue
+        item_id = aliases.get(str(item.get("block_id") or "").strip())
+        if item_id == canonical:
+            item["text"] = clean_text
+            replaced = True
+            break
+    if not replaced:
+        # Insert a minimal model-owned record.  All structural fields are
+        # attached later from the pre-existing skeleton.
+        blocks.append({"block_id": canonical, "text": clean_text})
+    result["blocks"] = blocks
+    return result
+
+
+def validate_retry_metadata_invariant(
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    skeleton: Mapping[str, Any],
+) -> None:
+    """Ensure a slot retry changed text only, never system-owned metadata."""
+
+    aliases = _skeleton_slot_aliases(skeleton)
+
+    def metadata_by_slot(value: Mapping[str, Any]) -> dict[str, tuple[Any, ...]]:
+        raw = value.get("blocks") if isinstance(value, Mapping) else ()
+        result: dict[str, tuple[Any, ...]] = {}
+        if not isinstance(raw, (list, tuple)):
+            return result
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            canonical = aliases.get(str(item.get("block_id") or "").strip())
+            if canonical is None:
+                continue
+            result[canonical] = tuple(
+                deepcopy(item.get(field))
+                for field in (
+                    "block_id",
+                    "channel",
+                    "order",
+                    "required",
+                    "required_for_authoring",
+                    "intended_obligation_ids",
+                    "required_obligation_ids",
+                    "intended_occurrence_ids",
+                    "approved_claim_ids",
+                    "evidence_ids",
+                    "allowed_evidence_aliases",
+                    "allowed_evidence_ids",
+                )
+            )
+        return result
+
+    before_meta = metadata_by_slot(before)
+    after_meta = metadata_by_slot(after)
+    for block_id in set(before_meta) & set(after_meta):
+        if before_meta[block_id] != after_meta[block_id]:
+            raise SectionAuthoringError(
+                f"RETRY_METADATA_INVARIANT_VIOLATION: system metadata changed for {block_id}"
+            )
 
 
 def _channel_for_obligation(item: "SectionAuthoringObligation") -> str:
@@ -1737,11 +1989,17 @@ def author_section(
 
     # Admission happens before the callback so a writer is never asked to
     # invent a missing structural slot or compensate for absent evidence.
-    build_section_skeleton(brief, packet)
+    skeleton = build_section_skeleton(brief, packet)
     draft = writer(brief)
     if not isinstance(draft, Mapping):
         raise SectionAuthoringError("section writer must return a mapping draft")
-    return materialize_section_draft(brief, packet, draft, claim_judge=claim_judge)
+    return materialize_section_draft(
+        brief,
+        packet,
+        draft,
+        claim_judge=claim_judge,
+        skeleton=skeleton,
+    )
 
 
 def materialize_section_draft(
@@ -1750,6 +2008,7 @@ def materialize_section_draft(
     draft: Mapping[str, Any],
     *,
     claim_judge: Any | None = None,
+    skeleton: Mapping[str, Any] | None = None,
 ) -> RenderedSection:
     """Validate and materialize a constrained block draft.
 
@@ -1760,7 +2019,10 @@ def materialize_section_draft(
 
     if packet.packet_id != brief.packet_id or packet.blueprint_id != brief.blueprint_id:
         raise SectionAuthoringError("draft inputs do not belong to the SectionAuthoringBrief")
-    skeleton = build_section_skeleton(brief, packet)
+    if skeleton is None:
+        skeleton = build_section_skeleton(brief, packet)
+    else:
+        validate_section_skeleton(skeleton, brief, packet)
     if "obligation_span_map" in draft or "occurrence_span_map" in draft:
         raise SectionAuthoringError(
             "model-authored exact span maps are not accepted; return ordered blocks"
@@ -1792,6 +2054,11 @@ def materialize_section_draft(
     }
     binding_by_id = {item.obligation_id: item for item in packet.obligation_bindings}
     evidence_aliases = build_evidence_alias_map(packet)
+    raw_canonical_ids = [
+        _skeleton_slot_aliases(skeleton).get(str(item.get("block_id") or "").strip())
+        for item in raw_blocks
+        if isinstance(item, Mapping)
+    ]
     blocks = _normalize_writer_blocks(
         raw_blocks,
         allowed_obligation_ids=allowed_obligation_ids,
@@ -1912,6 +2179,21 @@ def materialize_section_draft(
             for item in blocks
             if item.get("_contract_normalizations")
         ],
+        "dropped_optional_source_gap_blocks": sorted(
+            {
+                item
+                for item in raw_canonical_ids
+                if item
+                and item in {
+                    str(slot.get("block_id") or "")
+                    for slot in skeleton.get("blocks", ())
+                    if isinstance(slot, Mapping)
+                    and not slot.get("required_for_authoring")
+                    and slot.get("evidence_binding_status") == "SOURCE_GAP_ONLY"
+                }
+            }
+            - {str(item.get("block_id") or "") for item in blocks}
+        ),
         "span_coordinate_space": "materialized_student_visible_sequence",
         "obligation_coverage": coverage,
         "local_claim_evidence_audit": claim_audit,
@@ -2199,16 +2481,36 @@ def _normalize_deterministic_writer_blocks(
             raise SectionAuthoringError(f"writer block {index} must be an object")
         raw_block_id = str(raw.get("block_id") or "").strip()
         text = str(raw.get("text") or "").strip()
-        if not raw_block_id or not text:
+        if not raw_block_id:
             raise SectionAuthoringError(f"writer block {index} requires block_id and non-empty text")
         contract = slot_by_alias.get(raw_block_id)
         if contract is None:
             raise SectionAuthoringError(f"illegal writer block_id: {raw_block_id}")
         canonical_id = str(contract["block_id"])
+        slot = skeleton_slots.get(canonical_id)
+        optional_slot = bool(
+            (slot is not None and not slot.get("required_for_authoring"))
+            or (slot is None and not contract.get("required"))
+        )
+        if not text:
+            # An explicitly returned empty optional slot is equivalent to
+            # omission.  Required slots are surfaced with the precise
+            # underdelivery classification so the bounded completion path can
+            # handle them before materialization.
+            if optional_slot:
+                continue
+            raise SectionAuthoringError(
+                f"{EMPTY_REQUIRED_BLOCK}: required skeleton slot has empty text: {canonical_id}"
+            )
         if canonical_id in seen_slots:
             raise SectionAuthoringError(f"duplicate writer block_id: {raw_block_id}")
         seen_slots.add(canonical_id)
-        slot = skeleton_slots.get(canonical_id)
+        optional_source_gap_slot = bool(
+            slot is not None
+            and not slot.get("required_for_authoring")
+            and slot.get("evidence_binding_status") == "SOURCE_GAP_ONLY"
+            and not slot.get("evidence_ids")
+        )
         obligation_ids = tuple(
             str(item)
             for item in (slot or {}).get("intended_obligation_ids", contract["intended_obligation_ids"])
@@ -2275,6 +2577,14 @@ def _normalize_deterministic_writer_blocks(
             raise SectionAuthoringError(
                 f"{INVALID_EVIDENCE_REFERENCE}: block {raw_block_id} contains unknown aliases {unknown_aliases}"
             )
+        # The slot remains present in the deterministic skeleton for audit,
+        # but a source-gap-only optional responsibility is not writable.  If a
+        # model nevertheless returns a plain text realization, discard it
+        # deterministically rather than allowing it to become an unbound
+        # factual block.  Any claimed alias is still checked above and will
+        # fail closed below; omission is the only safe outcome here.
+        if optional_source_gap_slot and not legacy_aliases:
+            continue
         if slot is not None:
             allowed_ids = tuple(str(item) for item in slot.get("allowed_evidence_ids") or ())
             evidence_ids = tuple(str(item) for item in slot.get("evidence_ids") or ())
