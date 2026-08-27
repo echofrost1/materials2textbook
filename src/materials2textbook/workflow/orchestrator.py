@@ -130,6 +130,7 @@ from materials2textbook.knowledge_map.section_discourse import (
 )
 from materials2textbook.knowledge_map.section_authoring import (
     build_section_authoring_messages,
+    build_section_skeleton,
     classify_section_writer_failure,
     materialize_section_draft,
     parse_section_authoring_response,
@@ -1932,6 +1933,10 @@ class TextbookWorkflow:
                 raise RuntimeError("completeness-first section authoring requires a configured LLM writer")
 
             def render_once(retry_reason: str = "", *, allow_structural_repair: bool = True):
+                # The skeleton/evidence contract is admitted before every
+                # writer invocation.  Retries reuse the same deterministic
+                # slots and cannot widen the section's evidence universe.
+                build_section_skeleton(brief, packet)
                 messages = build_section_authoring_messages(brief, packet, section_chunks)
                 if retry_reason:
                     messages = [

@@ -16,6 +16,8 @@ from materials2textbook.knowledge_map.evidence_packet import (
 from materials2textbook.knowledge_map.outline import book_plan_deep_equal, book_plan_fingerprint
 from materials2textbook.knowledge_map.section_authoring import (
     BLOCKED_CORE_SOURCE_GAP,
+    BLOCK_EVIDENCE_UNAVAILABLE,
+    EMPTY_REQUIRED_BLOCK,
     INVALID_EVIDENCE_REFERENCE,
     RENDERED,
     RENDERED_PARTIAL,
@@ -26,6 +28,7 @@ from materials2textbook.knowledge_map.section_authoring import (
     allowed_evidence_aliases_for_block,
     build_factual_claim_plan,
     build_section_authoring_messages,
+    build_section_skeleton,
     build_section_activity_guidance,
     build_section_authoring_brief,
     classify_section_writer_failure,
@@ -344,9 +347,83 @@ def test_minimal_writer_rejects_illegal_block_id() -> None:
 
 def test_minimal_writer_rejects_missing_required_slot() -> None:
     _, _, packet, brief = _inputs()
-    with pytest.raises(SectionAuthoringError, match="missing required writer blocks"):
+    with pytest.raises(SectionAuthoringError, match=EMPTY_REQUIRED_BLOCK):
         materialize_section_draft(brief, packet, {"blocks": []})
 
+
+def test_section_skeleton_instantiates_all_required_slots_before_writer() -> None:
+    _, _, packet, brief = _inputs(
+        plan=_plan(needs_case=True, needs_exercises=True),
+        constraints=[{"occurrence_id": "occ-1", "role": "TEACH"}],
+    )
+    skeleton = build_section_skeleton(brief, packet)
+
+    assert [item["block_id"] for item in skeleton["blocks"]] == [
+        "b01", "b02", "b03", "b04", "b05"
+    ]
+    assert skeleton["required_block_ids"] == ["b01", "b02", "b03", "b04"]
+    assert all(item["text"] == "" for item in skeleton["blocks"])
+    assert skeleton["system_owned_fields"]
+    assert skeleton["writer_owned_fields"] == ["text"]
+    assert all(item["evidence_binding_status"] == "BOUND" for item in skeleton["blocks"][:4])
+
+
+def test_writer_omission_is_empty_required_block_not_missing_slot() -> None:
+    _, _, packet, brief = _inputs(plan=_plan(needs_case=True, needs_exercises=True))
+    with pytest.raises(SectionAuthoringError, match=EMPTY_REQUIRED_BLOCK):
+        materialize_section_draft(
+            brief,
+            packet,
+            {"blocks": [{"block_id": "b01", "text": "The supported operation is explained."}]},
+        )
+
+
+def test_optional_slots_may_be_omitted_from_slot_filling() -> None:
+    _, _, packet, brief = _inputs()
+    rendered = materialize_section_draft(
+        brief,
+        packet,
+        {"blocks": [{"block_id": "b01", "text": "The supported operation is explained."}]},
+    )
+    assert rendered.body
+    assert rendered.case_activity == ""
+
+
+def test_skeleton_attaches_evidence_before_writer_and_keeps_order_deterministic() -> None:
+    _, _, packet, brief = _inputs(
+        plan=_plan(needs_case=True, needs_exercises=True),
+        constraints=[{"occurrence_id": "occ-1", "role": "TEACH"}],
+    )
+    skeleton = build_section_skeleton(brief, packet)
+    assert [item["order"] for item in skeleton["blocks"]] == list(range(len(skeleton["blocks"])))
+    assert all(item["evidence_attached_before_writer"] for item in skeleton["blocks"])
+    assert all(item["evidence_ids"] for item in skeleton["blocks"] if item["required_for_authoring"])
+
+
+def test_factual_block_without_packet_evidence_fails_before_writer() -> None:
+    _, _, packet, brief = _inputs()
+    stripped = tuple(
+        replace(
+            binding,
+            status=PARTIAL_OBLIGATION,
+            accepted_evidence_ids=(),
+            accepted_evidence_spans=(),
+        )
+        if binding.obligation_kind != "summary"
+        else binding
+        for binding in packet.obligation_bindings
+    )
+    packet_without_evidence = replace(packet, obligation_bindings=stripped)
+    called = False
+
+    def writer(_brief):
+        nonlocal called
+        called = True
+        return {"blocks": []}
+
+    with pytest.raises(SectionAuthoringError, match=BLOCK_EVIDENCE_UNAVAILABLE):
+        author_section(brief, packet_without_evidence, writer)
+    assert called is False
 
 def test_factual_plan_accepts_safe_paraphrase_without_literal_substring() -> None:
     approved = "The documented procedure checks the equipment and confirms the result."

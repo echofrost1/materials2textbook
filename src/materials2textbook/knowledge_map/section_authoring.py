@@ -56,6 +56,8 @@ RENDERED = "RENDERED"
 RENDERED_PARTIAL = "RENDERED_PARTIAL"
 BLOCKED_CORE_SOURCE_GAP = "BLOCKED_CORE_SOURCE_GAP"
 INVALID_EVIDENCE_REFERENCE = "INVALID_EVIDENCE_REFERENCE"
+EMPTY_REQUIRED_BLOCK = "EMPTY_REQUIRED_BLOCK"
+BLOCK_EVIDENCE_UNAVAILABLE = "BLOCK_EVIDENCE_UNAVAILABLE"
 
 
 class SectionAuthoringError(ValueError):
@@ -86,6 +88,15 @@ def build_section_authoring_messages(
             evidence_chunks,
             claim_judge=claim_judge,
         )
+    # Compile and validate the immutable slots before building a model prompt.
+    # The optional plan argument is part of this call only; the frozen Brief is
+    # never mutated.
+    brief_with_plan = (
+        brief
+        if brief.factual_claim_plan is factual_claim_plan
+        else replace(brief, factual_claim_plan=factual_claim_plan)
+    )
+    skeleton = build_section_skeleton(brief_with_plan, packet)
     bindings = {item.obligation_id: item for item in packet.obligation_bindings}
     approved_by_obligation: dict[str, list[FactualClaimPlanItem]] = {}
     approved_by_occurrence: dict[str, list[FactualClaimPlanItem]] = {}
@@ -133,6 +144,20 @@ def build_section_authoring_messages(
                 ),
             }
         )
+    planned_contracts = _planned_block_contracts(brief_with_plan)
+    slots_by_id = {str(item["block_id"]): item for item in skeleton["blocks"]}
+    prompt_planned_contracts = []
+    for item in planned_contracts:
+        slot = slots_by_id[str(item["block_id"])]
+        prompt_planned_contracts.append(
+            {
+                **item,
+                "order": slot["order"],
+                "required_for_authoring": slot["required_for_authoring"],
+                "evidence_binding": slot["evidence_binding_status"],
+                "evidence_attached_by_system": True,
+            }
+        )
     contract = {
         "section_identity": {
             "outline_node_id": brief.outline_node_id,
@@ -169,7 +194,27 @@ def build_section_authoring_messages(
         # model is shown the slots so it can return the corresponding ``block_id``
         # but it is not asked to reproduce obligation, occurrence, channel, or
         # evidence associations in its response.
-        "planned_block_contracts": _planned_block_contracts(brief),
+        "planned_block_contracts": prompt_planned_contracts,
+        "section_skeleton": [
+            {
+                key: slot[key]
+                for key in (
+                    "block_id",
+                    "channel",
+                    "order",
+                    "required",
+                    "required_for_authoring",
+                    "intended_obligation_ids",
+                    "required_obligation_ids",
+                    "intended_occurrence_ids",
+                    "evidence_binding_status",
+                    "evidence_attached_before_writer",
+                )
+                if key in slot
+            }
+            | {"evidence_attached_before_writer": True}
+            for slot in skeleton["blocks"]
+        ],
         "source_gaps": [deepcopy(dict(item)) for item in brief.source_gaps],
         "factual_claim_plan": factual_claim_plan.writer_view(),
     }
@@ -193,16 +238,18 @@ def build_section_authoring_messages(
         "Return exactly this shape:\n"
          '{"blocks":[{"block_id":"b01","text":"student-visible text"}],'
          '"generation_provenance":{"writer":"section-qwen"}}\n\n'
-        "The blocks array is the complete section in deterministic slot order. Every block "
+        "The blocks array fills the complete deterministic section skeleton. Return every "
+         "required_for_authoring slot in the listed order with non-empty text; optional or "
+         "source-gap-only slots may be omitted. Every returned block "
          "must contain only a legal block_id from planned_block_contracts and non-empty text. "
          "Do not return channel, intended_obligation_ids, required_obligation_ids, intended_occurrence_ids, "
          "approved_claim_ids, body/summary/offset/span, or "
          "evidence_ids fields. Evidence ownership is attached by deterministic "
         "code from the selected evidence bound to the block's intended obligations; "
-        "the model must not choose aliases or source IDs. Separate blocks are "
-        "optional when obligations use different evidence. For PARTIAL evidence, write only "
+        "the model must not choose aliases or source IDs. Only optional or "
+        "source-gap-only slots may be omitted. For PARTIAL evidence, write only "
         "the supported portion; for SOURCE_GAP, do not write a professional fact. "
-         "The planned_block_contracts list is deterministic guidance containing the "
+          "The planned_block_contracts list is the system-owned skeleton containing the "
          "approved factual claim plan for each planned responsibility. Use the "
          "slot's approved statements to write its text; do not return any of the "
          "slot's metadata or claim IDs. "
@@ -302,6 +349,207 @@ def _planned_block_contracts(brief: "SectionAuthoringBrief") -> list[dict[str, A
             }
         )
     return contracts
+
+
+def build_section_skeleton(
+    brief: "SectionAuthoringBrief",
+    packet: SectionEvidencePacket,
+) -> dict[str, Any]:
+    """Create the immutable block slots before invoking a writer.
+
+    The section writer is a slot filler: it may provide student-visible text
+    for a slot, but it cannot create, delete, reorder, or re-associate slots.
+    This function is intentionally deterministic and performs the evidence
+    binding check before any model call.  Source-gap-only responsibilities are
+    retained as audit slots but are not writer-required; a required factual
+    responsibility with no bound evidence fails as ``BLOCK_EVIDENCE_UNAVAILABLE``.
+    """
+
+    if packet.packet_id != brief.packet_id or packet.blueprint_id != brief.blueprint_id:
+        raise SectionAuthoringError("section skeleton inputs do not belong to the same authoring contract")
+
+    bindings = {item.obligation_id: item for item in packet.obligation_bindings}
+    expected_obligation_ids = {item.obligation_id for item in brief.all_obligations}
+    # A packet may retain audit-only bindings for responsibilities that a
+    # focused/legacy Brief has intentionally omitted.  Every Brief obligation
+    # still needs exactly one binding; extra packet rows are not writer input.
+    if not expected_obligation_ids.issubset(set(bindings)):
+        raise SectionAuthoringError("section skeleton obligation bindings do not match the authoring brief")
+
+    aliases = build_evidence_alias_map(packet)
+    evidence_id_to_alias = build_evidence_id_to_alias_map(packet)
+    authorized_ids = set(aliases.values())
+    claims = tuple(brief.factual_claim_plan.approved_claims) if brief.factual_claim_plan else ()
+    contracts = _planned_block_contracts(brief)
+    slots: list[dict[str, Any]] = []
+    for order, contract in enumerate(contracts):
+        obligation_ids = tuple(str(item) for item in contract["intended_obligation_ids"])
+        required_obligation_ids = tuple(str(item) for item in contract["required_obligation_ids"])
+        # Evidence ownership is read from the packet binding that is about to
+        # be materialized, rather than from a copied Brief map.  This keeps the
+        # pre-writer gate correct even when a stale/partial overlay is supplied.
+        allowed_id_set = {
+            evidence_id
+            for obligation_id in obligation_ids
+            for evidence_id in bindings[obligation_id].accepted_evidence_ids
+            if evidence_id in authorized_ids
+        }
+        allowed_ids = tuple(sorted(allowed_id_set))
+        allowed_aliases = tuple(
+            evidence_id_to_alias[item]
+            for item in allowed_ids
+            if item in evidence_id_to_alias
+        )
+        plan_evidence_ids = tuple(
+            evidence_id
+            for claim in claims
+            if set(claim.obligation_ids).intersection(obligation_ids)
+            for evidence_id in claim.supporting_evidence_ids
+            if evidence_id in authorized_ids
+        )
+        evidence_ids = tuple(dict.fromkeys((*allowed_ids, *plan_evidence_ids)))
+        if any(evidence_id not in authorized_ids for evidence_id in evidence_ids):
+            raise SectionAuthoringError(
+                f"{INVALID_EVIDENCE_REFERENCE}: skeleton evidence is outside the packet for {contract['block_id']}"
+            )
+
+        obligation_by_id = {item.obligation_id: item for item in brief.all_obligations}
+        required_items = [obligation_by_id[item] for item in required_obligation_ids]
+        deliverable_required = any(
+            item.required == REQUIRED and bindings[item.obligation_id].status != SOURCE_GAP
+            for item in required_items
+        )
+        factual_required_without_evidence = [
+            item.obligation_id
+            for item in required_items
+            if bindings[item.obligation_id].status != SOURCE_GAP
+            and not _is_derivable_obligation(item.obligation_id, brief, bindings)
+        ]
+        if deliverable_required and factual_required_without_evidence and not evidence_ids:
+            raise SectionAuthoringError(
+                f"{BLOCK_EVIDENCE_UNAVAILABLE}: {contract['block_id']} has no authorized evidence for "
+                + ", ".join(factual_required_without_evidence)
+            )
+
+        slots.append(
+            {
+                "block_id": str(contract["block_id"]),
+                "channel": str(contract["channel"]),
+                "order": order,
+                # ``required`` preserves the Blueprint responsibility.  The
+                # narrower flag is what controls whether a non-empty writer
+                # realization is required after source-gap filtering.
+                "required": bool(contract.get("required")),
+                "required_for_authoring": bool(deliverable_required),
+                "intended_obligation_ids": list(obligation_ids),
+                "required_obligation_ids": list(required_obligation_ids),
+                "intended_occurrence_ids": list(contract.get("intended_occurrence_ids") or ()),
+                "approved_claim_ids": list(contract.get("approved_claim_ids") or ()),
+                "evidence_ids": list(evidence_ids),
+                "allowed_evidence_aliases": list(
+                    evidence_id_to_alias[item]
+                    for item in evidence_ids
+                    if item in evidence_id_to_alias
+                ),
+                "allowed_evidence_ids": list(evidence_ids),
+                "evidence_attached_before_writer": True,
+                "evidence_binding_status": (
+                    "BOUND"
+                    if evidence_ids
+                    else "SOURCE_GAP_ONLY"
+                    if required_obligation_ids
+                    else "DERIVABLE"
+                ),
+                "text": "",
+            }
+        )
+
+    skeleton = {
+        "section_id": brief.outline_node_id,
+        "outline_node_id": brief.outline_node_id,
+        "blueprint_id": brief.blueprint_id,
+        "packet_id": brief.packet_id,
+        "blocks": slots,
+        "required_block_ids": [
+            item["block_id"] for item in slots if item["required_for_authoring"]
+        ],
+        "optional_block_ids": [
+            item["block_id"] for item in slots if not item["required_for_authoring"]
+        ],
+        "system_owned_fields": [
+            "block_id",
+            "channel",
+            "order",
+            "required",
+            "required_for_authoring",
+            "intended_obligation_ids",
+            "required_obligation_ids",
+            "intended_occurrence_ids",
+            "approved_claim_ids",
+            "evidence_ids",
+            "allowed_evidence_aliases",
+        ],
+        "writer_owned_fields": ["text"],
+        "provenance": {
+            "generator": "phase5d-deterministic-section-skeleton-v1",
+            "evidence_attached_before_writer": True,
+            "writer_slot_filling": True,
+            "model_authored_metadata": False,
+            "book_plan_mutated": False,
+            "blueprint_mutated": False,
+            "packet_mutated": False,
+        },
+    }
+    validate_section_skeleton(skeleton, brief, packet)
+    return skeleton
+
+
+def validate_section_skeleton(
+    skeleton: Mapping[str, Any],
+    brief: "SectionAuthoringBrief",
+    packet: SectionEvidencePacket,
+) -> None:
+    """Validate a pre-writer skeleton against the immutable brief and packet."""
+
+    if not isinstance(skeleton, Mapping):
+        raise SectionAuthoringError("section skeleton must be an object")
+    if skeleton.get("outline_node_id") != brief.outline_node_id:
+        raise SectionAuthoringError("section skeleton outline identity mismatch")
+    if skeleton.get("blueprint_id") != brief.blueprint_id or skeleton.get("packet_id") != brief.packet_id:
+        raise SectionAuthoringError("section skeleton overlay identity mismatch")
+    slots = skeleton.get("blocks")
+    if not isinstance(slots, (list, tuple)):
+        raise SectionAuthoringError("section skeleton blocks must be an ordered list")
+
+    contracts = _planned_block_contracts(brief)
+    if len(slots) != len(contracts):
+        raise SectionAuthoringError(
+            f"section skeleton slot count mismatch: expected {len(contracts)}, got {len(slots)}"
+        )
+    packet_ids = set(build_evidence_alias_map(packet).values())
+    seen: set[str] = set()
+    for index, (slot, contract) in enumerate(zip(slots, contracts)):
+        if not isinstance(slot, Mapping):
+            raise SectionAuthoringError(f"section skeleton slot {index + 1} must be an object")
+        block_id = str(slot.get("block_id") or "")
+        if block_id in seen or block_id != str(contract["block_id"]):
+            raise SectionAuthoringError("section skeleton block order or identity mismatch")
+        seen.add(block_id)
+        if str(slot.get("channel") or "") != str(contract["channel"]):
+            raise SectionAuthoringError(f"section skeleton channel mismatch: {block_id}")
+        if int(slot.get("order", -1)) != index:
+            raise SectionAuthoringError(f"section skeleton order mismatch: {block_id}")
+        evidence_ids = tuple(str(item) for item in slot.get("evidence_ids") or ())
+        if not set(evidence_ids).issubset(packet_ids):
+            raise SectionAuthoringError(f"{INVALID_EVIDENCE_REFERENCE}: skeleton {block_id}")
+        if str(slot.get("text") or ""):
+            raise SectionAuthoringError("section skeleton must be empty before writer slot filling")
+    if set(skeleton.get("required_block_ids") or ()) != {
+        str(item["block_id"])
+        for item in slots
+        if item.get("required_for_authoring")
+    }:
+        raise SectionAuthoringError("section skeleton required block set mismatch")
 
 
 def _channel_for_obligation(item: "SectionAuthoringObligation") -> str:
@@ -437,6 +685,8 @@ WRITER_FAILURE_SCHEMA_MISMATCH = "SCHEMA_MISMATCH"
 WRITER_FAILURE_TRUNCATED_OUTPUT = "TRUNCATED_OUTPUT"
 WRITER_FAILURE_INVALID_ALIAS = "INVALID_ALIAS"
 WRITER_FAILURE_MISSING_REQUIRED_BLOCK = "MISSING_REQUIRED_BLOCK"
+WRITER_FAILURE_EMPTY_REQUIRED_BLOCK = EMPTY_REQUIRED_BLOCK
+WRITER_FAILURE_BLOCK_EVIDENCE_UNAVAILABLE = BLOCK_EVIDENCE_UNAVAILABLE
 WRITER_FAILURE_OTHER = "OTHER"
 
 
@@ -445,6 +695,10 @@ def classify_section_writer_failure(error: str, raw: str = "") -> str:
 
     message = str(error or "").casefold()
     text = str(raw or "").strip()
+    if "block_evidence_unavailable" in message or "no authorized evidence for" in message:
+        return WRITER_FAILURE_BLOCK_EVIDENCE_UNAVAILABLE
+    if "empty_required_block" in message or "required skeleton slots have no text" in message:
+        return WRITER_FAILURE_EMPTY_REQUIRED_BLOCK
     if "alias" in message or "evidence" in message or "invalid_evidence_reference" in message:
         return WRITER_FAILURE_INVALID_ALIAS
     if "missing" in message and ("required" in message or "module" in message or "block" in message):
@@ -1481,6 +1735,9 @@ def author_section(
 ) -> RenderedSection:
     """Run a fake/wrapped writer and deterministically materialize its draft."""
 
+    # Admission happens before the callback so a writer is never asked to
+    # invent a missing structural slot or compensate for absent evidence.
+    build_section_skeleton(brief, packet)
     draft = writer(brief)
     if not isinstance(draft, Mapping):
         raise SectionAuthoringError("section writer must return a mapping draft")
@@ -1503,6 +1760,7 @@ def materialize_section_draft(
 
     if packet.packet_id != brief.packet_id or packet.blueprint_id != brief.blueprint_id:
         raise SectionAuthoringError("draft inputs do not belong to the SectionAuthoringBrief")
+    skeleton = build_section_skeleton(brief, packet)
     if "obligation_span_map" in draft or "occurrence_span_map" in draft:
         raise SectionAuthoringError(
             "model-authored exact span maps are not accepted; return ordered blocks"
@@ -1541,6 +1799,7 @@ def materialize_section_draft(
         brief=brief,
         binding_by_id=binding_by_id,
         evidence_aliases=evidence_aliases,
+        skeleton=skeleton,
     )
 
     # Blocks are the only source for every student-visible section field.
@@ -1640,6 +1899,7 @@ def materialize_section_draft(
         "internal_labels_rendered": False,
         "writer_replanned": False,
         "writer_contract": "ordered_blocks_only",
+        "section_skeleton": deepcopy(skeleton),
         "model_authored_spans": False,
         "deterministic_association_fallbacks": sum(
             1 for item in blocks if item.get("_deterministic_association_fallback")
@@ -1885,6 +2145,7 @@ def _normalize_deterministic_writer_blocks(
     brief: SectionAuthoringBrief,
     binding_by_id: Mapping[str, ObligationEvidenceBinding],
     evidence_aliases: Mapping[str, str],
+    skeleton: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Attach all immutable block metadata from the deterministic slot plan.
 
@@ -1900,6 +2161,11 @@ def _normalize_deterministic_writer_blocks(
     """
 
     contracts = _planned_block_contracts(brief)
+    skeleton_slots = {
+        str(item.get("block_id") or ""): item
+        for item in (skeleton or {}).get("blocks", ())
+        if isinstance(item, Mapping)
+    }
     if not contracts:
         return []
     raw_block_list = list(raw_blocks)
@@ -1942,10 +2208,23 @@ def _normalize_deterministic_writer_blocks(
         if canonical_id in seen_slots:
             raise SectionAuthoringError(f"duplicate writer block_id: {raw_block_id}")
         seen_slots.add(canonical_id)
-        obligation_ids = tuple(str(item) for item in contract["intended_obligation_ids"])
-        required_obligation_ids = tuple(str(item) for item in contract["required_obligation_ids"])
-        occurrence_ids = tuple(str(item) for item in contract["intended_occurrence_ids"])
-        approved_claim_ids = tuple(str(item) for item in contract.get("approved_claim_ids") or ())
+        slot = skeleton_slots.get(canonical_id)
+        obligation_ids = tuple(
+            str(item)
+            for item in (slot or {}).get("intended_obligation_ids", contract["intended_obligation_ids"])
+        )
+        required_obligation_ids = tuple(
+            str(item)
+            for item in (slot or {}).get("required_obligation_ids", contract["required_obligation_ids"])
+        )
+        occurrence_ids = tuple(
+            str(item)
+            for item in (slot or {}).get("intended_occurrence_ids", contract["intended_occurrence_ids"])
+        )
+        approved_claim_ids = tuple(
+            str(item)
+            for item in (slot or {}).get("approved_claim_ids", contract.get("approved_claim_ids") or ())
+        )
         normalizations: list[str] = []
 
         # Redundant model fields are assertions at most; they can never replace
@@ -1996,19 +2275,23 @@ def _normalize_deterministic_writer_blocks(
             raise SectionAuthoringError(
                 f"{INVALID_EVIDENCE_REFERENCE}: block {raw_block_id} contains unknown aliases {unknown_aliases}"
             )
-        allowed_ids, _allowed_aliases = allowed_evidence_aliases_for_block(
-            obligation_ids,
-            brief,
-            evidence_id_to_alias,
-        )
-        plan_evidence_ids = tuple(
-            evidence_id
-            for claim in (brief.factual_claim_plan.approved_claims if brief.factual_claim_plan else ())
-            if set(claim.obligation_ids).intersection(obligation_ids)
-            for evidence_id in claim.supporting_evidence_ids
-            if evidence_id in evidence_id_to_alias
-        )
-        evidence_ids = tuple(dict.fromkeys((*allowed_ids, *plan_evidence_ids)))
+        if slot is not None:
+            allowed_ids = tuple(str(item) for item in slot.get("allowed_evidence_ids") or ())
+            evidence_ids = tuple(str(item) for item in slot.get("evidence_ids") or ())
+        else:
+            allowed_ids, _allowed_aliases = allowed_evidence_aliases_for_block(
+                obligation_ids,
+                brief,
+                evidence_id_to_alias,
+            )
+            plan_evidence_ids = tuple(
+                evidence_id
+                for claim in (brief.factual_claim_plan.approved_claims if brief.factual_claim_plan else ())
+                if set(claim.obligation_ids).intersection(obligation_ids)
+                for evidence_id in claim.supporting_evidence_ids
+                if evidence_id in evidence_id_to_alias
+            )
+            evidence_ids = tuple(dict.fromkeys((*allowed_ids, *plan_evidence_ids)))
         if legacy_aliases:
             legacy_ids = tuple(evidence_aliases[alias] for alias in legacy_aliases)
             if not set(legacy_ids).issubset(set(evidence_ids)):
@@ -2036,19 +2319,27 @@ def _normalize_deterministic_writer_blocks(
 
     # Required slots are deterministic, but source-gap-only slots are not
     # deliverable writer responsibilities.  Optional slots may be omitted.
-    missing_required = [
-        str(contract["block_id"])
-        for contract in contracts
-        if contract.get("required")
-        and any(
-            binding_by_id[item].status != SOURCE_GAP
-            for item in contract["required_obligation_ids"]
-        )
-        and str(contract["block_id"]) not in seen_slots
-    ]
+    if skeleton_slots:
+        missing_required = [
+            block_id
+            for block_id, slot in skeleton_slots.items()
+            if slot.get("required_for_authoring") and block_id not in seen_slots
+        ]
+    else:
+        missing_required = [
+            str(contract["block_id"])
+            for contract in contracts
+            if contract.get("required")
+            and any(
+                binding_by_id[item].status != SOURCE_GAP
+                for item in contract["required_obligation_ids"]
+            )
+            and str(contract["block_id"]) not in seen_slots
+        ]
     if missing_required:
         raise SectionAuthoringError(
-            "missing required writer blocks: " + ", ".join(missing_required)
+            f"{EMPTY_REQUIRED_BLOCK}: required skeleton slots have no text: "
+            + ", ".join(missing_required)
         )
     return sorted(
         normalized,
@@ -2067,6 +2358,7 @@ def _normalize_writer_blocks(
     brief: SectionAuthoringBrief,
     binding_by_id: Mapping[str, ObligationEvidenceBinding],
     evidence_aliases: Mapping[str, str],
+    skeleton: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Validate the model's semantic block declarations.
 
@@ -2117,6 +2409,7 @@ def _normalize_writer_blocks(
             brief=brief,
             binding_by_id=binding_by_id,
             evidence_aliases=evidence_aliases,
+            skeleton=skeleton,
         )
 
     result: list[dict[str, Any]] = []

@@ -337,6 +337,7 @@ def execute_verified_sections(
         attach_factual_claim_plan,
         build_factual_claim_plan,
         build_section_authoring_brief,
+        build_section_skeleton,
     )
     from materials2textbook.knowledge_map.section_authoring_recovery import (
         ACCEPTED,
@@ -545,6 +546,11 @@ def execute_verified_sections(
                 claim_judge=semantic_entailment_judge,
             )
             brief = attach_factual_claim_plan(brief, factual_claim_plan)
+            # Admit the section only after all deterministic slots and their
+            # packet-bound evidence ownership exist.  This happens before the
+            # writer callback, so a model cannot create a missing block or
+            # repair an evidence-binding hole through prose.
+            build_section_skeleton(brief, packet)
         except Exception as exc:
             for seed, _occurrence, _delta, _zero in compiled_items:
                 section_blocked.append(_section_block(seed, "SECTION_AUTHORING_INPUT_FAILED", f"{type(exc).__name__}: {exc}"))
