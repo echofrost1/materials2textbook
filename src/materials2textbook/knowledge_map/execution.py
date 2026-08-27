@@ -423,8 +423,16 @@ def execute_verified_sections(
             span_ids = linked_ids
         if not span_ids:
             return brief
-        source_ids = list(dict.fromkeys([*brief.source_chunk_ids, *span_ids]))
-        delta_ids = list(dict.fromkeys([*brief.semantic_delta_evidence_ids, *span_ids]))
+        # The section materializer has already resolved and authorized the
+        # evidence carried by these mapped spans.  The occurrence's original
+        # planning/source IDs are broader retrieval context and must not be
+        # merged back into the runtime audit scope: doing so makes the
+        # sequential verifier judge the same text against a different
+        # evidence universe than the section-local audit.  Keep both brief
+        # fields packet-span bounded; the packet remains the sole source of
+        # truth for accepted section evidence.
+        source_ids = list(dict.fromkeys(span_ids))
+        delta_ids = list(dict.fromkeys(span_ids))
         return replace(
             brief,
             source_chunk_ids=source_ids,

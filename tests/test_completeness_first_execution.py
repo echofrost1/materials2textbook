@@ -422,8 +422,12 @@ def test_section_packet_evidence_reaches_occurrence_local_claim_audit() -> None:
     without widening the evidence scope.
     """
     plan, chunk, source, point, occurrence, delta, _knowledge_map, report = _fixture()
-    occurrence = replace(occurrence, source_chunk_ids=[])
-    delta = replace(delta, evidence_chunk_ids=[])
+    # The frozen occurrence can carry broader retrieval context than the
+    # section packet.  Runtime auditing must remain bounded to the mapped
+    # packet span rather than unioning this unrelated chunk back in.
+    unrelated = replace(chunk, chunk_id="e2", content="Unrelated retrieval context")
+    occurrence = replace(occurrence, source_chunk_ids=["e2"])
+    delta = replace(delta, evidence_chunk_ids=["e2"])
 
     def writer(brief, packet, chunks):
         obligation_ids = [item.obligation_id for item in brief.required_obligations]
@@ -465,7 +469,7 @@ def test_section_packet_evidence_reaches_occurrence_local_claim_audit() -> None:
         deltas=[delta],
         sources={source.source_knowledge_point_id: source},
         points={point.knowledge_id: point},
-        chunks=[chunk],
+        chunks=[chunk, unrelated],
         section_writer=writer,
         semantic_entailment_judge=Judge(),
     )
