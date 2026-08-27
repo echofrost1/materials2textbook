@@ -165,34 +165,11 @@ def build_section_authoring_messages(
             "summary": brief.summary_requirement,
         },
         "obligations": obligations,
-        "planned_block_contracts": [
-            {
-                "block_id": f"obligation-{index:02d}",
-                "intended_obligation_ids": [item.obligation_id],
-                "teaching_responsibility": item.objective,
-                "approved_factual_claim_ids": [
-                    claim.claim_id
-                    for claim in factual_claim_plan.approved_claims
-                    if item.obligation_id in claim.obligation_ids
-                ],
-                "approved_factual_claims": [
-                    claim.claim_id
-                    for claim in approved_by_obligation.get(item.obligation_id, [])
-                ],
-                # Keep the ID list as the machine contract, but expose the
-                # already-approved statement beside it so the model does not
-                # have to guess which repeated fc:N identifier belongs to a
-                # block.  This is still claim-plan-only; no evidence IDs or
-                # raw packet text are exposed here.
-                "approved_factual_claim_details": [
-                    _claim_view(claim)
-                    for claim in approved_by_obligation.get(item.obligation_id, [])
-                ],
-                "required_obligation_ids": [item.obligation_id],
-                "intended_occurrence_ids": list(item.linked_occurrence_ids),
-            }
-            for index, item in enumerate(brief.all_obligations, start=1)
-        ],
+        # Structural block metadata is a deterministic system contract.  The
+        # model is shown the slots so it can return the corresponding ``block_id``
+        # but it is not asked to reproduce obligation, occurrence, channel, or
+        # evidence associations in its response.
+        "planned_block_contracts": _planned_block_contracts(brief),
         "source_gaps": [deepcopy(dict(item)) for item in brief.source_gaps],
         "factual_claim_plan": factual_claim_plan.writer_view(),
     }
@@ -214,24 +191,21 @@ def build_section_authoring_messages(
     )
     user = (
         "Return exactly this shape:\n"
-         '{"blocks":[{"block_id":"b01","channel":"body|case_activity|exercise|assessment|summary",'
-         '"text":"student-visible text","intended_obligation_ids":[],"required_obligation_ids":[],'
-         '"intended_occurrence_ids":[],"approved_claim_ids":[]}],'
-        '"generation_provenance":{"writer":"section-qwen"}}\n\n'
-        "The blocks array is the complete section in reading order. Every block "
-         "must contain block_id, channel, text, intended_obligation_ids, required_obligation_ids, "
-         "intended_occurrence_ids, and approved_claim_ids. The approved_claim_ids must be selected "
-         "from the exact planned_block_contract for that block. Do not return body/summary/offset/span or "
-        "evidence_ids fields. Evidence ownership is attached by deterministic "
+         '{"blocks":[{"block_id":"b01","text":"student-visible text"}],'
+         '"generation_provenance":{"writer":"section-qwen"}}\n\n'
+        "The blocks array is the complete section in deterministic slot order. Every block "
+         "must contain only a legal block_id from planned_block_contracts and non-empty text. "
+         "Do not return channel, intended_obligation_ids, required_obligation_ids, intended_occurrence_ids, "
+         "approved_claim_ids, body/summary/offset/span, or "
+         "evidence_ids fields. Evidence ownership is attached by deterministic "
         "code from the selected evidence bound to the block's intended obligations; "
         "the model must not choose aliases or source IDs. Separate blocks are "
         "optional when obligations use different evidence. For PARTIAL evidence, write only "
         "the supported portion; for SOURCE_GAP, do not write a professional fact. "
-        "The planned_block_contracts list is deterministic guidance containing the "
-        "approved factual claim plan for each planned responsibility. Each block "
-        "also includes approved_factual_claim_details; copy only the claim_id "
-        "values whose statement you actually realize in that block. Never invent "
-        "or copy an ID from another block. "
+         "The planned_block_contracts list is deterministic guidance containing the "
+         "approved factual claim plan for each planned responsibility. Use the "
+         "slot's approved statements to write its text; do not return any of the "
+         "slot's metadata or claim IDs. "
         "Make the teaching sequence natural and concrete when the evidence "
         "supports it: move from a fact to its explanation, relation, and a "
         "student takeaway. Teach the section_new_contribution first; recap "
@@ -249,6 +223,100 @@ def build_section_authoring_messages(
         "IMMUTABLE AUTHORING CONTRACT:\n" + json.dumps(contract, ensure_ascii=False, indent=2)
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def _planned_block_contracts(brief: "SectionAuthoringBrief") -> list[dict[str, Any]]:
+    """Compile immutable writer block slots from the section brief.
+
+    The section writer owns only the text for a slot.  Obligation, occurrence,
+    channel, claim-plan, and evidence associations are derived here and reused
+    by the materializer, so a model cannot alter the structural contract by
+    emitting stale or contradictory metadata.
+    """
+
+    claims = tuple(brief.factual_claim_plan.approved_claims) if brief.factual_claim_plan else ()
+
+    def claim_view(claim: "FactualClaimPlanItem") -> dict[str, Any]:
+        return {
+            "claim_id": claim.claim_id,
+            "statement": claim.statement,
+            "occurrence_ids": list(claim.occurrence_ids),
+            "target_knowledge_ids": list(claim.target_knowledge_ids),
+        }
+
+    # A writer block is a discourse unit, not an obligation row.  Grouping by
+    # the deterministic output channel lets one body block teach several
+    # complementary body obligations (for example concept + procedure) while
+    # keeping the association code-owned.  Module channels remain separate so
+    # an exercise can never silently become part of the body.
+    channel_order = ("body", "case_activity", "exercise", "assessment", "summary")
+    grouped: dict[str, list[tuple[int, SectionAuthoringObligation]]] = {
+        channel: [] for channel in channel_order
+    }
+    for index, item in enumerate(brief.all_obligations, start=1):
+        grouped[_channel_for_obligation(item)].append((index, item))
+
+    contracts: list[dict[str, Any]] = []
+    for slot_index, channel in enumerate(channel_order, start=1):
+        grouped_items = grouped[channel]
+        if not grouped_items:
+            continue
+        obligation_items = [item for _index, item in grouped_items]
+        obligation_ids = [item.obligation_id for item in obligation_items]
+        occurrence_ids = list(
+            dict.fromkeys(
+                occurrence_id
+                for item in obligation_items
+                for occurrence_id in item.linked_occurrence_ids
+                if occurrence_id
+            )
+        )
+        item_claims = [
+            claim
+            for claim in claims
+            if set(claim.obligation_ids).intersection(obligation_ids)
+        ]
+        contracts.append(
+            {
+                # ``bNN`` is the public writer slot identifier.  The historical
+                # ``obligation-NN`` identifier remains an accepted input alias
+                # for archived fixtures, but the attached metadata is always
+                # taken from this deterministic slot.
+                "block_id": f"b{slot_index:02d}",
+                "legacy_block_id": f"obligation-{grouped_items[0][0]:02d}",
+                "legacy_block_ids": [
+                    f"obligation-{index:02d}" for index, _item in grouped_items
+                ],
+                "channel": channel,
+                "required": any(item.required == REQUIRED for item in obligation_items),
+                "intended_obligation_ids": obligation_ids,
+                "required_obligation_ids": (
+                    [item.obligation_id for item in obligation_items if item.required == REQUIRED]
+                ),
+                "intended_occurrence_ids": occurrence_ids,
+                "teaching_responsibility": " ".join(
+                    item.objective for item in obligation_items if item.objective
+                ),
+                "approved_claim_ids": [claim.claim_id for claim in item_claims],
+                "approved_factual_claim_details": [claim_view(claim) for claim in item_claims],
+            }
+        )
+    return contracts
+
+
+def _channel_for_obligation(item: "SectionAuthoringObligation") -> str:
+    """Return the deterministic student-visible channel for an obligation."""
+
+    if item.kind == CASE_ACTIVITY:
+        return "case_activity"
+    if item.kind == SUMMARY:
+        return "summary"
+    if item.kind == "assessment_exercise":
+        source = str(item.source_field or item.objective or "").casefold()
+        if "assessment_purpose" in source:
+            return "assessment"
+        return "exercise"
+    return "body"
 
 
 def build_section_activity_guidance(brief: "SectionAuthoringBrief") -> list[dict[str, str]]:
@@ -410,7 +478,7 @@ def validate_structural_repair_preserves_content(original_raw: str, repaired: Ma
     if not isinstance(blocks, (list, tuple)) or not blocks:
         return False
     raw_values: set[str] = set()
-    for match in re.finditer(r'"(?:text|block_id|channel)"\s*:\s*"((?:\\.|[^"\\])*)"', str(original_raw or "")):
+    for match in re.finditer(r'"(?:text|block_id)"\s*:\s*"((?:\\.|[^"\\])*)"', str(original_raw or "")):
         try:
             raw_values.add(str(json.loads('"' + match.group(1) + '"')))
         except json.JSONDecodeError:
@@ -422,8 +490,7 @@ def validate_structural_repair_preserves_content(original_raw: str, repaired: Ma
             return False
         text = str(block.get("text") or "").strip()
         block_id = str(block.get("block_id") or "").strip()
-        channel = str(block.get("channel") or "").strip()
-        if not text or text not in raw_values or block_id not in raw_values or channel not in raw_values:
+        if not text or text not in raw_values or block_id not in raw_values:
             return False
     return True
 
@@ -1812,6 +1879,186 @@ def _has_deliverable_required_obligation(
     )
 
 
+def _normalize_deterministic_writer_blocks(
+    raw_blocks: Iterable[Any],
+    *,
+    brief: SectionAuthoringBrief,
+    binding_by_id: Mapping[str, ObligationEvidenceBinding],
+    evidence_aliases: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """Attach all immutable block metadata from the deterministic slot plan.
+
+    New section-writer responses contain only ``block_id`` and ``text``.  The
+    writer cannot choose a channel, obligation/occurrence ownership, claim-plan
+    IDs, or evidence IDs.  Those values are compiled from the same grouped slot
+    plan shown in :func:`build_section_authoring_messages`.
+
+    A small amount of legacy input tolerance is intentional: archived fixtures
+    may use ``obligation-NN``/``block-NN`` aliases or include redundant metadata.
+    Known redundant fields are ignored (and recorded), while unknown IDs and
+    unauthorized evidence aliases still fail closed.
+    """
+
+    contracts = _planned_block_contracts(brief)
+    if not contracts:
+        return []
+    raw_block_list = list(raw_blocks)
+    channel_order = {"body": 0, "case_activity": 1, "exercise": 2, "assessment": 3, "summary": 4}
+    slot_by_alias: dict[str, dict[str, Any]] = {}
+    for contract in contracts:
+        aliases = {
+            str(contract["block_id"]),
+            str(contract.get("legacy_block_id") or ""),
+        }
+        aliases.update(str(item) for item in contract.get("legacy_block_ids") or ())
+        # Human-readable aliases are retained only for old deterministic
+        # fixtures.  They never change the attached metadata.
+        slot_index = int(str(contract["block_id"])[1:])
+        aliases.update({f"block-{slot_index:02d}", f"block-{slot_index}"})
+        for alias in aliases:
+            if alias:
+                slot_by_alias.setdefault(alias, contract)
+    channel_slots: dict[str, list[dict[str, Any]]] = {}
+    for contract in contracts:
+        channel_slots.setdefault(str(contract["channel"]), []).append(contract)
+    for channel, values in channel_slots.items():
+        if len(values) == 1:
+            slot_by_alias.setdefault(f"{channel}-block", values[0])
+
+    evidence_id_to_alias = {value: alias for alias, value in evidence_aliases.items()}
+    normalized: list[dict[str, Any]] = []
+    seen_slots: set[str] = set()
+    for index, raw in enumerate(raw_block_list, start=1):
+        if not isinstance(raw, Mapping):
+            raise SectionAuthoringError(f"writer block {index} must be an object")
+        raw_block_id = str(raw.get("block_id") or "").strip()
+        text = str(raw.get("text") or "").strip()
+        if not raw_block_id or not text:
+            raise SectionAuthoringError(f"writer block {index} requires block_id and non-empty text")
+        contract = slot_by_alias.get(raw_block_id)
+        if contract is None:
+            raise SectionAuthoringError(f"illegal writer block_id: {raw_block_id}")
+        canonical_id = str(contract["block_id"])
+        if canonical_id in seen_slots:
+            raise SectionAuthoringError(f"duplicate writer block_id: {raw_block_id}")
+        seen_slots.add(canonical_id)
+        obligation_ids = tuple(str(item) for item in contract["intended_obligation_ids"])
+        required_obligation_ids = tuple(str(item) for item in contract["required_obligation_ids"])
+        occurrence_ids = tuple(str(item) for item in contract["intended_occurrence_ids"])
+        approved_claim_ids = tuple(str(item) for item in contract.get("approved_claim_ids") or ())
+        normalizations: list[str] = []
+
+        # Redundant model fields are assertions at most; they can never replace
+        # the deterministic slot metadata.  Validate unknown IDs so malformed
+        # output cannot silently associate a block with an out-of-scope object.
+        supplied_obligations = _block_id_list(raw.get("intended_obligation_ids"), "intended_obligation_ids", raw_block_id)
+        if supplied_obligations:
+            unknown = sorted(set(supplied_obligations) - set(binding_by_id))
+            if unknown:
+                raise SectionAuthoringError(f"block maps unknown obligations: {unknown}")
+            if tuple(supplied_obligations) != obligation_ids:
+                normalizations.append("model_intended_obligation_ids_ignored")
+        supplied_required = _block_id_list(raw.get("required_obligation_ids"), "required_obligation_ids", raw_block_id)
+        if supplied_required and tuple(supplied_required) != required_obligation_ids:
+            normalizations.append("model_required_obligation_ids_ignored")
+        elif raw.get("required_obligation_ids") is not None and tuple(supplied_required) != required_obligation_ids:
+            normalizations.append("required_obligation_ids_from_intended")
+            normalizations.append("required_obligation_ids_from_deterministic_plan")
+        supplied_occurrences = _block_id_list(raw.get("intended_occurrence_ids"), "intended_occurrence_ids", raw_block_id)
+        allowed_occurrences = {
+            _constraint_value(item, "occurrence_id")
+            for item in brief.occurrence_constraints
+            if _constraint_value(item, "occurrence_id")
+        }
+        unknown_occurrences = sorted(set(supplied_occurrences) - allowed_occurrences)
+        if unknown_occurrences:
+            raise SectionAuthoringError(f"block maps unknown occurrences: {unknown_occurrences}")
+        if supplied_occurrences and tuple(supplied_occurrences) != occurrence_ids:
+            normalizations.append("model_intended_occurrence_ids_ignored")
+        supplied_claims = tuple(_clean_strings(raw.get("approved_claim_ids") or ()))
+        unknown_claims = sorted(set(supplied_claims) - set(approved_claim_ids))
+        if unknown_claims:
+            raise SectionAuthoringError(
+                f"FACTUAL_PLAN_CLAIM_REFERENCE_INVALID: block {raw_block_id} contains {unknown_claims}"
+            )
+        if supplied_claims and supplied_claims != approved_claim_ids:
+            normalizations.append("model_approved_claim_ids_ignored")
+
+        supplied_channel = str(raw.get("channel") or "").strip().lower()
+        if supplied_channel and supplied_channel not in channel_order:
+            raise SectionAuthoringError(f"unknown writer block channel: {supplied_channel}")
+        if supplied_channel and supplied_channel != str(contract["channel"]):
+            normalizations.append("model_channel_ignored")
+
+        legacy_aliases = tuple(_clean_strings(raw.get("evidence_ids") or ()))
+        unknown_aliases = sorted(set(legacy_aliases) - set(evidence_aliases))
+        if unknown_aliases:
+            raise SectionAuthoringError(
+                f"{INVALID_EVIDENCE_REFERENCE}: block {raw_block_id} contains unknown aliases {unknown_aliases}"
+            )
+        allowed_ids, _allowed_aliases = allowed_evidence_aliases_for_block(
+            obligation_ids,
+            brief,
+            evidence_id_to_alias,
+        )
+        plan_evidence_ids = tuple(
+            evidence_id
+            for claim in (brief.factual_claim_plan.approved_claims if brief.factual_claim_plan else ())
+            if set(claim.obligation_ids).intersection(obligation_ids)
+            for evidence_id in claim.supporting_evidence_ids
+            if evidence_id in evidence_id_to_alias
+        )
+        evidence_ids = tuple(dict.fromkeys((*allowed_ids, *plan_evidence_ids)))
+        if legacy_aliases:
+            legacy_ids = tuple(evidence_aliases[alias] for alias in legacy_aliases)
+            if not set(legacy_ids).issubset(set(evidence_ids)):
+                raise SectionAuthoringError(f"block uses unauthorized evidence: {raw_block_id}")
+            normalizations.append("model_evidence_ids_ignored")
+
+        if not evidence_ids and not all(
+            _is_derivable_obligation(item, brief, binding_by_id) for item in obligation_ids
+        ):
+            raise SectionAuthoringError(f"teaching block has no deterministically bound evidence: {raw_block_id}")
+        normalized.append(
+            {
+                "block_id": canonical_id,
+                "text": text,
+                "intended_obligation_ids": obligation_ids,
+                "required_obligation_ids": required_obligation_ids,
+                "intended_occurrence_ids": occurrence_ids,
+                "approved_claim_ids": approved_claim_ids,
+                "_implicit_approved_claim_ids": True,
+                "_contract_normalizations": tuple(normalizations),
+                "evidence_ids": evidence_ids,
+                "channel": str(contract["channel"]),
+            }
+        )
+
+    # Required slots are deterministic, but source-gap-only slots are not
+    # deliverable writer responsibilities.  Optional slots may be omitted.
+    missing_required = [
+        str(contract["block_id"])
+        for contract in contracts
+        if contract.get("required")
+        and any(
+            binding_by_id[item].status != SOURCE_GAP
+            for item in contract["required_obligation_ids"]
+        )
+        and str(contract["block_id"]) not in seen_slots
+    ]
+    if missing_required:
+        raise SectionAuthoringError(
+            "missing required writer blocks: " + ", ".join(missing_required)
+        )
+    return sorted(
+        normalized,
+        key=lambda item: (
+            channel_order[item["channel"]],
+            int(str(item["block_id"])[1:]),
+        ),
+    )
+
+
 def _normalize_writer_blocks(
     raw_blocks: Iterable[Any],
     *,
@@ -1828,11 +2075,55 @@ def _normalize_writer_blocks(
     deterministic code.
     """
 
+    # New production responses are intentionally minimal.  Keep the legacy
+    # branch below for archived fixtures that use arbitrary block IDs and
+    # model-declared associations, but route every legal slot (including a
+    # response that redundantly includes old metadata) through the
+    # deterministic compiler above.
+    raw_block_list = list(raw_blocks)
+    contracts = _planned_block_contracts(brief)
+    legal_slot_ids: set[str] = set()
+    for contract in contracts:
+        legal_slot_ids.add(str(contract["block_id"]))
+        legal_slot_ids.add(str(contract.get("legacy_block_id") or ""))
+        legal_slot_ids.update(str(item) for item in contract.get("legacy_block_ids") or ())
+        slot_index = int(str(contract["block_id"])[1:])
+        legal_slot_ids.update({f"block-{slot_index:02d}", f"block-{slot_index}"})
+    channel_counts: dict[str, int] = {}
+    for contract in contracts:
+        channel_counts[str(contract["channel"])] = channel_counts.get(str(contract["channel"]), 0) + 1
+    for contract in contracts:
+        if channel_counts.get(str(contract["channel"])) == 1:
+            legal_slot_ids.add(f"{contract['channel']}-block")
+    structural_fields = {
+        "channel",
+        "intended_obligation_ids",
+        "required_obligation_ids",
+        "intended_occurrence_ids",
+        "approved_claim_ids",
+        "evidence_ids",
+    }
+    all_ids_are_slots = all(
+        isinstance(raw, Mapping) and str(raw.get("block_id") or "").strip() in legal_slot_ids
+        for raw in raw_block_list
+    )
+    has_redundant_metadata = any(
+        isinstance(raw, Mapping) and bool(structural_fields.intersection(raw.keys()))
+        for raw in raw_block_list
+    )
+    if all_ids_are_slots or not has_redundant_metadata:
+        return _normalize_deterministic_writer_blocks(
+            raw_block_list,
+            brief=brief,
+            binding_by_id=binding_by_id,
+            evidence_aliases=evidence_aliases,
+        )
+
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     channel_order = {"body": 0, "case_activity": 1, "exercise": 2, "assessment": 3, "summary": 4}
     last_channel = -1
-    for index, raw in enumerate(raw_blocks, start=1):
+    for index, raw in enumerate(raw_block_list, start=1):
         if not isinstance(raw, Mapping):
             raise SectionAuthoringError(f"writer block {index} must be an object")
         block_id = str(raw.get("block_id") or "").strip()

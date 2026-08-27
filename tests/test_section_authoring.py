@@ -30,6 +30,7 @@ from materials2textbook.knowledge_map.section_authoring import (
     build_section_authoring_brief,
     classify_section_writer_failure,
     materialize_section_draft,
+    _factual_claim_is_within_plan,
     validate_structural_repair_preserves_content,
 )
 from materials2textbook.knowledge_map.teaching_blueprint import build_section_teaching_blueprint
@@ -280,6 +281,91 @@ def test_materializer_normalizes_redundant_required_obligation_mirror() -> None:
         "required_obligation_ids_from_intended" in item["normalizations"]
         for item in normalizations
     )
+
+
+def test_minimal_writer_block_gets_all_structural_metadata_deterministically() -> None:
+    _, _, packet, brief = _inputs(constraints=[{"occurrence_id": "occ-1", "role": "TEACH"}])
+    legacy = _draft(brief, body="The basic operation is explained with the supported conditions.")
+    minimal = {
+        "blocks": [{"block_id": "b01", "text": legacy["blocks"][0]["text"]}],
+        "generation_provenance": {"writer": "minimal-fixture"},
+    }
+    rendered = materialize_section_draft(brief, packet, minimal)
+    spans = rendered.generation_provenance["obligation_coverage"]
+    body_spans = [
+        span
+        for values in rendered.obligation_span_map.values()
+        for span in values
+        if span["block_id"] == "b01"
+    ]
+    assert body_spans
+    assert all(span["channel"] == "body" for span in body_spans)
+    assert rendered.generation_provenance["writer_contract"] == "ordered_blocks_only"
+    assert spans
+
+
+def test_writer_cannot_override_immutable_block_metadata() -> None:
+    _, _, packet, brief = _inputs(constraints=[{"occurrence_id": "occ-1", "role": "TEACH"}])
+    body = "The basic operation is explained with the supported conditions."
+    first = brief.all_obligations[0].obligation_id
+    draft = {
+        "blocks": [{
+            "block_id": "b01",
+            "text": body,
+            # These are deliberately contradictory redundant declarations.  The
+            # materializer must ignore them and attach the deterministic body
+            # slot metadata instead.
+            "channel": "assessment",
+            "intended_obligation_ids": [brief.all_obligations[-1].obligation_id],
+            "required_obligation_ids": [],
+            "intended_occurrence_ids": ["occ-1"],
+        }]
+    }
+    rendered = materialize_section_draft(brief, packet, draft)
+    assert rendered.obligation_span_map[first]
+    assert all(
+        span["channel"] == "body"
+        for values in rendered.obligation_span_map.values()
+        for span in values
+    )
+    normalizations = rendered.generation_provenance["deterministic_contract_normalizations"]
+    assert any("model_channel_ignored" in item["normalizations"] for item in normalizations)
+
+
+def test_minimal_writer_rejects_illegal_block_id() -> None:
+    _, _, packet, brief = _inputs()
+    with pytest.raises(SectionAuthoringError, match="illegal writer block_id"):
+        materialize_section_draft(
+            brief,
+            packet,
+            {"blocks": [{"block_id": "not-a-planned-slot", "text": "A body."}]},
+        )
+
+
+def test_minimal_writer_rejects_missing_required_slot() -> None:
+    _, _, packet, brief = _inputs()
+    with pytest.raises(SectionAuthoringError, match="missing required writer blocks"):
+        materialize_section_draft(brief, packet, {"blocks": []})
+
+
+def test_factual_plan_accepts_safe_paraphrase_without_literal_substring() -> None:
+    approved = "The documented procedure checks the equipment and confirms the result."
+    paraphrase = "The procedure checks the equipment and confirms the result."
+    assert paraphrase not in approved
+    assert _factual_claim_is_within_plan(paraphrase, approved) is True
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "The equipment must always be checked and guarantees every result is safe.",
+        "This step ensures complete safety.",
+        "The documented procedure checks all equipment in every situation and eliminates every risk.",
+    ],
+)
+def test_factual_plan_rejects_strengthening_or_unsupported_safety_claims(claim: str) -> None:
+    approved = "The documented procedure checks the equipment and confirms the result."
+    assert _factual_claim_is_within_plan(claim, approved) is False
 
 
 def test_claim_plan_contract_exposes_per_block_statement_details() -> None:

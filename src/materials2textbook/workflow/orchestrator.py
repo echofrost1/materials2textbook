@@ -1942,8 +1942,9 @@ class TextbookWorkflow:
                                 "The previous same-section draft was rejected by the deterministic contract: "
                                 + retry_reason
                                 + "\nReturn the same section again with the same immutable brief and evidence packet. "
-                                "Evidence ownership is deterministic; do not add evidence_ids or source IDs to blocks. "
-                                "Keep the same obligations, occurrences, facts, and roles. Return JSON only."
+                                "Use only the legal deterministic block_id slots and return block_id plus text; "
+                                "do not add channel, obligation, occurrence, claim, evidence, or source IDs to blocks. "
+                                "Keep the same facts and roles. Return JSON only."
                             ),
                         },
                     ]
@@ -1996,9 +1997,9 @@ class TextbookWorkflow:
                         {
                             "role": "system",
                             "content": (
-                                "Repair JSON structure only. Preserve every block text, block_id, channel, "
-                                "required_obligation_ids, intended_occurrence_ids, and approved_claim_ids exactly. Do not add evidence_ids. "
-                                "Do not add, delete, summarize, or rewrite student-visible content. Return JSON only."
+                                "Repair JSON structure only. Preserve every block text and block_id exactly. "
+                                "Do not add, delete, summarize, or rewrite student-visible content. Do not add "
+                                "channel, obligation, occurrence, claim, or evidence metadata. Return JSON only."
                             ),
                         },
                         *messages,
@@ -2007,9 +2008,8 @@ class TextbookWorkflow:
                             "content": (
                                 "The previous response could not be parsed as JSON. Return the exact same response "
                                 "with only syntax/field wrapping repaired. The required shape is "
-                                '{"blocks":[{"block_id":"b01","channel":"body|case_activity|exercise|assessment|summary",'
-                                 '"text":"...","intended_obligation_ids":[],"required_obligation_ids":[],"intended_occurrence_ids":[],"approved_claim_ids":[]}],'
-                                '"generation_provenance":{}}.\nMALFORMED RESPONSE:\n' + str(raw)
+                                '{"blocks":[{"block_id":"b01","text":"..."}],'
+                                 '"generation_provenance":{}}.\nMALFORMED RESPONSE:\n' + str(raw)
                             ),
                         },
                     ]
