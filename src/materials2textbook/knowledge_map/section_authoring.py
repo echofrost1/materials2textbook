@@ -2234,6 +2234,284 @@ def materialize_section_draft(
     )
 
 
+def contract_factual_realization(
+    brief: "SectionAuthoringBrief",
+    packet: SectionEvidencePacket,
+    draft: Mapping[str, Any],
+    *,
+    claim_judge: Any | None = None,
+    skeleton: Mapping[str, Any] | None = None,
+    max_rounds: int = 2,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Constrain factual prose to the already-approved claim plan.
+
+    The section writer is intentionally allowed to organize a lesson in its
+    own words, but a fluent model can still append a plausible technical
+    consequence to an approved fact.  This deterministic pass runs before the
+    strict runtime grant gate.  It replaces an offending factual sentence
+    with the closest approved proposition for that immutable block, or removes
+    the sentence when no approved proposition is sufficiently related.  It
+    never retrieves evidence, edits block metadata, or changes a teaching
+    obligation.  The regular claim/conformance audit remains the final gate.
+
+    ``max_rounds`` is bounded deliberately: the function is a contraction
+    pass, not a regeneration loop.  A caller can retain the returned audit in
+    generation provenance for later diagnosis.
+    """
+
+    current = deepcopy(dict(draft))
+    if skeleton is None:
+        skeleton = build_section_skeleton(brief, packet)
+    else:
+        validate_section_skeleton(skeleton, brief, packet)
+
+    claims_by_id = {
+        item.claim_id: item
+        for item in (brief.factual_claim_plan.approved_claims if brief.factual_claim_plan else ())
+    }
+    slot_aliases = _skeleton_slot_aliases(skeleton)
+    audit: dict[str, Any] = {
+        "version": "factual-realization-contraction-v1",
+        "max_rounds": max(1, int(max_rounds or 1)),
+        "rounds": [],
+        "replaced_claims": [],
+        "removed_claims": [],
+        "deduplicated_paragraphs": 0,
+        "changed": False,
+        "bounded": True,
+        "evidence_scope_expanded": False,
+        "source": "approved_factual_claim_plan_only",
+    }
+
+    for round_index in range(audit["max_rounds"]):
+        rendered = materialize_section_draft(
+            brief,
+            packet,
+            current,
+            claim_judge=claim_judge,
+            skeleton=skeleton,
+        )
+        offending: list[dict[str, Any]] = []
+        for record in rendered.generation_provenance.get("local_claim_evidence_audit", ()) or ():
+            status = str(record.get("final_status") or "").upper()
+            content_type = str(record.get("content_type") or "")
+            if status not in {ClaimStatus.PARTIALLY_SUPPORTED, ClaimStatus.UNSUPPORTED}:
+                continue
+            if content_type not in {ContentType.SOURCE_FACT, ContentType.UNSUPPORTED_DOMAIN_CLAIM}:
+                continue
+            offending.append(dict(record))
+        for record in rendered.generation_provenance.get("factual_plan_conformance", ()) or ():
+            if str(record.get("status") or "") != "PLAN_OUTSIDE":
+                continue
+            block_id = str(record.get("block_id") or "")
+            claim_text = str(record.get("claim_text") or "").strip()
+            if not any(
+                str(item.get("block_id") or "") == block_id
+                and str(item.get("claim_text") or item.get("source_span") or "").strip() == claim_text
+                for item in offending
+            ):
+                offending.append(
+                    {
+                        "block_id": block_id,
+                        "claim_text": claim_text,
+                        "source_span": claim_text,
+                        "claim_id": str(record.get("claim_id") or ""),
+                        "final_status": ClaimStatus.UNSUPPORTED,
+                        "content_type": ContentType.UNSUPPORTED_DOMAIN_CLAIM,
+                        "failure_class": "PLAN_OUTSIDE",
+                    }
+                )
+        if not offending:
+            audit["rounds"].append(
+                {"round": round_index + 1, "offending_claims": 0, "changed": False}
+            )
+            break
+
+        changed = False
+        blocks = current.get("blocks")
+        if not isinstance(blocks, list):
+            break
+        for record in offending:
+            block_id = str(record.get("block_id") or "").strip()
+            canonical_block_id = slot_aliases.get(block_id, block_id)
+            target = str(record.get("source_span") or record.get("claim_text") or "").strip()
+            if not canonical_block_id or not target:
+                continue
+            block = next(
+                (
+                    item
+                    for item in blocks
+                    if isinstance(item, Mapping)
+                    and slot_aliases.get(
+                        str(item.get("block_id") or "").strip(),
+                        str(item.get("block_id") or "").strip(),
+                    ) == canonical_block_id
+                ),
+                None,
+            )
+            if block is None:
+                continue
+            old_text = str(block.get("text") or "")
+            replacement = _closest_approved_statement(
+                target,
+                tuple(str(item) for item in block.get("approved_claim_ids") or ())
+                or tuple(
+                    str(item)
+                    for slot in skeleton.get("blocks", ())
+                    if isinstance(slot, Mapping)
+                    and str(slot.get("block_id") or "") == canonical_block_id
+                    for item in slot.get("approved_claim_ids") or ()
+                ),
+                claims_by_id,
+            )
+            new_text = _replace_claim_segment(old_text, target, replacement)
+            if new_text is None or new_text == old_text:
+                continue
+            # Do not turn a required teaching slot into an empty slot merely
+            # because its only sentence was outside the approved plan.  A
+            # contraction is safe only when it preserves some student-visible
+            # realization (or replaces the sentence with an approved
+            # proposition).  Leaving the original text lets the normal
+            # evidence/conformance gate fail closed with an auditable reason,
+            # rather than converting a claim failure into a misleading writer
+            # underdelivery error.
+            required_slot = any(
+                isinstance(slot, Mapping)
+                and str(slot.get("block_id") or "") == canonical_block_id
+                and bool(slot.get("required_for_authoring"))
+                for slot in skeleton.get("blocks", ())
+            )
+            if required_slot and not replacement and not new_text.strip():
+                continue
+            block["text"] = new_text
+            changed = True
+            audit["changed"] = True
+            claim_entry = {
+                "round": round_index + 1,
+                "block_id": canonical_block_id,
+                "claim_id": str(record.get("claim_id") or ""),
+                "original": target,
+                "replacement": replacement,
+                "action": "REPLACE_WITH_APPROVED_PROPOSITION" if replacement else "REMOVE_UNSUPPORTED_SEGMENT",
+                "failure_class": str(record.get("failure_class") or ""),
+            }
+            if replacement:
+                audit["replaced_claims"].append(claim_entry)
+            else:
+                audit["removed_claims"].append(claim_entry)
+
+        deduped_blocks, deduped_count = _deduplicate_block_paragraphs(blocks)
+        if deduped_count:
+            current["blocks"] = deduped_blocks
+            audit["deduplicated_paragraphs"] += deduped_count
+            audit["changed"] = True
+            changed = True
+        audit["rounds"].append(
+            {
+                "round": round_index + 1,
+                "offending_claims": len(offending),
+                "changed": changed,
+            }
+        )
+        if not changed:
+            break
+
+    provenance = current.get("generation_provenance")
+    if not isinstance(provenance, Mapping):
+        provenance = {}
+    current["generation_provenance"] = {
+        **dict(provenance),
+        "factual_realization_contraction": deepcopy(audit),
+    }
+    return current, audit
+
+
+def _closest_approved_statement(
+    target: str,
+    allowed_claim_ids: tuple[str, ...],
+    claims_by_id: Mapping[str, "FactualClaimPlanItem"],
+) -> str:
+    """Return a related approved proposition, never a newly inferred fact."""
+
+    target_terms = _semantic_terms(target)
+    if not target_terms:
+        return ""
+    candidates: list[tuple[float, int, str]] = []
+    for claim_id in allowed_claim_ids:
+        claim = claims_by_id.get(str(claim_id))
+        if claim is None or claim.status != ClaimStatus.SUPPORTED:
+            continue
+        statement = str(claim.statement or "").strip()
+        statement_terms = _semantic_terms(statement)
+        if not statement_terms:
+            continue
+        overlap = len(target_terms & statement_terms) / max(len(target_terms), 1)
+        # A direct substring is the strongest safe relation.  Otherwise a
+        # modest term overlap is enough to retain a source-backed core while
+        # avoiding an unrelated proposition from the same section.
+        direct = 1 if statement in target or target in statement else 0
+        if direct or overlap >= 0.32:
+            candidates.append((overlap, direct, statement))
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda item: (-item[1], -item[0], -len(item[2]), item[2]))
+    return candidates[0][2]
+
+
+def _replace_claim_segment(text: str, target: str, replacement: str) -> str | None:
+    """Replace one exact claim segment while keeping all other prose intact."""
+
+    value = str(text or "")
+    target = str(target or "").strip()
+    if not value or not target:
+        return None
+    if target in value:
+        candidate = value.replace(target, replacement, 1)
+    else:
+        # Claim extraction normalizes whitespace around a sentence.  Support
+        # that normalization without fuzzy matching domain words.
+        compact_target = re.sub(r"\s+", " ", target)
+        match = re.search(re.escape(compact_target).replace(r"\ ", r"\s+"), value)
+        if not match:
+            return None
+        candidate = value[: match.start()] + replacement + value[match.end() :]
+    candidate = re.sub(r"[ \t]{2,}", " ", candidate)
+    candidate = re.sub(r"[，,；;]\s*[。！？!?]", "。", candidate)
+    candidate = re.sub(r"\n{3,}", "\n\n", candidate)
+    candidate = candidate.strip()
+    return candidate
+
+
+def _deduplicate_block_paragraphs(
+    blocks: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Remove exact repeated visible paragraphs within a block.
+
+    This is deliberately conservative: only byte-equivalent paragraphs after
+    whitespace normalization are removed.  It cannot delete a distinct fact,
+    infer a replacement, or alter system-owned metadata.
+    """
+
+    result: list[dict[str, Any]] = []
+    removed = 0
+    for block in blocks:
+        item = dict(block)
+        text = str(item.get("text") or "").strip()
+        paragraphs = [part.strip() for part in re.split(r"\n{2,}", text) if part.strip()]
+        seen: set[str] = set()
+        kept: list[str] = []
+        for paragraph in paragraphs:
+            key = re.sub(r"\s+", " ", paragraph).strip()
+            if key in seen:
+                removed += 1
+                continue
+            seen.add(key)
+            kept.append(paragraph)
+        item["text"] = "\n\n".join(kept).strip()
+        result.append(item)
+    return result, removed
+
+
 def _build_supported_claim_envelopes(
     obligations: Iterable[SectionAuthoringObligation],
     binding_by_id: Mapping[str, ObligationEvidenceBinding],

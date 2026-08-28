@@ -10,6 +10,7 @@ deterministic discourse bridge when the immutable role requires one.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+import re
 from typing import Any
 
 from materials2textbook.knowledge_map.models import LearningRole
@@ -25,19 +26,48 @@ def build_chapter_synthesis(chapter: Any) -> dict[str, str]:
     """
 
     sections = list(getattr(chapter, "sections", ()) or ())
-    titles = [str(getattr(item, "title", "") or "").strip() for item in sections]
-    titles = [item for item in titles if item]
-    if not titles:
+    section_rows = []
+    for item in sections:
+        title = str(getattr(item, "title", "") or "").strip()
+        if not title:
+            continue
+        purpose = _first_sentence(
+            str(getattr(item, "section_purpose", "") or "").strip()
+        )
+        outcome = _first_sentence(
+            str(getattr(item, "expected_learning_outcome", "") or "").strip()
+        )
+        section_rows.append((title, purpose, outcome))
+    if not section_rows:
         return {"opening": "", "summary": ""}
-    if len(titles) == 1:
-        path = f"“{titles[0]}”"
-        opening = f"本章先从{path}进入主题，帮助读者建立本章后续学习所需的基本认识。"
-        summary = f"读完本章，可以回到{path}，复述本节的核心对象、关系和学习要点。"
+    titles = [item[0] for item in section_rows]
+    path = " → ".join(f"“{item}”" for item in titles)
+    first_title, first_purpose, _first_outcome = section_rows[0]
+    last_title, last_purpose, last_outcome = section_rows[-1]
+    if len(section_rows) == 1:
+        focus = first_purpose or first_title
+        opening = f"本章从“{first_title}”切入，围绕{focus}建立后续学习所需的认识。"
+        summary = f"回顾本章时，可从“{first_title}”重新梳理{last_outcome or focus}。"
     else:
-        path = " → ".join(f"“{item}”" for item in titles)
-        opening = f"本章按{path}的顺序推进：先建立前面的认识，再把它带入后续任务，最后回到本章的整体联系。"
-        summary = f"读完本章，可以沿着{path}回顾学习路径，并说明前后内容如何衔接。"
+        first_focus = first_purpose or first_title
+        last_focus = last_purpose or last_title
+        opening = (
+            f"本章先从“{first_title}”的{first_focus}开始，随后把这份认识带入后续环节，"
+            f"最后落到“{last_title}”的{last_focus}。"
+        )
+        summary = (
+            f"回顾本章，可沿着{path}检查学习推进：先把基础问题说清，再逐步连接到后面的任务；"
+            f"本章最后应能回到{last_outcome or last_title}。"
+        )
     return {"opening": opening, "summary": summary}
+
+
+def _first_sentence(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    match = re.search(r"[。！？!?]", value)
+    return value[: match.end()].rstrip("。！？!?") if match else value
 
 
 @dataclass(frozen=True)
@@ -104,6 +134,7 @@ def build_section_discourse_bodies(
         rendered_ids: list[str] = []
         occurrence_ids: list[str] = []
         previous: dict[str, Any] | None = None
+        rendered_body_keys: dict[str, str] = {}
         for row in section_rows:
             occurrence_id = str(row.get("occurrence_id") or "")
             brief = brief_by_id[occurrence_id]
@@ -111,7 +142,20 @@ def build_section_discourse_bodies(
             rendered_ids.append(occurrence_id)
             transition = _transition_for(brief, previous, brief_by_id)
             transitions.append(transition)
-            body = str(row.get("body") or "").strip()
+            body = _clean_visible_body(str(row.get("body") or ""))
+            body_key = _visible_body_key(body)
+            if body_key and body_key in rendered_body_keys:
+                # A section-level passage already taught this exact content
+                # for an earlier occurrence.  Keep the later occurrence
+                # auditable, but replace the repeated lesson with a short
+                # reader-facing bridge so the book does not read like copied
+                # answers.  This presentation-only operation never changes
+                # the occurrence spans used by runtime availability.
+                prior_id = rendered_body_keys[body_key]
+                prior_brief = brief_by_id.get(prior_id)
+                body = _duplicate_body_bridge(brief, prior_brief)
+            elif body_key:
+                rendered_body_keys[body_key] = occurrence_id
             if transition.text and not _body_already_has_transition(body, brief.role):
                 body = f"{transition.text}\n\n{body}" if body else transition.text
             bodies[occurrence_id] = body
@@ -131,6 +175,52 @@ def build_section_discourse_bodies(
             )
         )
     return bodies, audits
+
+
+def _visible_body_key(text: str) -> str:
+    """Normalize a visible body for conservative same-section deduplication."""
+
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _clean_visible_body(text: str) -> str:
+    """Remove only exact blank list items and repeated visible paragraphs."""
+
+    value = str(text or "").replace("\r\n", "\n").strip()
+    if not value:
+        return ""
+    # Empty numbered items are generation debris, not teaching content.  A
+    # non-empty item is preserved verbatim for the evidence/reader audit.
+    value = re.sub(r"(?m)^[ \t]*\d+[.)、:：]?[ \t]*\r?\n?", "", value)
+    paragraphs = [part.strip() for part in re.split(r"\n{2,}", value) if part.strip()]
+    seen: set[str] = set()
+    kept: list[str] = []
+    for paragraph in paragraphs:
+        key = _visible_body_key(paragraph)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(paragraph)
+    return "\n\n".join(kept).strip()
+
+
+def _duplicate_body_bridge(
+    brief: OccurrenceWritingBrief,
+    prior_brief: OccurrenceWritingBrief | None,
+) -> str:
+    """Keep a later occurrence readable without repeating a full passage."""
+
+    prior_title = ""
+    if prior_brief is not None:
+        prior_title = prior_brief.canonical_title or prior_brief.source_title
+    current_title = brief.canonical_title or brief.source_title
+    if prior_title and current_title and prior_title != current_title:
+        return (
+            f"前文已经介绍“{prior_title}”的基础内容。本处把这些要点连接到“{current_title}”的学习任务。"
+        )
+    if current_title:
+        return f"关于“{current_title}”的基础内容已在本节前文说明。本处继续围绕当前任务展开。"
+    return "前文已经说明相关基础，本处继续围绕当前任务展开。"
 
 
 def complete_section_discourse_audits(

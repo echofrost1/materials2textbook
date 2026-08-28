@@ -132,6 +132,7 @@ from materials2textbook.knowledge_map.section_authoring import (
     build_section_authoring_messages,
     build_section_skeleton,
     build_slot_completion_messages,
+    contract_factual_realization,
     find_empty_required_writer_slots,
     merge_slot_completion_text,
     classify_section_writer_failure,
@@ -2213,6 +2214,26 @@ class TextbookWorkflow:
                 # Evidence ownership is now attached deterministically by the
                 # materializer from each block's intended obligations.  The
                 # writer has no alias-selection or evidence-ID retry path.
+                # Before the strict preflight, contract factual sentences to
+                # the already-approved plan.  This is deterministic and
+                # block-local: it can only replace an offending segment with
+                # an approved proposition or remove it, never retrieve facts
+                # or expand the packet scope.
+                draft, factual_realization_audit = contract_factual_realization(
+                    brief,
+                    packet,
+                    draft,
+                    claim_judge=runtime_claim_judge,
+                    skeleton=skeleton,
+                    max_rounds=2,
+                )
+                contraction_provenance = draft.get("generation_provenance")
+                if not isinstance(contraction_provenance, Mapping):
+                    contraction_provenance = {}
+                draft["generation_provenance"] = {
+                    **dict(contraction_provenance),
+                    "factual_realization_contraction": factual_realization_audit,
+                }
                 # Use the same occurrence-local semantic judge for the
                 # writer preflight that the sequential grant gate consumes;
                 # otherwise the official path can accept a draft locally and
@@ -2379,7 +2400,9 @@ class TextbookWorkflow:
             merged["discourse_audit"] = discourse
             merged_assemblies.append(merged)
         execution.section_assemblies = merged_assemblies
-        lines = [f"# {title}", "", "> 本教材按固定 BookPlan 生成；语义正文按运行时验证顺序形成。", ""]
+        # The reader-facing export must not expose planning/runtime metadata.
+        # Those details remain in the production manifest and audit artifacts.
+        lines = [f"# {title}", ""]
         rows_by_section: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for item in ordered_rows:
             brief = briefs.get(item["occurrence_id"])

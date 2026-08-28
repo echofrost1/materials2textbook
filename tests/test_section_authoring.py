@@ -29,6 +29,7 @@ from materials2textbook.knowledge_map.section_authoring import (
     build_factual_claim_plan,
     build_section_authoring_messages,
     build_section_skeleton,
+    contract_factual_realization,
     find_empty_required_writer_slots,
     build_section_activity_guidance,
     build_section_authoring_brief,
@@ -562,6 +563,68 @@ def test_claim_plan_contract_exposes_per_block_statement_details() -> None:
     prompt = build_section_authoring_messages(brief, packet, [_chunk()])[1]["content"]
     assert "approved_factual_claim_details" in prompt
     assert any(item.statement in prompt for item in plan.approved_claims)
+
+
+def test_factual_realization_contraction_keeps_approved_core_and_removes_extension() -> None:
+    _, _, packet, brief = _inputs()
+    plan = build_factual_claim_plan(brief, packet, [_chunk()])
+    brief = replace(brief, factual_claim_plan=plan)
+    skeleton = build_section_skeleton(brief, packet)
+    approved = plan.approved_claims[0].statement
+
+    class _Judge:
+        def judge(self, *, claim: str, evidence: list[dict[str, str]], context: dict[str, str]):
+            if "guarantees complete safety" in claim:
+                return {
+                    "status": "UNSUPPORTED",
+                    "supporting_evidence_ids": [],
+                    "rationale": "extension is not in the approved plan",
+                    "confidence": 0.99,
+                }
+            return {
+                "status": "SUPPORTED",
+                "supporting_evidence_ids": ["chunk-1"],
+                "rationale": "approved proposition",
+                "confidence": 0.99,
+            }
+
+    draft = {
+        "blocks": [{
+            "block_id": "b01",
+            "text": f"{approved} The operation guarantees complete safety.",
+        }],
+    }
+    contracted, audit = contract_factual_realization(
+        brief,
+        packet,
+        draft,
+        claim_judge=_Judge(),
+        skeleton=skeleton,
+    )
+    text = contracted["blocks"][0]["text"]
+    assert approved in text
+    assert "guarantees complete safety" not in text
+    assert audit["bounded"] is True
+    assert audit["evidence_scope_expanded"] is False
+    assert audit["removed_claims"] or audit["replaced_claims"]
+
+
+def test_factual_realization_does_not_empty_required_slot_when_no_safe_replacement() -> None:
+    _, _, packet, brief = _inputs()
+    skeleton = build_section_skeleton(brief, packet)
+    draft = {
+        "blocks": [{
+            "block_id": "b01",
+            "text": "The operation guarantees complete safety.",
+        }],
+    }
+    contracted, _audit = contract_factual_realization(
+        brief,
+        packet,
+        draft,
+        skeleton=skeleton,
+    )
+    assert contracted["blocks"][0]["text"]
 
 
 def test_contract_block_recovery_can_replace_exact_span_without_mutating_metadata() -> None:

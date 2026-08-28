@@ -82,6 +82,24 @@ def test_phase2b_keeps_adjacent_occurrences_in_one_auditable_passage() -> None:
     assert set(bodies) == {"occ:a", "occ:b"}
 
 
+def test_discourse_deduplicates_exact_body_and_removes_empty_list_items() -> None:
+    first = _brief("occ:a", LearningRole.TEACH, 1)
+    second = _brief("occ:b", LearningRole.TEACH, 2)
+    repeated = "Repeated paragraph.\n\nRepeated paragraph.\n\n1. \n\nNext point."
+    bodies, _audits = build_section_discourse_bodies(
+        [
+            {"occurrence_id": first.occurrence_id, "body": repeated, "source_title": first.source_title},
+            {"occurrence_id": second.occurrence_id, "body": repeated, "source_title": second.source_title},
+        ],
+        [first, second],
+    )
+
+    assert bodies[first.occurrence_id].count("Repeated paragraph") == 1
+    assert "1." not in bodies[first.occurrence_id]
+    assert bodies[second.occurrence_id] != bodies[first.occurrence_id]
+    assert "前文" in bodies[second.occurrence_id]
+
+
 def test_teach_to_apply_adds_prior_to_current_task_bridge_without_replanning() -> None:
     first = _brief("occ:a", LearningRole.TEACH, 1, title="Section S", canonical_title="安全确认")
     second = _brief("occ:b", LearningRole.APPLY, 2, title="Section S", canonical_title="当前任务", source_ids=["occ:a"])
