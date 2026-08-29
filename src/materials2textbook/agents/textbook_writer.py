@@ -4,9 +4,21 @@ import re
 from textwrap import shorten
 
 from materials2textbook.domain_config import DomainConfig, default_domain_config
+from materials2textbook.knowledge_map.rendered_conformance import (
+    RenderedConformanceReport,
+    RenderedOccurrence,
+    check_rendered_conformance,
+    extract_rendered_occurrences,
+    wrap_rendered_occurrence,
+)
+from materials2textbook.knowledge_map.writing_briefs import FallbackOccurrence, OccurrenceWritingBrief, RejectedPlanOccurrence
 from materials2textbook.llm.provider import LLMProvider
-from materials2textbook.prompts.textbook_writer import build_textbook_writer_messages
+from materials2textbook.prompts.textbook_writer import (
+    build_occurrence_writer_messages,
+    build_textbook_writer_messages,
+)
 from materials2textbook.schemas import ChapterPlan, EvidenceChunk
+from materials2textbook.student_display import student_display_title
 
 
 class TextbookWriterAgent:
@@ -23,18 +35,51 @@ class TextbookWriterAgent:
         self.domain_config = domain_config or default_domain_config()
         self.last_generation_mode = "rule"
         self.last_generation_warning = ""
+        self.last_rendered_occurrences: list[RenderedOccurrence] = []
+        self.last_conformance_report: RenderedConformanceReport | None = None
+        self.last_fallback_occurrences: list[FallbackOccurrence] = []
+        self.last_occurrence_generation_provenance: dict[str, str] = {}
 
-    def run(self, plans: list[ChapterPlan], chunks: list[EvidenceChunk], title: str) -> str:
+    def run(
+        self,
+        plans: list[ChapterPlan],
+        chunks: list[EvidenceChunk],
+        title: str,
+        *,
+        occurrence_writing_briefs: list[OccurrenceWritingBrief] | None = None,
+        fallback_occurrences: list[FallbackOccurrence] | None = None,
+        rejected_plan_occurrences: list[RejectedPlanOccurrence] | None = None,
+    ) -> str:
+        briefs = occurrence_writing_briefs or []
+        fallbacks = fallback_occurrences or []
+        rejected = rejected_plan_occurrences or []
+        self.last_rendered_occurrences = []
+        self.last_conformance_report = None
+        self.last_fallback_occurrences = list(fallbacks)
+        self.last_occurrence_generation_provenance = {}
+        if rejected:
+            ids = ", ".join(item.occurrence_id for item in rejected)
+            raise ValueError(
+                "Planning Evidence Gate rejected occurrence(s); normal writer is blocked pending manual review: " + ids
+            )
+        if briefs or fallbacks:
+            return self._run_briefed_writer(plans, chunks, title, briefs, fallbacks)
         if self.use_llm:
             if self.llm_provider is not None:
                 try:
-                    messages = build_textbook_writer_messages(plans, chunks, title, domain_config=self.domain_config)
+                    messages = build_textbook_writer_messages(
+                        plans,
+                        chunks,
+                        title,
+                        domain_config=self.domain_config,
+                        occurrence_writing_briefs=occurrence_writing_briefs,
+                    )
                     llm_markdown = self.llm_provider.generate(messages).rstrip()
                     if _llm_markdown_is_usable(llm_markdown, plans, chunks, title):
                         self.last_generation_mode = "llm"
                         self.last_generation_warning = ""
                         return llm_markdown + "\n"
-                    self.last_generation_warning = "LLM output was empty, too short, missing titles, or missing evidence citations."
+                    self.last_generation_warning = "LLM output was empty, too short, or missing expected teaching titles."
                 except Exception as exc:  # pragma: no cover - exact provider failures vary by backend.
                     self.last_generation_warning = f"LLM generation failed: {exc}"
             else:
@@ -46,6 +91,86 @@ class TextbookWriterAgent:
         self.last_generation_mode = "rule"
         self.last_generation_warning = ""
         return self._run_rule_writer(plans, chunks, title)
+
+    def _run_briefed_writer(
+        self,
+        plans: list[ChapterPlan],
+        chunks: list[EvidenceChunk],
+        title: str,
+        briefs: list[OccurrenceWritingBrief],
+        fallbacks: list[FallbackOccurrence],
+    ) -> str:
+        """Generate independently bounded occurrence bodies, then anchor by code.
+
+        The LLM is responsible only for the body inside one occurrence.  The
+        chapter/section/task mapping and Markdown span are created after the
+        call, which makes audit anchoring independent of model obedience.
+        """
+        plan_titles = {plan.chapter_id: plan.title for plan in plans}
+        display_title = student_display_title(
+            title,
+            knowledge_titles=[plan.title for plan in plans],
+            fallback="数字教材",
+        )
+        lines = [f"# {display_title}", ""]
+        failures: list[str] = []
+        llm_count = 0
+        current_chapter_id = ""
+        if fallbacks:
+            failures.append(f"explicit fallback occurrences: {len(fallbacks)}")
+        units = sorted(
+            [*briefs, *fallbacks],
+            key=lambda item: (item.task_ordinal, item.occurrence_ordinal, item.occurrence_id),
+        )
+        for unit in units:
+            if unit.chapter_id in plan_titles and unit.chapter_id != current_chapter_id:
+                lines.extend([
+                    f"## {student_display_title(plan_titles[unit.chapter_id], fallback='学习内容')}",
+                    "",
+                ])
+                current_chapter_id = unit.chapter_id
+            if isinstance(unit, FallbackOccurrence):
+                body = _run_fallback_occurrence(unit)
+                generation_provenance = "explicit_fallback"
+            else:
+                body = ""
+                generation_provenance = "rule_template_fallback"
+                if self.use_llm and self.llm_provider is not None:
+                    try:
+                        messages = build_occurrence_writer_messages(unit, chunks, title, domain_config=self.domain_config)
+                        candidate = self.llm_provider.generate(messages).rstrip()
+                        candidate_report = check_rendered_conformance(
+                            [unit], wrap_rendered_occurrence(unit, candidate),
+                        )
+                        if (
+                            _llm_occurrence_is_usable(candidate, unit)
+                            and candidate_report.results[0].overall == "MATCH"
+                            and _apply_contribution_is_explicit(candidate, unit)
+                        ):
+                            body = candidate
+                            llm_count += 1
+                            generation_provenance = "llm"
+                        else:
+                            failures.append(f"{unit.occurrence_id}: LLM body failed immutable brief conformance")
+                    except Exception as exc:  # pragma: no cover - provider failures vary.
+                        failures.append(f"{unit.occurrence_id}: {type(exc).__name__}: {exc}")
+                else:
+                    failures.append(f"{unit.occurrence_id}: LLM was not configured")
+                if not body:
+                    body = _run_rule_occurrence(unit)
+                    generation_provenance = "rule_template_fallback"
+            self.last_occurrence_generation_provenance[unit.occurrence_id] = generation_provenance
+            lines.extend([
+                f"### {student_display_title(unit.source_title, knowledge_titles=[getattr(unit, 'canonical_title', '')], fallback='学习内容')}",
+                "", wrap_rendered_occurrence(unit, body, generation_provenance=generation_provenance).rstrip(), "",
+            ])
+
+        rendered = "\n".join(lines).rstrip() + "\n"
+        self.last_rendered_occurrences = extract_rendered_occurrences(rendered)
+        self.last_conformance_report = check_rendered_conformance(briefs, rendered)
+        self.last_generation_mode = "llm_briefed" if llm_count == len(briefs) else "mixed_briefed"
+        self.last_generation_warning = "; ".join(failures)
+        return rendered
 
     def _run_rule_writer(self, plans: list[ChapterPlan], chunks: list[EvidenceChunk], title: str) -> str:
         chunk_map = {chunk.chunk_id: chunk for chunk in chunks}
@@ -201,15 +326,60 @@ def _llm_markdown_is_usable(
     expected_titles = [title]
     expected_titles.extend(plan.title for plan in plans)
     expected_titles.extend(point.title for plan in plans for point in plan.knowledge_points)
+    # A student-visible document heading is a safer quality signal than
+    # requiring internal evidence IDs to be printed into textbook prose.
     if not any(expected_title and expected_title in text for expected_title in expected_titles):
-        return False
-
-    chunk_ids = [chunk.chunk_id for chunk in chunks if chunk.chunk_id]
-    if chunk_ids:
-        required_citation_count = min(3, len(set(chunk_ids)))
-        if _count_distinct_referenced_chunks(text, chunk_ids) < required_citation_count:
+        if not any(line.startswith("#") and line.strip("# ") for line in text.splitlines()):
             return False
+
     return True
+
+
+def _llm_occurrence_is_usable(markdown: str, brief: OccurrenceWritingBrief) -> bool:
+    text = markdown.strip()
+    if len(text) < 40 or any(marker in text for marker in ("as an AI", "无法生成", "无法完成")):
+        return False
+    # Provenance belongs to occurrence metadata, not visible inline IDs. The
+    # post-render conformance checker validates the immutable brief itself.
+    return True
+
+
+def _apply_contribution_is_explicit(markdown: str, brief: OccurrenceWritingBrief) -> bool:
+    """Keep APPLY text from degrading to a generic prior-knowledge claim."""
+    if brief.role != "APPLY":
+        return True
+    subject = re.escape(brief.canonical_title or brief.source_title)
+    has_context = bool(re.search(r"本任务|当前.*任务|任务中|current\s+task", markdown, re.IGNORECASE))
+    has_relation = bool(re.search(r"使用|应用|依据|根据|用于|基础上|指导下|结合|通过|apply|use", markdown, re.IGNORECASE))
+    has_action = bool(re.search(r"完成|调整|控制|观察|检查|实施|焊接|执行|操作|apply|perform", markdown, re.IGNORECASE))
+    return bool(re.search(subject, markdown)) and has_context and has_relation and has_action
+
+
+def _run_rule_occurrence(brief: OccurrenceWritingBrief) -> str:
+    """Safe degraded body: it does not invent a full TEACH for a duplicate risk."""
+    subject = brief.canonical_title or brief.source_title
+    # Evidence identifiers remain renderer metadata.  They are not student
+    # prose and must never be used as a visible citation surrogate.
+    if brief.role == "APPLY":
+        return (
+            f"在当前任务中，使用此前已学习的{subject}完成本次操作，并观察操作结果是否符合素材中的要求。"
+        )
+    if brief.role == "RECALL":
+        return f"开始当前任务前，回顾此前学习的{subject}，只保留完成本次操作所需的要点。"
+    if brief.role == "INTRO":
+        return f"先观察{subject}在当前任务中的表现，建立后续学习所需的初步认识。"
+    if not brief.must_teach_facets and not brief.extension_keys:
+        return f"当前任务只在必要范围内使用已学习的{subject}，不重复展开完整讲解。"
+    if brief.extension_keys:
+        return f"在已学习{subject}的基础上，本次只关注新的条件或限制：{', '.join(brief.extension_keys)}。"
+    return f"围绕{subject}，重点学习本次计划新增的内容：{', '.join(brief.must_teach_facets)}。"
+
+
+def _run_fallback_occurrence(fallback: FallbackOccurrence) -> str:
+    """Explicit non-semantic fallback; never masquerades as a planned role."""
+    return (
+        f"本任务围绕“{fallback.source_title}”安排学习，请依据已提供的素材完成观察与练习。"
+    ).strip()
 
 
 def _count_distinct_referenced_chunks(text: str, chunk_ids: list[str]) -> int:

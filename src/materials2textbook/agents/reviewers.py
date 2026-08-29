@@ -213,6 +213,29 @@ class PedagogyReviewerAgent:
                             "补充 prerequisite_ids，或确认该知识点确实可以独立学习。",
                         )
                     )
+            path_position = {point_id: index for index, point_id in enumerate(plan.learning_path)}
+            for point in plan.knowledge_points:
+                for prerequisite_id in point.prerequisite_ids:
+                    if prerequisite_id not in path_position:
+                        issues.append(
+                            ReviewIssue(
+                                "medium",
+                                point.knowledge_point_id,
+                                "chapter_missing_prerequisite_in_learning_path",
+                                "A required prerequisite is not present in this chapter learning path.",
+                                "Add the prerequisite to this chapter or state that it is an external prerequisite.",
+                            )
+                        )
+                    elif path_position.get(prerequisite_id, -1) >= path_position.get(point.knowledge_point_id, -1):
+                        issues.append(
+                            ReviewIssue(
+                                "medium",
+                                point.knowledge_point_id,
+                                "chapter_prerequisite_order_error",
+                                "A knowledge point appears before, or at the same position as, its prerequisite.",
+                                "Reorder only this chapter's learning path so prerequisites come first.",
+                            )
+                        )
             issues.extend(_review_activity_quality(plan))
             issues.extend(_review_case_quality(plan))
             if self.use_llm:

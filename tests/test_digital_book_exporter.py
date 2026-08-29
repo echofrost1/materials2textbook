@@ -643,7 +643,10 @@ def test_export_digital_book_embeds_whole_book_plan_for_reader_outline(tmp_path:
     assert "tocChapter" in app_js
     assert "displayChapterTitle(chapter)" in app_js
     assert "displaySectionTitle(section)" in app_js
-    assert "displaySectionTitle(item)" in app_js
+    assert "outlineNodeLabel(project, 'project')" in app_js
+    assert "outlineNodeLabel(task, 'task')" in app_js
+    expected_outline_block_id = payload["projects"][0]["tasks"][0]["blocks"][0]["block_id"]
+    assert payload["standard_outline"]["projects"][0]["tasks"][0]["learning_units"][0]["source_node_id"] == expected_outline_block_id
     assert "`第${chapter.chapter_no}章 ${chapter.title}`" not in app_js
     assert "`${section.section_no} ${section.title}`" not in app_js
     assert "toc-chapter-toggle" in app_js
@@ -778,7 +781,7 @@ def test_export_digital_book_default_student_copy_is_readable_utf8(tmp_path: Pat
     assert "本章围绕“钨极氩弧焊基本操作”展开学习" in visible_text
     assert "情境导入" in visible_text
     assert "学习路径" not in visible_text
-    assert "示范观察与要点提取" in visible_text
+    assert "Complete 钨极氩弧焊基本操作" in visible_text
     assert "数字教材" in index_path.read_text(encoding="utf-8")
     assert not any(token in visible_text for token in ["鎯", "瀛", "璇", "閽", "鏁", "鈥"])
 
