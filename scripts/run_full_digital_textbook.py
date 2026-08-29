@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -41,6 +43,52 @@ def load_dotenv(path: Path) -> None:
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def _source_record_key(record: object) -> str:
+    """Return a stable identity for duplicate document/PPT source records."""
+    if isinstance(record, dict):
+        for field in ("ppt_asset_id", "document_segment_id", "segment_id", "chunk_id", "evidence_id", "id"):
+            value = record.get(field)
+            if value is not None and str(value).strip():
+                return f"{field}:{value}"
+        source_asset_id = record.get("source_asset_id") or record.get("asset_id")
+        slide_or_page = record.get("slide_index")
+        if slide_or_page is None:
+            slide_or_page = record.get("page_or_slide")
+        if source_asset_id is not None and slide_or_page is not None:
+            return f"source:{source_asset_id}:page:{slide_or_page}"
+        identity_payload = {
+            field: record.get(field)
+            for field in (
+                "title",
+                "slide_title",
+                "evidence_text",
+                "text",
+                "summary",
+            )
+            if record.get(field) is not None
+        }
+        canonical = json.dumps(identity_payload or record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    else:
+        canonical = repr(record)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"content:{digest}"
+
+
+def _dedupe_source_records(records: list[dict]) -> tuple[list[dict], int]:
+    """Drop exact/stable duplicate document records while preserving order."""
+    seen: set[str] = set()
+    unique: list[dict] = []
+    duplicates = 0
+    for record in records:
+        key = _source_record_key(record)
+        if key in seen:
+            duplicates += 1
+            continue
+        seen.add(key)
+        unique.append(record)
+    return unique, duplicates
 
 
 class ProgressLLMProvider:
@@ -128,6 +176,12 @@ def main() -> None:
         action="append",
         default=[],
         help="Additional document/PPT/table JSONL evidence. Can be passed multiple times.",
+    )
+    parser.add_argument(
+        "--expected-source-record-count",
+        type=int,
+        default=None,
+        help="Fail before model/workflow startup when the deduplicated source-record count differs.",
     )
     parser.add_argument("--output-dir", type=Path, default=None, help="Override agent workflow output directory.")
     parser.add_argument("--book-mode", action="store_true", help="Enable whole-book planning before chapter generation.")
@@ -300,16 +354,43 @@ def main() -> None:
     selected_video_segments_path = output_dir / "selected_video_segments.jsonl"
     write_jsonl(selected_video_segments_path, video_records)
 
-    document_paths = [path.resolve() for path in args.document_segments]
-    if ppt_assets_path.exists():
-        document_paths.insert(0, ppt_assets_path)
-    print(f"[runner] document evidence sources={len(document_paths)}", flush=True)
+    explicit_document_paths = [path.resolve() for path in args.document_segments]
+    auto_document_paths = [ppt_assets_path] if ppt_assets_path.exists() else []
+    document_paths: list[Path] = []
+    seen_paths: set[Path] = set()
+    duplicate_source_paths: list[str] = []
+    for path in [*auto_document_paths, *explicit_document_paths]:
+        if path in seen_paths:
+            duplicate_source_paths.append(str(path))
+            continue
+        seen_paths.add(path)
+        document_paths.append(path)
+    print(f"[runner] auto-discovered document sources={len(auto_document_paths)}", flush=True)
+    print(f"[runner] explicit document sources={len(explicit_document_paths)}", flush=True)
+    print(f"[runner] deduplicated document sources={len(document_paths)}", flush=True)
     combined_document_path = None
-    document_records = []
+    document_records: list[dict] = []
+    source_record_audit: list[dict[str, object]] = []
     for path in document_paths:
         if not path.exists():
             raise SystemExit(f"Missing document evidence file: {path}")
-        document_records.extend(read_jsonl(path))
+        records = read_jsonl(path)
+        document_records.extend(records)
+        source_record_audit.append({
+            "path": str(path),
+            "source_kind": "auto_discovered" if path in auto_document_paths else "explicit",
+            "records": len(records),
+        })
+    document_records_before_deduplication = len(document_records)
+    document_records, duplicate_record_count = _dedupe_source_records(document_records)
+    document_records_after_deduplication = len(document_records)
+    if duplicate_source_paths or duplicate_record_count:
+        print(
+            "[runner] duplicate material source detected: "
+            f"duplicate_paths={len(duplicate_source_paths)} "
+            f"duplicate_records_removed={duplicate_record_count}",
+            flush=True,
+        )
     document_records = filter_records(
         document_records,
         chapter=args.chapter,
@@ -319,9 +400,38 @@ def main() -> None:
     if document_records:
         combined_document_path = output_dir / "combined_document_segments.jsonl"
         write_jsonl(combined_document_path, document_records)
+    source_record_count = len(video_records) + len(document_records)
+    material_input_audit_path = output_dir / "material_input_audit.json"
+    material_input_audit = {
+        "schema": "materials2textbook.material_input_audit.v1",
+        "explicit_sources": [str(path) for path in explicit_document_paths],
+        "auto_discovered_sources": [str(path) for path in auto_document_paths],
+        "deduplicated_sources": [str(path) for path in document_paths],
+        "duplicate_source_paths": duplicate_source_paths,
+        "source_record_audit": source_record_audit,
+        "video_records": len(video_records),
+        "document_records_before_deduplication": document_records_before_deduplication,
+        "document_records_after_deduplication": document_records_after_deduplication,
+        "selected_document_records": len(document_records),
+        "duplicate_document_records_removed": duplicate_record_count,
+        "final_source_record_count": source_record_count,
+        "expected_source_record_count": args.expected_source_record_count,
+        "source_record_count_valid": (
+            args.expected_source_record_count is None
+            or source_record_count == args.expected_source_record_count
+        ),
+    }
+    write_json(material_input_audit_path, material_input_audit)
     print(f"[runner] selected document records={len(document_records)}", flush=True)
+    print(f"[runner] deduplicated source records={source_record_count}", flush=True)
+    print(f"[runner] material input audit={material_input_audit_path}", flush=True)
     if not video_records and not document_records:
         raise SystemExit("No video or document evidence records matched the selected filters.")
+    if args.expected_source_record_count is not None and source_record_count != args.expected_source_record_count:
+        raise SystemExit(
+            "Source record count mismatch before workflow/model startup: "
+            f"expected={args.expected_source_record_count} actual={source_record_count}"
+        )
 
     provider = build_llm_provider(args, output_dir)
     domain_config = load_domain_config(
@@ -382,6 +492,18 @@ def main() -> None:
         completeness_first_authoring=args.completeness_first_authoring,
         preview_fullbook=args.preview_fullbook,
     )
+    try:
+        workflow_manifest = json.loads(Path(outputs.manifest_path).read_text(encoding="utf-8"))
+        final_chunk_count = workflow_manifest.get("summary", {}).get("evidence_chunks")
+        material_input_audit["final_chunk_count"] = final_chunk_count
+        material_input_audit["final_chunk_count_matches_source_records"] = (
+            final_chunk_count == source_record_count
+        )
+        write_json(material_input_audit_path, material_input_audit)
+        print(f"[runner] final chunk count={final_chunk_count}", flush=True)
+    except (OSError, TypeError, ValueError) as exc:
+        material_input_audit["final_chunk_count_error"] = f"{type(exc).__name__}: {exc}"
+        write_json(material_input_audit_path, material_input_audit)
 
     print("Full digital textbook generated:")
     print(f"- material_root: {material_root}")
@@ -389,6 +511,8 @@ def main() -> None:
     print(f"- selected_video_records: {len(video_records)}")
     print(f"- document_sources: {len(document_paths)}")
     print(f"- selected_document_records: {len(document_records)}")
+    print(f"- deduplicated_source_records: {source_record_count}")
+    print(f"- material_input_audit: {material_input_audit_path}")
     print(f"- copy_media_assets: {args.copy_media_assets}")
     print(f"- max_input_tokens: {args.max_input_tokens}")
     print(f"- max_tokens_per_evidence_chunk: {args.max_tokens_per_evidence_chunk}")

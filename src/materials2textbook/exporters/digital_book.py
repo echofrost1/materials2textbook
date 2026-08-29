@@ -10,7 +10,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from materials2textbook.io_utils import to_jsonable, write_json, write_text
+from materials2textbook.io_utils import write_json, write_text
 from materials2textbook.domain_config import DomainConfig, default_domain_config
 from materials2textbook.llm.provider import LLMProvider
 from materials2textbook.knowledge_map.rendered_conformance import (
@@ -112,18 +112,24 @@ def build_digital_book(
         knowledge_titles=project_titles,
         fallback="数字教材",
     )
-    general_preface = _generate_general_preface(
-        llm_provider=llm_provider,
-        use_llm=use_llm,
-        book_title=display_book_title,
-        project_titles=project_titles,
-        chunks=chunks,
+    general_preface = normalize_section_markdown(
+        _generate_general_preface(
+            llm_provider=llm_provider,
+            use_llm=use_llm,
+            book_title=display_book_title,
+            project_titles=project_titles,
+            chunks=chunks,
+        ),
+        "总序",
     )
-    preface = _generate_preface(
-        llm_provider=llm_provider,
-        use_llm=use_llm,
-        book_title=display_book_title,
-        project_titles=project_titles,
+    preface = normalize_section_markdown(
+        _generate_preface(
+            llm_provider=llm_provider,
+            use_llm=use_llm,
+            book_title=display_book_title,
+            project_titles=project_titles,
+        ),
+        "前言",
     )
 
     for project_index, plan in enumerate(plans, start=1):
@@ -155,22 +161,28 @@ def build_digital_book(
         knowledge_points: list[str] = []
         for task in tasks:
             knowledge_points.extend(task.knowledge_points)
-        project_intro = _generate_project_intro(
-            llm_provider=llm_provider,
-            use_llm=use_llm,
-            project_title=project_title,
-            learning_goals=plan.learning_goals,
-            task_titles=task_titles,
-            chunks=project_chunks,
-            fallback_title=plan.title,
+        project_intro = normalize_section_markdown(
+            _generate_project_intro(
+                llm_provider=llm_provider,
+                use_llm=use_llm,
+                project_title=project_title,
+                learning_goals=plan.learning_goals,
+                task_titles=task_titles,
+                chunks=project_chunks,
+                fallback_title=plan.title,
+            ),
+            "项目导学",
         )
-        project_summary = _generate_project_summary(
-            llm_provider=llm_provider,
-            use_llm=use_llm,
-            project_title=project_title,
-            learning_goals=plan.learning_goals,
-            task_titles=task_titles,
-            knowledge_points=knowledge_points,
+        project_summary = normalize_section_markdown(
+            _generate_project_summary(
+                llm_provider=llm_provider,
+                use_llm=use_llm,
+                project_title=project_title,
+                learning_goals=plan.learning_goals,
+                task_titles=task_titles,
+                knowledge_points=knowledge_points,
+            ),
+            "项目小结",
         )
         default_ability_map = _derived_ability_map(project_title, tasks)
         ability_map, ability_map_method = _generate_ability_map(
@@ -381,10 +393,12 @@ def export_digital_book(
     index_path = output_dir / "index.html"
     standard_outline = generate_standard_outline(book)
     outline_validation = validate_outline(standard_outline, book)
-    book_payload = to_jsonable(book)
-    book_payload["standard_outline"] = standard_outline.to_dict()
-    book_payload["outline_validation"] = outline_validation.to_dict()
-    write_json(json_path, book_payload)
+    # Keep the generated outline on the canonical DigitalBook object.  The
+    # orchestrator may enrich and serialize this same object a second time;
+    # storing the fields here prevents a stale serialization from dropping it.
+    book.standard_outline = standard_outline.to_dict()
+    book.outline_validation = outline_validation.to_dict()
+    write_json(json_path, book)
     asset_version = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     write_text(index_path, VIEWER_HTML.replace("__ASSET_VERSION__", asset_version))
     write_text(output_dir / "styles.css", VIEWER_CSS)
@@ -2089,6 +2103,34 @@ def _sanitize_section_text(raw: str) -> str:
         text = re.sub(r"^```(?:markdown)?\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"\s*```$", "", text).strip()
     return text.strip()
+
+
+def normalize_section_markdown(markdown: str, explicit_title: str) -> str:
+    """Return title-free body text when a wrapper owns the section heading.
+
+    Generated section fields are allowed to contain Markdown, so a model may
+    repeat the wrapper's title as its first heading.  Remove only that first
+    meaningful heading when its normalized text exactly matches the explicit
+    system-owned title; all other headings and body content remain untouched.
+    """
+    text = str(markdown or "").strip()
+    title_key = _normalize_section_title(explicit_title)
+    if not text or not title_key:
+        return text
+    lines = text.splitlines()
+    first_index = next((index for index, line in enumerate(lines) if line.strip()), None)
+    if first_index is None:
+        return ""
+    match = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", lines[first_index])
+    if match is None or _normalize_section_title(match.group(2)) != title_key:
+        return text
+    del lines[first_index]
+    return "\n".join(lines).strip()
+
+
+def _normalize_section_title(value: str) -> str:
+    text = str(value or "").strip().rstrip("#").strip()
+    return re.sub(r"[\s\u3000，。！？：:；;、,.!?·—–\-_]+", "", text).casefold()
 
 
 def _summarize_chunks(chunks: list[EvidenceChunk]) -> str:
@@ -4615,12 +4657,34 @@ function renderContent(book) {
   }
 }
 
+function normalizeSectionTitle(value) {
+  return String(value || '')
+    .trim()
+    .replace(/#+$/, '')
+    .trim()
+    .replace(/[\s\u3000，。！？：:；;、,.!?·—–\-_]+/g, '')
+    .toLocaleLowerCase();
+}
+
+function normalizeSectionMarkdown(markdown, explicitTitle) {
+  const text = String(markdown || '').trim();
+  const titleKey = normalizeSectionTitle(explicitTitle);
+  if (!text || !titleKey) return text;
+  const lines = text.replace(/\\r\\n?/g, '\\n').split('\\n');
+  const firstIndex = lines.findIndex((line) => line.trim());
+  if (firstIndex < 0) return '';
+  const match = lines[firstIndex].match(/^\\s{0,3}(#{1,6})\\s+(.+?)\\s*#*\\s*$/);
+  if (!match || normalizeSectionTitle(match[2]) !== titleKey) return text;
+  lines.splice(firstIndex, 1);
+  return lines.join('\\n').trim();
+}
+
 function renderMarkdownSection(id, level, title, markdown) {
   const section = el('section', 'markdown-section');
   if (id) section.id = id;
   section.appendChild(heading(level, title));
   const md = el('div', 'markdown');
-  md.innerHTML = renderMarkdown(markdown || '');
+  md.innerHTML = renderMarkdown(normalizeSectionMarkdown(markdown || '', title));
   section.appendChild(md);
   return section;
 }

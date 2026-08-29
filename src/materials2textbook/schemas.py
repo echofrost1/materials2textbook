@@ -254,6 +254,10 @@ class DigitalBook:
     general_preface: str = ""
     preface: str = ""
     references: list[dict[str, Any]] = field(default_factory=list)
+    # The outline is generated from this canonical object and must survive
+    # any later serialization performed by the workflow orchestrator.
+    standard_outline: dict[str, Any] = field(default_factory=dict)
+    outline_validation: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

@@ -1,6 +1,11 @@
 import json
 
-from materials2textbook.exporters.digital_book import export_digital_book
+from materials2textbook.exporters.digital_book import (
+    VIEWER_JS,
+    export_digital_book,
+    normalize_section_markdown,
+)
+from materials2textbook.io_utils import write_json
 from materials2textbook.outline import generate_standard_outline, validate_outline
 from materials2textbook.schemas import ChapterPlan, KnowledgePoint
 
@@ -83,6 +88,44 @@ def test_exporter_persists_standard_outline_and_validation(tmp_path) -> None:
     assert payload["standard_outline"]["schema_version"] == "materials2textbook.standard_outline.v1"
     assert payload["standard_outline"]["projects"][0]["display_number"] == "项目一"
     assert payload["outline_validation"]["release_allowed"] is True
+
+
+def test_standard_outline_survives_second_canonical_serialization(tmp_path) -> None:
+    plan = ChapterPlan(
+        chapter_id="chapter_01",
+        title="鍩虹椤圭洰",
+        learning_goals=["鐞嗚В鍩烘湰瀵硅薄"],
+        knowledge_points=[KnowledgePoint("kp_01", "瀵硅薄璁ょ煡", [])],
+        evidence_chunk_ids=[],
+    )
+    book, json_path, _ = export_digital_book(
+        title="绀轰緥鏁欐潗",
+        plans=[plan],
+        chunks=[],
+        output_dir=tmp_path / "digital_book",
+    )
+    first_payload = json.loads(json_path.read_text(encoding="utf-8"))
+    book.projects[0].project_intro = "Updated body"
+    write_json(json_path, book)
+    second_payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert second_payload["standard_outline"] == first_payload["standard_outline"]
+    assert second_payload["outline_validation"] == first_payload["outline_validation"]
+
+
+def test_section_title_normalization_removes_matching_first_heading() -> None:
+    assert normalize_section_markdown("# 总序\n\n正文", "总序") == "正文"
+    assert normalize_section_markdown("## 前言\n正文", "前言") == "正文"
+
+
+def test_section_title_normalization_preserves_nonmatching_headings_and_body() -> None:
+    assert normalize_section_markdown("# 其他标题\n\n正文", "总序") == "# 其他标题\n\n正文"
+    assert normalize_section_markdown("普通段落\n\n## 子标题\n内容", "总序") == "普通段落\n\n## 子标题\n内容"
+    assert normalize_section_markdown("# 总序\n\n## 子标题\n内容", "总序") == "## 子标题\n内容"
+
+
+def test_viewer_normalizes_system_owned_section_titles_before_markdown_rendering() -> None:
+    assert "function normalizeSectionMarkdown(markdown, explicitTitle)" in VIEWER_JS
+    assert "renderMarkdown(normalizeSectionMarkdown(markdown || '', title))" in VIEWER_JS
 
 
 def test_outline_overlay_does_not_mutate_canonical_book() -> None:
