@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -40,3 +41,27 @@ def test_source_records_dedupe_content_when_no_stable_id_exists() -> None:
     records, duplicate_count = runner._dedupe_source_records([original, duplicate])
     assert records == [original]
     assert duplicate_count == 1
+
+
+def test_material_input_audit_can_be_persisted_without_provider_startup(tmp_path) -> None:
+    audit_path = tmp_path / "material_input_audit.json"
+    audit = {
+        "schema": "materials2textbook.material_input_audit.v1",
+        "final_source_record_count": 911,
+        "source_record_count_valid": True,
+    }
+    runner.write_json(audit_path, audit)
+    assert json.loads(audit_path.read_text(encoding="utf-8")) == audit
+
+
+def test_expected_source_record_count_match_allows_execution() -> None:
+    runner._validate_expected_source_record_count(911, 911)
+
+
+def test_expected_source_record_count_mismatch_fails_before_execution() -> None:
+    try:
+        runner._validate_expected_source_record_count(912, 911)
+    except SystemExit as exc:
+        assert "expected=911 actual=912" in str(exc)
+    else:
+        raise AssertionError("count mismatch must fail closed")

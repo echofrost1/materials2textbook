@@ -16,7 +16,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from materials2textbook.io_utils import read_jsonl, write_jsonl
+from materials2textbook.io_utils import read_jsonl, write_json, write_jsonl
 from materials2textbook.domain_config import load_domain_config
 from materials2textbook.llm.cache import CachingLLMProvider
 from materials2textbook.llm.provider import OpenAICompatibleConfig, OpenAICompatibleProvider
@@ -89,6 +89,15 @@ def _dedupe_source_records(records: list[dict]) -> tuple[list[dict], int]:
         seen.add(key)
         unique.append(record)
     return unique, duplicates
+
+
+def _validate_expected_source_record_count(actual: int, expected: int | None) -> None:
+    """Fail before provider/workflow startup when an expected count is supplied."""
+    if expected is not None and actual != expected:
+        raise SystemExit(
+            "Source record count mismatch before workflow/model startup: "
+            f"expected={expected} actual={actual}"
+        )
 
 
 class ProgressLLMProvider:
@@ -427,11 +436,7 @@ def main() -> None:
     print(f"[runner] material input audit={material_input_audit_path}", flush=True)
     if not video_records and not document_records:
         raise SystemExit("No video or document evidence records matched the selected filters.")
-    if args.expected_source_record_count is not None and source_record_count != args.expected_source_record_count:
-        raise SystemExit(
-            "Source record count mismatch before workflow/model startup: "
-            f"expected={args.expected_source_record_count} actual={source_record_count}"
-        )
+    _validate_expected_source_record_count(source_record_count, args.expected_source_record_count)
 
     provider = build_llm_provider(args, output_dir)
     domain_config = load_domain_config(
