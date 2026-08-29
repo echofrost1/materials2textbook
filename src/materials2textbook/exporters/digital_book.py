@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from materials2textbook.io_utils import write_json, write_text
+from materials2textbook.io_utils import to_jsonable, write_json, write_text
 from materials2textbook.domain_config import DomainConfig, default_domain_config
 from materials2textbook.llm.provider import LLMProvider
 from materials2textbook.prompts.ability_graph import build_ability_graph_messages
@@ -20,6 +20,7 @@ from materials2textbook.prompts.book_sections import (
     build_project_summary_messages,
 )
 from materials2textbook.prompts.digital_book_polisher import build_digital_book_polisher_messages
+from materials2textbook.outline import generate_standard_outline, validate_outline
 from materials2textbook.schemas import (
     BookChapterPlan,
     BookPlan,
@@ -218,7 +219,12 @@ def export_digital_book(
     )
     json_path = output_dir / "digital_book.json"
     index_path = output_dir / "index.html"
-    write_json(json_path, book)
+    standard_outline = generate_standard_outline(book)
+    outline_validation = validate_outline(standard_outline, book)
+    book_payload = to_jsonable(book)
+    book_payload["standard_outline"] = standard_outline.to_dict()
+    book_payload["outline_validation"] = outline_validation.to_dict()
+    write_json(json_path, book_payload)
     asset_version = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     write_text(index_path, VIEWER_HTML.replace("__ASSET_VERSION__", asset_version))
     write_text(output_dir / "styles.css", VIEWER_CSS)
@@ -3031,6 +3037,7 @@ body {
   padding-left: 16px;
 }
 .book-outline > ol > li > ol > li > ol {
+  list-style: none;
   margin: 8px 0 0;
   padding-left: 22px;
 }
@@ -3849,6 +3856,9 @@ function renderBook(book) {
   renderToc(book);
   renderContent(book);
   state.askIndex = buildAskIndex(book);
+  if (book.outline_validation && !book.outline_validation.preview_allowed) {
+    console.warn('Standard outline validation blocks preview', book.outline_validation);
+  }
   restoreReaderState();
   bindScrollTracking();
   requestAnimationFrame(drawAbilityMapConnectors);
@@ -3862,6 +3872,9 @@ function renderToc(book) {
   }
   if (book.preface) {
     toc.appendChild(tocLink('前言', 'preface', 'front-matter'));
+  }
+  if (book.standard_outline?.projects?.length) {
+    toc.appendChild(tocLink('教材大纲', 'book_outline', 'front-matter'));
   }
   for (const [index, project] of (book.projects || []).entries()) {
     toc.appendChild(tocProject(project, index, index === 0));
@@ -3980,6 +3993,8 @@ function renderContent(book) {
   if (book.preface) {
     root.appendChild(renderMarkdownSection('preface', 'h2', '前言', book.preface));
   }
+  const outlineSection = renderBookOutline(book);
+  if (outlineSection) root.appendChild(outlineSection);
   const bookChapters = book.metadata?.book_plan?.chapters || [];
   for (const project of book.projects || []) {
     const chapterPlan = bookChapters.find((chapter) => chapter.chapter_id === project.project_id);
@@ -4747,33 +4762,48 @@ function sectionAnchor(id) {
 }
 
 function renderBookOutline(book) {
-  const plan = book.metadata?.book_plan;
-  if (!plan?.chapters?.length) return null;
+  const outline = book.standard_outline;
+  if (!outline?.projects?.length) return null;
   const section = el('section', 'book-outline');
   section.id = 'book_outline';
   section.appendChild(heading('h2', '教材大纲'));
-  const chapterList = document.createElement('ol');
-  for (const chapter of plan.chapters) {
-    const chapterItem = document.createElement('li');
-    chapterItem.appendChild(document.createTextNode(displayChapterTitle(chapter)));
-    const sectionList = document.createElement('ol');
-    for (const item of chapter.sections || []) {
-      const sectionItem = document.createElement('li');
-      sectionItem.appendChild(document.createTextNode(displaySectionTitle(item)));
-      const pointList = document.createElement('ol');
-      for (const point of item.knowledge_points || []) {
-        const pointItem = document.createElement('li');
-        pointItem.textContent = point;
-        pointList.appendChild(pointItem);
-      }
-      if (pointList.children.length) sectionItem.appendChild(pointList);
-      sectionList.appendChild(sectionItem);
+  const projectList = document.createElement('ol');
+  for (const project of outline.projects || []) {
+    const projectItem = document.createElement('li');
+    projectItem.appendChild(document.createTextNode(outlineNodeLabel(project, 'project')));
+    const taskList = document.createElement('ol');
+    for (const task of project.tasks || []) {
+      const taskItem = document.createElement('li');
+      taskItem.appendChild(document.createTextNode(outlineNodeLabel(task, 'task')));
+      taskList.appendChild(taskItem);
     }
-    if (sectionList.children.length) chapterItem.appendChild(sectionList);
-    chapterList.appendChild(chapterItem);
+    if (taskList.children.length) projectItem.appendChild(taskList);
+    projectList.appendChild(projectItem);
   }
-  section.appendChild(chapterList);
+  section.appendChild(projectList);
   return section;
+}
+
+function outlineNodeLabel(node, level) {
+  const title = cleanTitle(node?.title);
+  if (level === 'project') {
+    return [node?.display_number, stripChapterPrefix(title)].filter(Boolean).join(' ');
+  }
+  if (level === 'task') {
+    return title || numberPathLabel(node?.number_path);
+  }
+  if (level === 'learning_unit') {
+    return [numberPathLabel(node?.number_path), title].filter(Boolean).join(' ');
+  }
+  return [node?.display_number, title].filter(Boolean).join(' ');
+}
+
+function stripChapterPrefix(title) {
+  return cleanTitle(title).replace(/^第[一二三四五六七八九十百千万\d]+章\s*/, '').trim();
+}
+
+function numberPathLabel(numberPath) {
+  return Array.isArray(numberPath) ? numberPath.join('.') : '';
 }
 
 function renderLocalAskResults(results, terms, answer) {
