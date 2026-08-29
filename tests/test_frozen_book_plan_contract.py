@@ -63,6 +63,103 @@ def test_matching_frozen_snapshot_and_calibration_is_accepted(tmp_path: Path) ->
     assert result["deep_equal"] is True
 
 
+def test_canonical_count_schema_is_accepted_without_mutating_plan(tmp_path: Path) -> None:
+    plan, *_ = _fixture()
+    before = book_plan_snapshot_payload(plan)
+    _snapshot, calibration = _write_contract(tmp_path, plan=plan)
+    payload = json.loads(calibration.read_text(encoding="utf-8"))
+    payload["freeze"] = {
+        "safe_to_freeze": True,
+        "remaining_manual_review_count": 0,
+        "true_source_gap_count": 0,
+    }
+    calibration.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_frozen_book_plan(
+        plan,
+        book_plan_input=tmp_path / "book_plan.json",
+        calibration_input=calibration,
+    )
+
+    assert result["state"] == "FROZEN_VALIDATED"
+    assert book_plan_snapshot_payload(plan) == before
+
+
+def test_legacy_scalar_count_schema_remains_compatible(tmp_path: Path) -> None:
+    plan, *_ = _fixture()
+    _snapshot, calibration = _write_contract(tmp_path, plan=plan)
+    payload = json.loads(calibration.read_text(encoding="utf-8"))
+    payload["freeze"]["remaining_manual_review"] = 0
+    payload["freeze"]["true_source_gaps"] = 0
+    calibration.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_frozen_book_plan(
+        plan,
+        book_plan_input=tmp_path / "book_plan.json",
+        calibration_input=calibration,
+    )
+
+    assert result["validation_passed"] is True
+
+
+def test_canonical_manual_review_count_still_fails_closed(tmp_path: Path) -> None:
+    plan, *_ = _fixture()
+    _snapshot, calibration = _write_contract(tmp_path, plan=plan)
+    payload = json.loads(calibration.read_text(encoding="utf-8"))
+    payload["freeze"]["remaining_manual_review_count"] = 1
+    payload["freeze"].pop("remaining_manual_review", None)
+    calibration.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(FrozenBookPlanValidationError, match="remaining manual reviews"):
+        validate_frozen_book_plan(plan, book_plan_input=tmp_path / "book_plan.json", calibration_input=calibration)
+
+
+def test_canonical_source_gap_count_still_fails_closed(tmp_path: Path) -> None:
+    plan, *_ = _fixture()
+    _snapshot, calibration = _write_contract(tmp_path, plan=plan)
+    payload = json.loads(calibration.read_text(encoding="utf-8"))
+    payload["freeze"]["true_source_gap_count"] = 1
+    payload["freeze"].pop("true_source_gaps", None)
+    calibration.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(FrozenBookPlanValidationError, match="true source gaps"):
+        validate_frozen_book_plan(plan, book_plan_input=tmp_path / "book_plan.json", calibration_input=calibration)
+
+
+def test_missing_canonical_and_legacy_counts_fail_closed(tmp_path: Path) -> None:
+    plan, *_ = _fixture()
+    _snapshot, calibration = _write_contract(tmp_path, plan=plan)
+    payload = json.loads(calibration.read_text(encoding="utf-8"))
+    payload["freeze"].pop("remaining_manual_review", None)
+    payload["freeze"].pop("true_source_gaps", None)
+    calibration.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(FrozenBookPlanValidationError, match="does not report remaining manual reviews"):
+        validate_frozen_book_plan(plan, book_plan_input=tmp_path / "book_plan.json", calibration_input=calibration)
+
+
+def test_malformed_count_value_fails_closed(tmp_path: Path) -> None:
+    plan, *_ = _fixture()
+    _snapshot, calibration = _write_contract(tmp_path, plan=plan)
+    payload = json.loads(calibration.read_text(encoding="utf-8"))
+    payload["freeze"]["remaining_manual_review_count"] = "zero"
+    calibration.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(FrozenBookPlanValidationError, match="not a valid count"):
+        validate_frozen_book_plan(plan, book_plan_input=tmp_path / "book_plan.json", calibration_input=calibration)
+
+
+def test_conflicting_count_generations_fail_closed(tmp_path: Path) -> None:
+    plan, *_ = _fixture()
+    _snapshot, calibration = _write_contract(tmp_path, plan=plan)
+    payload = json.loads(calibration.read_text(encoding="utf-8"))
+    payload["freeze"]["remaining_manual_review_count"] = 1
+    calibration.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(FrozenBookPlanValidationError, match="calibration count mismatch"):
+        validate_frozen_book_plan(plan, book_plan_input=tmp_path / "book_plan.json", calibration_input=calibration)
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

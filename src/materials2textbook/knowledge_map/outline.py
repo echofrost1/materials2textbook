@@ -72,8 +72,22 @@ def validate_frozen_book_plan(
     freeze = calibration.get("freeze") if isinstance(calibration.get("freeze"), dict) else calibration
     if freeze.get("safe_to_freeze") is not True:
         raise FrozenBookPlanValidationError("calibration safe_to_freeze is not true")
-    manual_review_count = _freeze_count(freeze.get("remaining_manual_review"))
-    source_gap_count = _freeze_count(freeze.get("true_source_gaps"))
+    # ``*_count`` is the canonical persisted representation emitted by the
+    # current production contract.  Earlier source-bounded calibration
+    # artifacts used the shorter names (sometimes as lists, sometimes as
+    # scalar counts); accept those only at this loading boundary and normalize
+    # them to the same integer semantics.  If both generations are present,
+    # they must agree rather than silently selecting one.
+    manual_review_count = _freeze_count_compat(
+        freeze,
+        canonical_name="remaining_manual_review_count",
+        legacy_name="remaining_manual_review",
+    )
+    source_gap_count = _freeze_count_compat(
+        freeze,
+        canonical_name="true_source_gap_count",
+        legacy_name="true_source_gaps",
+    )
     if manual_review_count is None:
         raise FrozenBookPlanValidationError("calibration does not report remaining manual reviews")
     if source_gap_count is None:
@@ -207,6 +221,40 @@ def _freeze_count(value: Any) -> int | None:
     if isinstance(value, int):
         return value
     return None
+
+
+def _freeze_count_compat(
+    freeze: dict[str, Any],
+    *,
+    canonical_name: str,
+    legacy_name: str,
+) -> int | None:
+    """Read a freeze count using the canonical schema and one legacy alias.
+
+    The compatibility is deliberately confined to the calibration loading
+    boundary.  The canonical fields are integer counts; the legacy fields may
+    be either a count or a detailed list, whose length is the count.  When both
+    names are present, disagreement or an invalid value fails closed instead
+    of allowing a stale/ambiguous calibration to pass.
+    """
+
+    canonical_present = canonical_name in freeze
+    legacy_present = legacy_name in freeze
+    if not canonical_present and not legacy_present:
+        return None
+
+    canonical_count = _freeze_count(freeze.get(canonical_name)) if canonical_present else None
+    legacy_count = _freeze_count(freeze.get(legacy_name)) if legacy_present else None
+    if canonical_present and canonical_count is None:
+        raise FrozenBookPlanValidationError(f"calibration field {canonical_name} is not a valid count")
+    if legacy_present and legacy_count is None:
+        raise FrozenBookPlanValidationError(f"legacy calibration field {legacy_name} is not a valid count")
+    if canonical_present and legacy_present and canonical_count != legacy_count:
+        raise FrozenBookPlanValidationError(
+            f"calibration count mismatch: {canonical_name}={canonical_count} "
+            f"vs {legacy_name}={legacy_count}"
+        )
+    return canonical_count if canonical_present else legacy_count
 
 
 def _curriculum_summary(value: Any) -> dict[str, Any]:
