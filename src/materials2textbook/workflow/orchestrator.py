@@ -158,70 +158,323 @@ def _progress(message: str) -> None:
     print(f"[workflow] {message}", flush=True)
 
 
+class FrozenCalibrationReferenceError(ValueError):
+    """Raised when a frozen calibration reference cannot be trusted."""
+
+    code = "FROZEN_CALIBRATION_REFERENCE_INVALID"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"{self.code}: {message}")
+
+
+_CALIBRATION_REFERENCE_KEYS = (
+    "calibration_source",
+    "source_calibration",
+    "source_bounded_calibration",
+    "source_bounded_obligation_calibration",
+)
+_CALIBRATION_INLINE_KEYS = (
+    "obligation_calibrations",
+    "source_bounded_obligation_calibration",
+    "source_bounded_calibration",
+)
+
+
+def _calibration_reference_path(value: Any, *, base_dir: Path | None, label: str) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise FrozenCalibrationReferenceError(f"{label} must be a non-empty path")
+    raw = Path(value.strip())
+    if raw.is_absolute():
+        candidate = raw.resolve()
+    else:
+        if base_dir is None:
+            raise FrozenCalibrationReferenceError(
+                f"relative {label} cannot be resolved without the wrapper artifact directory"
+            )
+        root = base_dir.resolve()
+        candidate = (root / raw).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise FrozenCalibrationReferenceError(
+                f"{label} escapes its wrapper artifact directory: {value}"
+            ) from exc
+    if not candidate.is_file():
+        raise FrozenCalibrationReferenceError(f"{label} does not exist: {candidate}")
+    return candidate
+
+
+def _read_calibration_reference(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # pragma: no cover - parser/OS details vary
+        raise FrozenCalibrationReferenceError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise FrozenCalibrationReferenceError(f"referenced artifact is not a JSON object: {path}")
+    return dict(payload)
+
+
+def _calibration_identity(payload: Mapping[str, Any]) -> tuple[set[str], set[str]]:
+    signatures: set[str] = set()
+    fingerprints: set[str] = set()
+    for key in (
+        "source_outline_signature",
+        "current_outline_signature",
+        "expected_signature",
+        "outline_signature",
+        "book_plan_signature",
+        "signature",
+    ):
+        value = payload.get(key)
+        if value not in (None, ""):
+            signatures.add(str(value).strip())
+    for key in (
+        "book_plan_fingerprint",
+        "expected_book_plan_fingerprint",
+        "current_book_plan_fingerprint",
+        "typed_snapshot_fingerprint",
+        "fingerprint",
+        "typed_fingerprint",
+    ):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            value = value.get("value")
+        if value not in (None, ""):
+            fingerprints.add(str(value).strip())
+    return signatures, fingerprints
+
+
+def _validate_calibration_reference_identity(
+    payload: Mapping[str, Any],
+    *,
+    trusted_signatures: set[str],
+    trusted_fingerprints: set[str],
+    book_plan: Any | None,
+    source: Path,
+) -> None:
+    if source.name != "<inline>":
+        schema = payload.get("schema_version") or payload.get("calibration_schema_version") or payload.get("version")
+        if not isinstance(schema, str) or not schema.strip():
+            raise FrozenCalibrationReferenceError(f"referenced calibration has no schema version: {source}")
+    if payload.get("safe_to_freeze") is False:
+        raise FrozenCalibrationReferenceError(f"referenced calibration is not safe to freeze: {source}")
+    if payload.get("source_bounded_bookplan_valid") is False:
+        raise FrozenCalibrationReferenceError(f"referenced calibration is not source-bounded valid: {source}")
+
+    signatures, fingerprints = _calibration_identity(payload)
+    if signatures and trusted_signatures and not signatures.intersection(trusted_signatures):
+        raise FrozenCalibrationReferenceError(f"referenced calibration signature mismatch: {source}")
+
+    # ``source_book_plan_fingerprint`` in the row sidecar can intentionally
+    # identify the pre-calibration candidate.  Trust the wrapper/rich
+    # artifact's canonical typed/book-plan fingerprint instead; if a
+    # canonical identity is present, it must match the frozen input.
+    canonical_fingerprints = fingerprints
+    if canonical_fingerprints and trusted_fingerprints and not canonical_fingerprints.intersection(trusted_fingerprints):
+        if not (
+            set(payload).issubset({"source_book_plan_fingerprint", "source_book_plan", "obligation_calibrations", "safe_to_freeze", "schema_version"})
+            and "obligation_calibrations" in payload
+        ):
+            raise FrozenCalibrationReferenceError(f"referenced calibration fingerprint mismatch: {source}")
+
+    if book_plan is not None:
+        expected_signature = outline_signature(book_plan)
+        expected_fingerprint = book_plan_fingerprint(book_plan)
+        if signatures and expected_signature not in signatures:
+            raise FrozenCalibrationReferenceError(f"referenced calibration does not match frozen outline: {source}")
+        if canonical_fingerprints and expected_fingerprint not in canonical_fingerprints:
+            if "obligation_calibrations" not in payload:
+                raise FrozenCalibrationReferenceError(f"referenced calibration does not match frozen BookPlan: {source}")
+
+
+def _normalize_calibration_rows(
+    raw_rows: Any,
+    *,
+    source: Path | None,
+    book_plan: Any | None,
+) -> dict[str, dict[str, Any]]:
+    if isinstance(raw_rows, Mapping):
+        items = []
+        for key, value in raw_rows.items():
+            if not isinstance(value, Mapping):
+                raise FrozenCalibrationReferenceError(
+                    f"calibration row {key!r} is not an object: {source or '<inline>'}"
+                )
+            items.append({"obligation_id": str(key), **dict(value)})
+    elif isinstance(raw_rows, list):
+        items = list(raw_rows)
+    else:
+        location = f" in {source}" if source is not None else ""
+        raise FrozenCalibrationReferenceError(f"obligation_calibrations must be a mapping or list{location}")
+    if not items:
+        location = f" in {source}" if source is not None else ""
+        raise FrozenCalibrationReferenceError(f"obligation_calibrations is empty{location}")
+
+    try:
+        from materials2textbook.knowledge_map.teaching_blueprint import (
+            SOURCE_BOUNDED_CALIBRATION_STATUSES,
+            ALLOWED_OBLIGATION_KINDS,
+        )
+    except Exception:  # pragma: no cover - import failures are surfaced as invalid references
+        SOURCE_BOUNDED_CALIBRATION_STATUSES = frozenset()
+        ALLOWED_OBLIGATION_KINDS = frozenset()
+    section_ids: set[str] = set()
+    if book_plan is not None:
+        section_ids = {
+            str(section.section_id)
+            for chapter in book_plan.chapters
+            for section in chapter.sections
+            if getattr(section, "section_id", None)
+        }
+
+    result: dict[str, dict[str, Any]] = {}
+    for raw in items:
+        if not isinstance(raw, Mapping):
+            raise FrozenCalibrationReferenceError(f"calibration row is not an object: {source or '<inline>'}")
+        obligation_id = str(raw.get("obligation_id") or "").strip()
+        status = str(raw.get("calibrated_status") or "").strip().upper()
+        if not obligation_id or status not in SOURCE_BOUNDED_CALIBRATION_STATUSES:
+            raise FrozenCalibrationReferenceError(
+                f"calibration row requires obligation_id and valid calibrated_status: {source or '<inline>'}"
+            )
+        if obligation_id in result:
+            raise FrozenCalibrationReferenceError(f"duplicate calibration row: {obligation_id}")
+        if ":obligation:" not in obligation_id:
+            raise FrozenCalibrationReferenceError(f"malformed calibration obligation id: {obligation_id}")
+        section_id, suffix = obligation_id.rsplit(":obligation:", 1)
+        kind = suffix.rsplit(":", 1)[0]
+        if ALLOWED_OBLIGATION_KINDS and kind not in ALLOWED_OBLIGATION_KINDS:
+            raise FrozenCalibrationReferenceError(f"unknown calibration obligation kind: {obligation_id}")
+        if section_ids and section_id not in section_ids:
+            raise FrozenCalibrationReferenceError(f"calibration row is not owned by frozen BookPlan: {obligation_id}")
+        result[obligation_id] = dict(raw)
+    return result
+
+
+def _inline_calibration_rows(
+    payload: Mapping[str, Any],
+    *,
+    source: Path | None,
+    book_plan: Any | None,
+) -> tuple[dict[str, dict[str, Any]] | None, bool]:
+    for key in _CALIBRATION_INLINE_KEYS:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if isinstance(value, str):
+            continue
+        if key == "obligation_calibrations":
+            return _normalize_calibration_rows(value, source=source, book_plan=book_plan), True
+        return _normalize_calibration_rows(value, source=source, book_plan=book_plan), True
+    return None, False
+
+
+def _calibration_references(payload: Mapping[str, Any], *, source: Path | None) -> list[tuple[str, str]]:
+    references: list[tuple[str, str]] = []
+    for key in _CALIBRATION_REFERENCE_KEYS:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if isinstance(value, str):
+            references.append((key, value))
+        elif value is not None and not isinstance(value, (Mapping, list)):
+            raise FrozenCalibrationReferenceError(
+                f"{key} must be a path or inline calibration object: {source or '<inline>'}"
+            )
+    return references
+
+
+def _resolve_calibration_overlay(
+    freeze_validation: Mapping[str, Any] | None,
+    calibration_input: Path | None,
+    *,
+    book_plan: Any | None,
+) -> dict[str, dict[str, Any]]:
+    """Resolve inline and nested frozen calibration references into one overlay."""
+
+    roots: list[tuple[Mapping[str, Any], Path | None]] = []
+    if isinstance(freeze_validation, Mapping):
+        roots.append((freeze_validation, calibration_input.parent if calibration_input is not None else None))
+    if calibration_input is not None:
+        if not calibration_input.is_file():
+            raise FrozenCalibrationReferenceError(f"calibration wrapper does not exist: {calibration_input}")
+        roots.append((_read_calibration_reference(calibration_input), calibration_input.parent))
+    if not roots:
+        return {}
+
+    trusted_signatures: set[str] = set()
+    trusted_fingerprints: set[str] = set()
+    for payload, _ in roots:
+        signatures, fingerprints = _calibration_identity(payload)
+        trusted_signatures.update(signatures)
+        trusted_fingerprints.update(fingerprints)
+    if book_plan is not None:
+        trusted_signatures.add(outline_signature(book_plan))
+        trusted_fingerprints.add(book_plan_fingerprint(book_plan))
+
+    overlays: list[dict[str, dict[str, Any]]] = []
+    visited: set[Path] = set()
+    active: set[Path] = set()
+
+    def visit(payload: Mapping[str, Any], base_dir: Path | None, source: Path | None, depth: int) -> None:
+        if depth > 8:
+            raise FrozenCalibrationReferenceError("reference chain exceeds maximum depth")
+        if source is not None:
+            resolved_source = source.resolve()
+            if resolved_source in active:
+                raise FrozenCalibrationReferenceError(f"reference cycle detected at {resolved_source}")
+            if resolved_source in visited:
+                return
+            active.add(resolved_source)
+        _validate_calibration_reference_identity(
+            payload,
+            trusted_signatures=trusted_signatures,
+            trusted_fingerprints=trusted_fingerprints,
+            book_plan=book_plan,
+            source=source or calibration_input or Path("<inline>"),
+        )
+        rows, has_rows = _inline_calibration_rows(payload, source=source, book_plan=book_plan)
+        if has_rows:
+            overlays.append(rows or {})
+        for key, value in _calibration_references(payload, source=source):
+            path = _calibration_reference_path(value, base_dir=base_dir, label=key)
+            visit(_read_calibration_reference(path), path.parent, path, depth + 1)
+        if source is not None:
+            active.discard(source.resolve())
+            visited.add(source.resolve())
+
+    for payload, base_dir in roots:
+        visit(payload, base_dir, None, 0)
+    if not overlays:
+        return {}
+    first = overlays[0]
+    canonical = json.dumps(first, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    for other in overlays[1:]:
+        if json.dumps(other, ensure_ascii=False, sort_keys=True, separators=(",", ":")) != canonical:
+            raise FrozenCalibrationReferenceError("inline and referenced calibration overlays disagree")
+    return first
+
+
 def _load_source_bounded_obligation_calibration(
     freeze_validation: Mapping[str, Any] | None,
     calibration_input: Path | None,
+    *,
+    book_plan: Any | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Load the validated source-bounded obligation overlay, if present.
+    """Load and validate the canonical source-bounded obligation overlay.
 
-    The freeze artifact remains the trust anchor.  Its optional
-    ``source_calibration`` pointer is only used to load the already validated
-    row-level overlay; no diagnosis or re-planning is performed here.
+    A frozen wrapper may reference a rich calibration artifact, which may in
+    turn reference the row sidecar.  All forms are normalized here so the
+    downstream Blueprint sees one mapping regardless of storage layout.
+    Explicit references are fail-closed; they never silently become an empty
+    overlay.
     """
 
-    candidates: list[Path] = []
-    inline: Any = None
-    if isinstance(freeze_validation, Mapping):
-        inline = freeze_validation.get("source_bounded_obligation_calibration")
-        value = freeze_validation.get("source_bounded_calibration")
-        if isinstance(value, str) and value.strip():
-            candidates.append(Path(value))
-    if calibration_input is not None and calibration_input.is_file():
-        try:
-            payload = json.loads(calibration_input.read_text(encoding="utf-8"))
-        except Exception:
-            payload = None
-        if isinstance(payload, Mapping):
-            inline = inline or payload.get("obligation_calibrations")
-            source = payload.get("source_calibration")
-            if isinstance(source, str) and source.strip():
-                source_path = Path(source)
-                if not source_path.is_absolute():
-                    source_path = calibration_input.parent / source_path
-                candidates.append(source_path)
-    if isinstance(inline, Mapping):
-        rows = inline.get("obligation_calibrations", inline)
-        if isinstance(rows, Mapping):
-            return {str(key): dict(value) for key, value in rows.items() if isinstance(value, Mapping)}
-        if isinstance(rows, list):
-            return {
-                str(row.get("obligation_id")): dict(row)
-                for row in rows
-                if isinstance(row, Mapping) and row.get("obligation_id")
-            }
-    elif isinstance(inline, list):
-        return {
-            str(row.get("obligation_id")): dict(row)
-            for row in inline
-            if isinstance(row, Mapping) and row.get("obligation_id")
-        }
-    for candidate in candidates:
-        if not candidate.is_file():
-            continue
-        try:
-            payload = json.loads(candidate.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        rows = payload.get("obligation_calibrations") if isinstance(payload, Mapping) else None
-        if isinstance(rows, list):
-            return {
-                str(row.get("obligation_id")): dict(row)
-                for row in rows
-                if isinstance(row, Mapping) and row.get("obligation_id")
-            }
-        if isinstance(rows, Mapping):
-            return {str(key): dict(value) for key, value in rows.items() if isinstance(value, Mapping)}
-    return {}
+    return _resolve_calibration_overlay(
+        freeze_validation,
+        calibration_input,
+        book_plan=book_plan,
+    )
 
 
 def _load_source_bounded_prerequisite_calibration(
@@ -825,6 +1078,7 @@ class TextbookWorkflow:
                 source_bounded_calibration_for_planning = _load_source_bounded_obligation_calibration(
                     freeze_validation,
                     freeze_calibration_input,
+                    book_plan=book_plan,
                 )
                 source_bounded_prerequisite_calibration_for_planning = _load_source_bounded_prerequisite_calibration(
                     freeze_validation,
@@ -918,6 +1172,7 @@ class TextbookWorkflow:
                     source_bounded_calibration = _load_source_bounded_obligation_calibration(
                         freeze_validation,
                         freeze_calibration_input,
+                        book_plan=book_plan,
                     )
                     source_bounded_prerequisite_calibration = _load_source_bounded_prerequisite_calibration(
                         freeze_validation,
